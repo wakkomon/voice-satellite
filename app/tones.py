@@ -43,15 +43,20 @@ def _wav(pcm, rate):
 
 
 def get(kind):
-    """WAV-Bytes für "wake" | "end" (gecacht)."""
+    """WAV-Bytes für "wake" | "end" | "boot" (gecacht).
+
+    "boot" ist ein zweistufiges Signal: zwei kurze Töne hintereinander
+    (660 Hz -> 1320 Hz), damit der Start klar von den Einzeltönen
+    unterscheidbar ist.
+    """
     if kind not in _cache:
-        if kind == "wake":
-            freq = config.TONE_WAKE_HZ
-        elif kind == "boot":
-            freq = config.TONE_BOOT_HZ
+        if kind == "boot":
+            pcm = (_sine(config.TONE_BOOT_HZ, config.TONE_SEC, config.SAMPLE_RATE, config.TONE_GAIN)
+                   + _sine(config.TONE_BOOT2_HZ, config.TONE_SEC, config.SAMPLE_RATE, config.TONE_GAIN))
+        elif kind == "wake":
+            pcm = _sine(config.TONE_WAKE_HZ, config.TONE_SEC, config.SAMPLE_RATE, config.TONE_GAIN)
         else:
-            freq = config.TONE_END_HZ
-        pcm = _sine(freq, config.TONE_SEC, config.SAMPLE_RATE, config.TONE_GAIN)
+            pcm = _sine(config.TONE_END_HZ, config.TONE_SEC, config.SAMPLE_RATE, config.TONE_GAIN)
         _cache[kind] = _wav(pcm, config.SAMPLE_RATE)
     return _cache[kind]
 
