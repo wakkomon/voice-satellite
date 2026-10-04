@@ -129,6 +129,7 @@ def main():
     signal.signal(signal.SIGTERM, lambda *a: sys.exit(0))
     p = Pipeline()
     web.start(p)                    # Debug-/Health-HTTP im Hintergrundthread
+    router.warm_async()             # LLM-Modell im Hintergrund vorwärmen
     p.run()
 
 

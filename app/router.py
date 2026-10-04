@@ -9,6 +9,7 @@ Item-Cache (5 min) spart REST-Last und Latenz.
 """
 import logging
 import re
+import threading
 
 from . import config, http, memory
 
@@ -148,7 +149,10 @@ def ask_llm(text):
         system += "\n\nDas weißt du bereits über den Nutzer:\n- " + "\n- ".join(facts[:30])
     messages = [{"role": "system", "content": system}] + memory.recent_history() + [{"role": "user", "content": text}]
     payload = {"model": config.LLM_MODEL, "messages": messages, "stream": False,
-               "max_tokens": 400}
+               "max_tokens": 400,
+               # Ollama: Modell 30 min resident halten – naechster Befehl
+               # antwortet in ~1s statt 30s Kaltstart
+               "keep_alive": "30m"}
     try:
         data = http.post_json(config.LLM_URL, payload, token=config.LLM_TOKEN,
                               timeout=config.LLM_TIMEOUT, retries=0)
@@ -164,6 +168,22 @@ def remove_emojis(text):
         r"[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF"
         r"\U0001F1E0-\U0001F1FF\u2702-\u27B0\u2B00-\u2BFF\uFE0F\u2764\u2190-\u21FF\u2600-\u26FF]",
         "", text).strip()
+
+
+def warm_async():
+    """Modell nach dem Start laden, damit die erste Sprachfrage nicht im
+    Kaltstart (~35s) haengt. Feuert ein minimales Chat-Completion."""
+    def _w():
+        try:
+            http.post_json(config.LLM_URL, {
+                "model": config.LLM_MODEL,
+                "messages": [{"role": "user", "content": "ok"}],
+                "max_tokens": 4, "stream": False, "keep_alive": "30m"},
+                token=config.LLM_TOKEN, timeout=config.LLM_TIMEOUT, retries=0)
+            log.info("LLM warm: %s", config.LLM_MODEL)
+        except Exception as e:
+            log.warning("LLM-Warmup fehlgeschlagen: %s", e)
+    threading.Thread(target=_w, daemon=True).start()
 
 
 def handle(text):
