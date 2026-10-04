@@ -73,9 +73,15 @@ def _normalize(s):
     return re.sub(r"\s+", " ", s.lower().replace("ä", "ae").replace("ö", "oe").replace("ü", "ue")).strip()
 
 
+def _normalize_both(s):
+    """(mit Leerzeichen, ohne Leerzeichen) – 'flur lampe' matcht so auch 'flurlampe'."""
+    n = _normalize(s)
+    return n, re.sub(r"\s+", "", n)
+
+
 def _match_device(text):
     """Findet Gerät per Label/Metadaten-Alias im gesprochenen Satz."""
-    t = _normalize(text)
+    t, tc = _normalize_both(text)
     items = _cache.get()
     best = None
     for item in items:
@@ -86,9 +92,9 @@ def _match_device(text):
             if a.strip():
                 labels.append(a)
         for lbl in labels:
-            n = _normalize(lbl)
-            if n and n in t:
-                if best is None or len(n) > len(_normalize(best[0])):
+            n, nc = _normalize_both(lbl)
+            if n and (n in t or nc in tc):
+                if best is None or len(nc) > len(_normalize_both(best[0])[1]):
                     best = (lbl, item)
     return best  # (label, item) oder None
 
@@ -149,21 +155,42 @@ def ask_llm(text):
         system += "\n\nDas weißt du bereits über den Nutzer:\n- " + "\n- ".join(facts[:30])
     messages = [{"role": "system", "content": system}] + memory.recent_history() + [{"role": "user", "content": text}]
     payload = {"model": config.LLM_MODEL, "messages": messages, "stream": False,
-               "max_tokens": 400,
+               "max_tokens": config.LLM_MAX_TOKENS,
                # Ollama: Modell 30 min resident halten – naechster Befehl
                # antwortet in ~1s statt 30s Kaltstart
                "keep_alive": "30m"}
+    # Qwen3.8-27B (vLLM): Thinking aus = 2-4s statt ~26s. Der Antworttext
+    # landet dann in reasoning_content statt content -> beide abfragen.
+    if not config.LLM_ENABLE_THINKING:
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
+
+    def _extract(d):
+        m = d["choices"][0]["message"]
+        return (m.get("content") or m.get("reasoning_content") or "").strip()
+
     try:
         data = http.post_json(config.LLM_URL, payload, token=config.LLM_TOKEN,
                               timeout=config.LLM_TIMEOUT, retries=0)
-        out = data["choices"][0]["message"]["content"].strip()
-        return remove_emojis(out) or "Keine Antwort erhalten."
+        out = remove_emojis(_extract(data))
+        if not out:
+            log.warning("LLM lieferte leeren Inhalt (Thinking-Modell?); 2. Versuch")
+            data = http.post_json(config.LLM_URL, payload, token=config.LLM_TOKEN,
+                                  timeout=config.LLM_TIMEOUT, retries=0)
+            out = remove_emojis(_extract(data))
+        return out or "Das habe ich leider gerade nicht verstanden."
     except Exception as e:
         log.error("LLM-Fehler: %s", e)
         return "Das LLM ist gerade nicht erreichbar."
 
 
 def remove_emojis(text):
+    # Markdown-Signale entfernen (27B formatiert trotz Anweisung): **fett**, *kursiv*,
+    # Listenstriche, Tabellen – sonst liest Piper Sternchen aus.
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+    text = re.sub(r"(?<!\w)\*(?!\s)(.+?)(?<!\s)\*(?!\w)", r"\1", text)
+    text = re.sub(r"(?m)^\s*[-*+]\s+", "", text)
+    text = re.sub(r"(?m)^\s*\d+[.)]\s+", "", text)
+    text = re.sub(r"\|", " ", text)
     return re.sub(
         r"[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF"
         r"\U0001F1E0-\U0001F1FF\u2702-\u27B0\u2B00-\u2BFF\uFE0F\u2764\u2190-\u21FF\u2600-\u26FF]",

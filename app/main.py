@@ -60,6 +60,7 @@ class Pipeline:
             if not text:
                 self._fail("STT leer oder nicht erreichbar")
                 return
+            log.info("STT erkannt: %s", text)
             self.ev(f"STT: {text[:80]}")
             self.state = "processing"
             t0 = time.time()
