@@ -47,12 +47,15 @@ def get(kind):
 
     "boot" ist ein zweistufiges Signal: zwei kurze Töne hintereinander
     (660 Hz -> 1320 Hz), damit der Start klar von den Einzeltönen
-    unterscheidbar ist.
+    unterscheidbar ist. "error" ist ein tiefer Warnton (220 Hz) für
+    LLM-Ausfälle.
     """
     if kind not in _cache:
         if kind == "boot":
             pcm = (_sine(config.TONE_BOOT_HZ, config.TONE_SEC, config.SAMPLE_RATE, config.TONE_GAIN)
                    + _sine(config.TONE_BOOT2_HZ, config.TONE_SEC, config.SAMPLE_RATE, config.TONE_GAIN))
+        elif kind == "error":
+            pcm = _sine(config.TONE_ERROR_HZ, config.TONE_SEC, config.SAMPLE_RATE, config.TONE_GAIN)
         elif kind == "wake":
             pcm = _sine(config.TONE_WAKE_HZ, config.TONE_SEC, config.SAMPLE_RATE, config.TONE_GAIN)
         else:

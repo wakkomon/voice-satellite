@@ -76,7 +76,7 @@ class Handler(BaseHTTPRequestHandler):
             if not text:
                 return self._send(400, {"error": "text fehlt"})
             t0 = time.time()
-            answer, kind = router.handle(text)
+            answer, kind, _ok = router.handle(text)
             dt = time.time() - t0
             self._ev(f"Web-Intent {dt:.1f}s ({kind}): {answer[:80]}")
             return self._send(200, {"answer": answer, "route": kind})
