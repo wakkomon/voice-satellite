@@ -47,6 +47,8 @@ def get(kind):
     if kind not in _cache:
         if kind == "wake":
             freq = config.TONE_WAKE_HZ
+        elif kind == "boot":
+            freq = config.TONE_BOOT_HZ
         else:
             freq = config.TONE_END_HZ
         pcm = _sine(freq, config.TONE_SEC, config.SAMPLE_RATE, config.TONE_GAIN)
