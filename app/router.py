@@ -177,10 +177,13 @@ def ask_llm(text):
             data = http.post_json(config.LLM_URL, payload, token=config.LLM_TOKEN,
                                   timeout=config.LLM_TIMEOUT, retries=0)
             out = remove_emojis(_extract(data))
-        return out or "Das habe ich leider gerade nicht verstanden."
+        if not out:
+            log.warning("LLM lieferte trotz 2. Versuchs leeren Inhalt")
+            return "Das habe ich leider gerade nicht verstanden.", False
+        return out, True
     except Exception as e:
         log.error("LLM-Fehler: %s", e)
-        return "Das LLM ist gerade nicht erreichbar."
+        return "Das LLM ist gerade nicht erreichbar.", False
 
 
 def remove_emojis(text):
@@ -214,12 +217,15 @@ def warm_async():
 
 
 def handle(text):
-    """Haupt-Route: erst openHAB, sonst LLM. Gibt (antwort, 'smarthome'|'llm') zurück."""
+    """Haupt-Route: erst openHAB, sonst LLM.
+
+    Gibt (antwort, 'smarthome'|'llm', llm_ok) zurück; llm_ok=False bei
+    LLM-Ausfall/leerer Antwort (für den Fehlerton)."""
     oh = try_openhab(text)
     if oh is not None:
         memory.add_exchange(text, oh)
-        return oh, "smarthome"
-    ans = ask_llm(text)
+        return oh, "smarthome", True
+    ans, ok = ask_llm(text)
     memory.add_exchange(text, ans)
     memory.extract_facts_async(text, ans)
-    return ans, "llm"
+    return ans, "llm", ok

@@ -119,6 +119,7 @@ TONE_WAKE_HZ  = float(_env("TONE_WAKE_HZ", "880"))   # höher: Wake-Word erkannt
 TONE_END_HZ   = float(_env("TONE_END_HZ", "523"))    # tiefer: Spracheingabe zu Ende
 TONE_BOOT_HZ  = float(_env("TONE_BOOT_HZ", "660"))   # Boot-Ton 1: mittel (E5), beim Container-Start
 TONE_BOOT2_HZ = float(_env("TONE_BOOT2_HZ", "1320")) # Boot-Ton 2: eine Oktave hoeher – zweifaches Signal
+TONE_ERROR_HZ = float(_env("TONE_ERROR_HZ", "220"))  # Fehler:  tief  (A3), LLM-Ausfall/leere Antwort
 
 # ── Web ────────────────────────────────────────────────────────
 WEB_PORT        = int(_env("WEB_PORT", "8770"))

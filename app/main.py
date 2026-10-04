@@ -64,11 +64,14 @@ class Pipeline:
             self.ev(f"STT: {text[:80]}")
             self.state = "processing"
             t0 = time.time()
-            answer, kind = router.handle(text)
+            answer, kind, llm_ok = router.handle(text)
             self.stats["commands" if kind == "smarthome" else "llm"] += 1
             dt = time.time() - t0
             log.info("Antwort (%s, %.1fs): %s", kind, dt, answer[:160])
             self.ev(f"{kind} {dt:.1f}s -> {answer[:80]}")
+            if not llm_ok:
+                tones.play("error")   # tiefes Signal: LLM-Ausfall/leere Antwort
+                self._fail("LLM-Fehler – Fehlerton abgespielt")
             self.speak(answer)
         finally:
             if self.state != "wake":
