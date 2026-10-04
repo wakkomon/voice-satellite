@@ -51,6 +51,7 @@ class Pipeline:
         try:
             pcm = self.rec.capture()
             if pcm is None:
+                tones.play("error")     # tiefes Signal: keine Sprache erkannt
                 self._fail("Keine Sprache erkannt")
                 return
             dur = len(pcm) / 2 / config.SAMPLE_RATE
@@ -58,6 +59,7 @@ class Pipeline:
             tones.play("end")       # tiefes Signal: Sprachende, wird verarbeitet
             text = stt.transcribe(audio.to_wav(pcm))
             if not text:
+                tones.play("error")     # tiefes Signal: STT hat nichts erkannt
                 self._fail("STT leer oder nicht erreichbar")
                 return
             log.info("STT erkannt: %s", text)
