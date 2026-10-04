@@ -56,6 +56,16 @@ def get_json(url, token=None, timeout=30):
         return json.loads(resp.read().decode("utf-8"))
 
 
+def get_text(url, token=None, timeout=30):
+    """openHABs /state liefert text/plain – mit Accept: application/json kommt HTTP 400."""
+    headers = {"Accept": "text/plain"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read().decode("utf-8").strip()
+
+
 def post_raw(url, body, token=None, timeout=15, content_type="text/plain"):
     """openHAB erwartet den State-Rohwert (ON/OFF/50) als Body."""
     req = urllib.request.Request(

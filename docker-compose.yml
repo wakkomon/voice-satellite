@@ -1,3 +1,4 @@
+version: "2.4"            # noetig fuer docker-compose v1 auf dem Pi
 services:
   voice-satellite:
     build: .
@@ -10,17 +11,17 @@ services:
     group_add:
       - audio
     env_file:
-      - .env                 # Secrets lives on the Pi, never in the image
+      - .env              # Secrets & API-URLs lives on the Pi, never in the image
     environment:
-      - MIC_DEVICE=${MIC_DEVICE:-virt_mic_16k}
-      - SPEAKER_DEVICE=${SPEAKER_DEVICE:-hw:1,0}
+      - MIC_DEVICE=${MIC_DEVICE:-plughw:2,0}
+      - SPEAKER_DEVICE=${SPEAKER_DEVICE:-plughw:1,0}
       - WAKE_SENS=${WAKE_SENS:-0.5}
       - VAD_MODE=${VAD_MODE:-energy}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     volumes:
-      - voice-data:/data
+      - voice-satellite-data:/data   # gleichnamiges Volume wie docker run
     ports:
-      - "8770:8770"          # Debug-Interface
+      - "8770:8770"       # Debug-Interface
 
 volumes:
-  voice-data:
+  voice-satellite-data:

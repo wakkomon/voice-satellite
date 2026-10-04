@@ -120,8 +120,9 @@ def try_openhab(text):
     if value is None:
         # Gerät erkannt aber kein Zustand -> Status abfragen
         try:
-            st = http.get_json(f"{config.OPENHAB_URL}/{item['name']}/state",
+            st = http.get_text(f"{config.OPENHAB_URL}/{item['name']}/state",
                                token=config.OPENHAB_TOKEN, timeout=10)
+            st = {"ON": "an", "OFF": "aus"}.get(st, st)
             return f"{label} ist {st}."
         except Exception as e:
             return f"{label}: Status nicht abrufbar ({e})."
