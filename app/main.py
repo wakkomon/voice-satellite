@@ -96,6 +96,7 @@ class Pipeline:
         log.info("Voice-Satellite bereit – Codewort: %r (Frame %d Bytes)",
                  config.WAKE_WORD, self.frame_bytes)
         self.ev("gestartet")
+        tones.play("boot")          # Startton: Satellit ist online
         while True:
             frame = self.mic.read()
             if frame is None:
