@@ -117,7 +117,8 @@ TONE_GAIN     = float(_env("TONE_GAIN", "0.25"))     # Lautstärke 0..1
 TONE_SEC      = float(_env("TONE_SEC", "0.15"))      # Tonlänge (s)
 TONE_WAKE_HZ  = float(_env("TONE_WAKE_HZ", "880"))   # höher: Wake-Word erkannt
 TONE_END_HZ   = float(_env("TONE_END_HZ", "523"))    # tiefer: Spracheingabe zu Ende
-TONE_BOOT_HZ  = float(_env("TONE_BOOT_HZ", "660"))   # mittel: Container-Start (E5)
+TONE_BOOT_HZ  = float(_env("TONE_BOOT_HZ", "660"))   # Boot-Ton 1: mittel (E5), beim Container-Start
+TONE_BOOT2_HZ = float(_env("TONE_BOOT2_HZ", "1320")) # Boot-Ton 2: eine Oktave hoeher – zweifaches Signal
 
 # ── Web ────────────────────────────────────────────────────────
 WEB_PORT        = int(_env("WEB_PORT", "8770"))
