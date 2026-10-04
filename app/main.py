@@ -24,13 +24,16 @@ class Pipeline:
         self.vad = audio.make_vad()
         self.rec = audio.Recorder(self.mic, self.vad, self.frame_bytes)
         self.state = "wake"           # wake | recording | processing | speaking
-        self.events = []              # Ring-Puffer für /status
+        self.events = []              # Ring-Puffer für /status & SSE-Feed
+        self.seq = 0                  # monotone Event-Nummer (SSE-Reconnect)
         self.stats = {"wakes": 0, "commands": 0, "llm": 0, "errors": 0,
                       "started": time.time()}
         self._last_wake = 0.0
 
     def ev(self, msg):
-        self.events.append({"ts": time.strftime("%H:%M:%S"), "msg": msg})
+        self.seq += 1
+        self.events.append({"ts": time.strftime("%H:%M:%S"), "seq": self.seq,
+                            "msg": msg})
         del self.events[:-60]
 
     def _fail(self, msg):

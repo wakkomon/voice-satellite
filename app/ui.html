@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voice Satellite</title>
+<style>
+:root { color-scheme: dark; }
+* { box-sizing: border-box; }
+body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+       background:#0f1216; color:#e6e9ee; }
+header { display:flex; align-items:center; gap:12px; padding:14px 18px;
+         border-bottom:1px solid #232833; }
+h1 { font-size:16px; margin:0; font-weight:600; letter-spacing:.3px; }
+.badge { padding:3px 10px; border-radius:999px; font-size:12px; font-weight:600;
+         background:#1c212b; border:1px solid #2c3340; white-space:nowrap; }
+.badge.wake       { color:#5fd068; border-color:#2b5e32; background:#14241a; }
+.badge.recording  { color:#57a8ff; border-color:#274b6e; background:#12233a; }
+.badge.processing { color:#e8b34b; border-color:#6e5a27; background:#2b2413; }
+.badge.speaking   { color:#b48cff; border-color:#4d3a78; background:#1e1733; }
+.badge.live       { animation:pulse 1.2s infinite; }
+.dot { width:9px; height:9px; border-radius:50%; background:#e85555;
+       margin-left:auto; flex:none; }
+.dot.on { background:#5fd068; }
+.stats { display:flex; gap:10px; padding:12px 18px; flex-wrap:wrap; }
+.card { background:#161b22; border:1px solid #232833; border-radius:10px;
+        padding:10px 14px; min-width:96px; }
+.card .v { font-size:20px; font-weight:700; font-variant-numeric:tabular-nums; }
+.card .l { font-size:11px; color:#8b93a1; text-transform:uppercase;
+           letter-spacing:.5px; margin-top:2px; }
+main { padding:0 18px 18px; }
+.feed { background:#11151b; border:1px solid #232833; border-radius:10px;
+        height:320px; overflow-y:auto; list-style:none; margin:0; padding:8px; }
+.feed li { padding:4px 8px; border-bottom:1px solid #1b202a; font-size:13px; }
+.feed li time { color:#8b93a1; margin-right:8px; font-variant-numeric:tabular-nums; }
+.empty { color:#5b6472; text-align:center; margin-top:140px; }
+.forms { display:flex; gap:12px; margin-top:14px; flex-wrap:wrap; }
+form { flex:1; min-width:260px; }
+input { width:100%; padding:10px 12px; border-radius:8px; border:1px solid #2c3340;
+        background:#161b22; color:#e6e9ee; font-size:14px; margin-bottom:8px; }
+input:focus { outline:none; border-color:#2563eb; }
+button { padding:9px 14px; border-radius:8px; border:0; background:#2563eb;
+         color:#fff; font-size:14px; cursor:pointer; }
+button:hover { background:#1d4ed8; }
+button:disabled { opacity:.5; cursor:default; }
+.res { margin-top:8px; font-size:13px; color:#9fb3c8; min-height:18px; }
+@keyframes pulse { 50% { opacity:.45; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Voice Satellite</h1>
+  <span id="state" class="badge wake">Bereit</span>
+  <span class="dot" id="conn" title="Live-Verbindung"></span>
+</header>
+<div class="stats">
+  <div class="card"><div class="v" id="st-uptime">–</div><div class="l">Laufzeit</div></div>
+  <div class="card"><div class="v" id="st-wakes">0</div><div class="l">Codewörter</div></div>
+  <div class="card"><div class="v" id="st-commands">0</div><div class="l">Befehle</div></div>
+  <div class="card"><div class="v" id="st-llm">0</div><div class="l">LLM</div></div>
+  <div class="card"><div class="v" id="st-errors">0</div><div class="l">Fehler</div></div>
+</div>
+<main>
+  <ul class="feed" id="feed"><li class="empty" id="feed-empty">Noch keine Aktivität</li></ul>
+  <div class="forms">
+    <form id="f-speak">
+      <input id="in-speak" placeholder="Sprechen lassen, z.&nbsp;B.: Hallo, alles klar?">
+      <button id="b-speak">Sagen</button>
+      <div class="res" id="res-speak"></div>
+    </form>
+    <form id="f-intent">
+      <input id="in-intent" placeholder="Intent testen, z.&nbsp;B.: Flurlampe an">
+      <button id="b-intent">Absenden</button>
+      <div class="res" id="res-intent"></div>
+    </form>
+  </div>
+</main>
+<script>
+const LABELS = {
+  wake:       "Bereit",
+  recording:  "H\u00f6rt zu",
+  processing: "Denkt nach",
+  speaking:   "Spricht"
+};
+const $ = id => document.getElementById(id);
+
+function fmtUp(s) {
+  s = Math.floor(s);
+  if (s < 60) return s + "s";
+  if (s < 3600) return Math.floor(s/60) + "m " + (s%60) + "s";
+  return Math.floor(s/3600) + "h " + Math.floor(s%3600/60) + "m";
+}
+function setStat(id, v) { $(id).textContent = v; }
+
+let maxSeq = 0;
+
+function addEvent(e) {
+  if ((e.seq || 0) <= maxSeq) return;
+  maxSeq = e.seq || 0;
+  const empty = $("feed-empty");
+  if (empty) empty.remove();
+  const li = document.createElement("li");
+  const t = document.createElement("time");
+  t.textContent = e.ts;
+  const m = document.createElement("span");
+  m.textContent = e.msg;
+  li.append(t, m);
+  const f = $("feed");
+  f.prepend(li);
+  while (f.children.length > 200) f.lastChild.remove();
+}
+
+function render(d) {
+  const st = $("state");
+  st.textContent = LABELS[d.state] || "Unbekannt";
+  st.className = "badge " + (d.state || "") +
+    (d.state === "processing" || d.state === "recording" || d.state === "speaking"
+     ? " live" : "");
+  setStat("st-uptime", fmtUp(d.uptime_s || 0));
+  const s = d.stats || {};
+  setStat("st-wakes", s.wakes ?? 0);
+  setStat("st-commands", s.commands ?? 0);
+  setStat("st-llm", s.llm ?? 0);
+  setStat("st-errors", s.errors ?? 0);
+  (d.events || []).forEach(addEvent);
+}
+
+function connect() {
+  const es = new EventSource("/events");
+  es.onopen = () => { $("conn").className = "dot on"; };
+  es.onmessage = m => { try { render(JSON.parse(m.data)); } catch (e) {} };
+  es.onerror = () => { $("conn").className = "dot off"; };
+  return es;
+}
+connect();
+
+async function post(path, text, resEl, btn) {
+  btn.disabled = true;
+  resEl.textContent = "\u2026";
+  try {
+    const j = await (await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text })
+    })).json();
+    if (path === "/speak") {
+      resEl.textContent = j.ok ? "gespielt (" + j.bytes + " Bytes)" : "Fehler: " + j.error;
+    } else {
+      resEl.textContent = j.route + " \u2192 " + j.answer;
+    }
+  } catch (e) {
+    resEl.textContent = "Fehler: " + e;
+  }
+  btn.disabled = false;
+}
+
+$("f-speak").addEventListener("submit", ev => {
+  ev.preventDefault();
+  const t = $("in-speak").value.trim();
+  if (t) post("/speak", t, $("res-speak"), $("b-speak"));
+});
+$("f-intent").addEventListener("submit", ev => {
+  ev.preventDefault();
+  const t = $("in-intent").value.trim();
+  if (t) post("/intent", t, $("res-intent"), $("b-intent"));
+});
+</script>
+</body>
+</html>
