@@ -25,8 +25,14 @@ _load_dotenv(os.environ.get("VOICE_ENV", "/app/.env"))
 _load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"))
 
 
-def _env(key, default):
-    return os.environ.get(key, default)
+def _env(key, default, fallback_empty=False):
+    """ENV-Wert holen. fallback_empty: leerer Wert gilt als 'nicht gesetzt'.
+    Noetig, weil .env-Zeilen wie 'LLM_MODEL=' sonst mit leerem String siegen
+    und z.B. Ollama mit model='' ablehnt."""
+    v = os.environ.get(key, default)
+    if fallback_empty and not (v or "").strip():
+        return default
+    return v
 
 # ── Audio ──────────────────────────────────────────────────────
 MIC_DEVICE      = _env("MIC_DEVICE", "plughw:2,0")     # USB PCM2902; plughw konvertiert 44.1k->16k (virt_mic_16k rate-Plugin ist in ALSA 1.2.14 kaputt)
@@ -61,15 +67,22 @@ OPENHAB_TOKEN   = _env("OPENHAB_TOKEN", "")
 RULES_FILE      = _env("RULES_FILE", "/data/rules.yaml")
 CACHE_TTL       = float(_env("OPENHAB_CACHE_TTL", "300"))  # Item-Liste cachen (s)
 
-# ── LLM-Fallback (Hermes .33:8642) ────────────────────────────
-LLM_URL         = _env("LLM_URL", "http://192.168.1.33:8642/v1/chat/completions")
-LLM_TOKEN       = _env("LLM_TOKEN", "")
-LLM_MODEL       = _env("LLM_MODEL", "")
-LLM_TIMEOUT     = float(_env("LLM_TIMEOUT", "120"))  # Hermes-Gateway (.33:8642) braucht teils 70-90s
+# ── LLM-Fallback (Ollama .31) ─────────────────────────────────
+# .33:8642 (Hermes-Gateway) ist ein zustandsbehafteter Agent: haelt Aktionen
+# zurueck ("Freigabe erforderlich") und halluziniert bei offenen Fragen –
+# fuer einen Voice-Satelliten falsch. Ollama ist ein plain Chat-Model: ~2 s.
+LLM_URL         = _env("LLM_URL", "http://192.168.1.31:11434/v1/chat/completions",
+                       fallback_empty=True)
+LLM_TOKEN       = _env("LLM_TOKEN", "")            # Ollama braucht keinen
+LLM_MODEL       = _env("LLM_MODEL", "qwen2.5:3b",  # ~1,4s warm; 7b/gemma4 e4b = ~20s
+                       fallback_empty=True)
+LLM_TIMEOUT     = float(_env("LLM_TIMEOUT", "60", fallback_empty=True))  # Kaltstart (Modell-Load) darf ~35s brauchen
 SYSTEM_PROMPT   = _env(
     "SYSTEM_PROMPT",
     "Du bist ein hilfsbereiter Sprachassistent im Wohnzimmer. "
-    "Antworte auf Deutsch, per Du, kurz und ohne Emojis. "
+    "Du hast keine Werkzeuge und kannst nichts im Haus schalten – "
+    "erfinde niemals Aktionen, Fragen oder Freigaben, sondern antworte nur "
+    "aus deinem Wissen. Antworte auf Deutsch, per Du, kurz und ohne Emojis. "
     "Maximal 3 Sätze – deine Antwort wird vorgelesen.",
 )
 
