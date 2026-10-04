@@ -1,0 +1,26 @@
+services:
+  voice-satellite:
+    build: .
+    image: voice-satellite:0.1.0
+    container_name: voice-satellite
+    restart: unless-stopped
+    # Kein privileged! Nur das Audio-Device durchreichen.
+    devices:
+      - /dev/snd:/dev/snd
+    group_add:
+      - audio
+    env_file:
+      - .env                 # Secrets lives on the Pi, never in the image
+    environment:
+      - MIC_DEVICE=${MIC_DEVICE:-virt_mic_16k}
+      - SPEAKER_DEVICE=${SPEAKER_DEVICE:-hw:1,0}
+      - WAKE_SENS=${WAKE_SENS:-0.5}
+      - VAD_MODE=${VAD_MODE:-energy}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - voice-data:/data
+    ports:
+      - "8770:8770"          # Debug-Interface
+
+volumes:
+  voice-data:
