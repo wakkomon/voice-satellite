@@ -106,6 +106,12 @@ TTS_MODEL       = _env("TTS_MODEL", "kitt")
 TTS_VOICE       = _env("TTS_VOICE", "kitt")
 TTS_TIMEOUT     = float(_env("TTS_TIMEOUT", "60"))
 
+# ── Feedback-Töne ──────────────────────────────────────────────
+TONE_GAIN     = float(_env("TONE_GAIN", "0.25"))     # Lautstärke 0..1
+TONE_SEC      = float(_env("TONE_SEC", "0.15"))      # Tonlänge (s)
+TONE_WAKE_HZ  = float(_env("TONE_WAKE_HZ", "880"))   # höher: Wake-Word erkannt
+TONE_END_HZ   = float(_env("TONE_END_HZ", "523"))    # tiefer: Spracheingabe zu Ende
+
 # ── Web ────────────────────────────────────────────────────────
 WEB_PORT        = int(_env("WEB_PORT", "8770"))
 LOG_LEVEL       = _env("LOG_LEVEL", "INFO")

@@ -11,7 +11,7 @@ import signal
 import sys
 import time
 
-from . import audio, config, memory, router, stt, tts, wake, web
+from . import audio, config, memory, router, stt, tones, tts, wake, web
 
 log = logging.getLogger("satellite")
 
@@ -47,6 +47,7 @@ class Pipeline:
         der Zustand zurück auf 'wake' geht – sonst wird der Satellit taub."""
         self.state = "recording"
         self.stats["wakes"] += 1
+        tones.play("wake")          # hohes Signal: Codewort erkannt, Aufnahme an
         try:
             pcm = self.rec.capture()
             if pcm is None:
@@ -54,6 +55,7 @@ class Pipeline:
                 return
             dur = len(pcm) / 2 / config.SAMPLE_RATE
             self.ev(f"{dur:.1f}s Audio aufgenommen")
+            tones.play("end")       # tiefes Signal: Sprachende, wird verarbeitet
             text = stt.transcribe(audio.to_wav(pcm))
             if not text:
                 self._fail("STT leer oder nicht erreichbar")
