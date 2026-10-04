@@ -67,16 +67,22 @@ OPENHAB_TOKEN   = _env("OPENHAB_TOKEN", "")
 RULES_FILE      = _env("RULES_FILE", "/data/rules.yaml")
 CACHE_TTL       = float(_env("OPENHAB_CACHE_TTL", "300"))  # Item-Liste cachen (s)
 
-# ── LLM-Fallback (Ollama .31) ─────────────────────────────────
+# ── LLM-Fallback (Qwen3.8-27B via LiteLLM .33:4000) ───────────
 # .33:8642 (Hermes-Gateway) ist ein zustandsbehafteter Agent: haelt Aktionen
 # zurueck ("Freigabe erforderlich") und halluziniert bei offenen Fragen –
-# fuer einen Voice-Satelliten falsch. Ollama ist ein plain Chat-Model: ~2 s.
-LLM_URL         = _env("LLM_URL", "http://192.168.1.31:11434/v1/chat/completions",
+# fuer einen Voice-Satelliten falsch. :4000 ist das reine 27B-Chat-Modell.
+# Qwen3.8 ist ein Thinking-Modell: mit Thinking verbruet es ~1500 Tokens (26s)
+# oder liefert leeres content. Mit enable_thinking=false antwortet es in 2-4s,
+# diese vLLM-Variante legt die Antwort dann ABER in reasoning_content,
+# content bleibt null -> router.ask_llm liest beide Felder.
+LLM_ENABLE_THINKING = _env("LLM_ENABLE_THINKING", "false") == "true"
+LLM_URL         = _env("LLM_URL", "http://192.168.1.33:4000/v1/chat/completions",
                        fallback_empty=True)
-LLM_TOKEN       = _env("LLM_TOKEN", "")            # Ollama braucht keinen
-LLM_MODEL       = _env("LLM_MODEL", "qwen2.5:3b",  # ~1,4s warm; 7b/gemma4 e4b = ~20s
+LLM_TOKEN       = _env("LLM_TOKEN", "")            # LiteLLM: sk-Key; Ollama: leer
+LLM_MODEL       = _env("LLM_MODEL", "Qwen3.8-27B",  # 27B via LiteLLM; lokal: qwen2.5:3b
                        fallback_empty=True)
 LLM_TIMEOUT     = float(_env("LLM_TIMEOUT", "60", fallback_empty=True))  # Kaltstart (Modell-Load) darf ~35s brauchen
+LLM_MAX_TOKENS  = int(_env("LLM_MAX_TOKENS", "1024", fallback_empty=True))  # mit Thinking-aus reicht 1024 fuer Voice-Antworten
 SYSTEM_PROMPT   = _env(
     "SYSTEM_PROMPT",
     "Du bist ein hilfsbereiter Sprachassistent im Wohnzimmer. "
@@ -87,7 +93,7 @@ SYSTEM_PROMPT   = _env(
 )
 
 # ── Gedächtnis ─────────────────────────────────────────────────
-MEMORY_DB       = _env("MEMORY_DB", "/data/memory.db")
+MEMORY_DB       = _env("MEMORY_DB", "/data/memory.db", fallback_empty=True)
 MAX_HISTORY     = int(_env("MAX_HISTORY", "20"))       # Nachrichten im Kurzzeitgedächtnis
 MAX_FACTS       = int(_env("MAX_FACTS", "100"))
 MEMORY_EXTRACT_PROMPT = (
