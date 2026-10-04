@@ -92,6 +92,33 @@ SYSTEM_PROMPT   = _env(
     "Maximal 3 Sätze – deine Antwort wird vorgelesen.",
 )
 
+# ── Agent-Werkzeuge (Hermes-Gateway) ──────────────────────────
+# Das "keine Werkzeuge"-Systemprompt oben ist nur fuer das reine 27B-Chat-
+# Modell sinnvoll (sonst halluziniert es Licht-Schaltaktionen). Am Hermes-
+# Gateway (:8642, Modell hermes-agent) laeuft ein echter Agent MIT Terminal
+# – dort wuerde derselbe Text ihn werkzeuglos machen: er raet dann z.B. die
+# Uhrzeit statt sie per `date` zu ermitteln. Deshalb hier trennen.
+LLM_HAS_TOOLS   = _env("LLM_HAS_TOOLS", "auto")  # true | false | auto
+
+def llm_has_tools():
+    v = str(LLM_HAS_TOOLS).strip().lower()
+    if v in ("true", "1", "yes"):
+        return True
+    if v in ("false", "0", "no"):
+        return False
+    # auto: Gateway-URL oder Agent-Modell => Werkzeug-Modus
+    return "8642" in LLM_URL or "hermes" in LLM_MODEL.lower()
+
+AGENT_SYSTEM_PROMPT = _env(
+    "AGENT_SYSTEM_PROMPT",
+    "Du bist ein Sprachassistent im Wohnzimmer mit echten Werkzeugen "
+    "(Terminal, Skripte, Suche). Bei Fragen nach Uhrzeit, Datum oder anderen "
+    "flichtigen Fakten: fuehre IMMER zuerst das passende Kommando aus "
+    "(z.B. `date`) und nenne das tatsaechliche Ergebnis – niemals raten oder "
+    "aus dem Modellgedaechtnis antworten. Antworte auf Deutsch, per Du, kurz "
+    "und ohne Emojis. Maximal 3 Saetze – deine Antwort wird vorgelesen.",
+)
+
 # ── Gedächtnis ─────────────────────────────────────────────────
 MEMORY_DB       = _env("MEMORY_DB", "/data/memory.db", fallback_empty=True)
 MAX_HISTORY     = int(_env("MAX_HISTORY", "20"))       # Nachrichten im Kurzzeitgedächtnis

@@ -148,21 +148,29 @@ def try_openhab(text):
 
 
 def ask_llm(text):
-    """LLM-Fallback mit Kurz- + Langzeitgedächtnis."""
-    system = config.SYSTEM_PROMPT
+    """LLM-Fallback mit Kurz- + Langzeitgedächtnis.
+
+    Werkzeug-Modus (Hermes-Gateway): anderer Systemprompt, der dem Agenten
+    erlaubt – und befoehlt! – Tatsachen per Kommando zu pruefen statt zu
+    raten. Reines Chat-Modell: altbewaehrter 'keine Werkzeuge'-Prompt."""
+    tools = config.llm_has_tools()
+    system = config.AGENT_SYSTEM_PROMPT if tools else config.SYSTEM_PROMPT
     facts = memory.load_facts()
     if facts:
         system += "\n\nDas weißt du bereits über den Nutzer:\n- " + "\n- ".join(facts[:30])
     messages = [{"role": "system", "content": system}] + memory.recent_history() + [{"role": "user", "content": text}]
     payload = {"model": config.LLM_MODEL, "messages": messages, "stream": False,
-               "max_tokens": config.LLM_MAX_TOKENS,
-               # Ollama: Modell 30 min resident halten – naechster Befehl
-               # antwortet in ~1s statt 30s Kaltstart
-               "keep_alive": "30m"}
-    # Qwen3.8-27B (vLLM): Thinking aus = 2-4s statt ~26s. Der Antworttext
-    # landet dann in reasoning_content statt content -> beide abfragen.
-    if not config.LLM_ENABLE_THINKING:
-        payload["chat_template_kwargs"] = {"enable_thinking": False}
+               "max_tokens": config.LLM_MAX_TOKENS}
+    if not tools:
+        # vLLM/Ollama-Felder – ein Agent-Endpunkt (Gateway) erwartet nur
+        # Standard-OpenAI-Felder.
+        # Ollama: Modell 30 min resident halten – naechster Befehl
+        # antwortet in ~1s statt 30s Kaltstart
+        payload["keep_alive"] = "30m"
+        # Qwen3.8-27B (vLLM): Thinking aus = 2-4s statt ~26s. Der Antworttext
+        # landet dann in reasoning_content statt content -> beide abfragen.
+        if not config.LLM_ENABLE_THINKING:
+            payload["chat_template_kwargs"] = {"enable_thinking": False}
 
     def _extract(d):
         m = d["choices"][0]["message"]
