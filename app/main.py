@@ -125,12 +125,14 @@ class Pipeline:
             if pcm is None:
                 self.ev(f"Follow-up: {config.FOLLOWUP_SEC:.0f} s Stille – "
                         "Codewort wieder fällig")
+                tones.play("end")       # tiefes Signal: ich hör nicht mehr zu
                 return
             rounds += 1
             self.stats["followups"] += 1
             self.state = "recording"
             self._respond(pcm)
         self.ev(f"Follow-up: nach {rounds} Runden beendet")
+        tones.play("end")               # tiefes Signal: Follow-up-Pause zu Ende
 
     def speak(self, answer):
         wav = tts.synthesize(answer)
