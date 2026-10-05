@@ -28,9 +28,24 @@ Debug-UI (`http://<pi>:8770/`).
 
 ## Deployment (Pi)
 
+Auf dem Pi (Docker 20.10 ohne Compose) mit `docker run` — wichtig:
+`/dev/fb1` durchreichen und die video-Gruppe (GID 44) hinzufügen:
+
 ```bash
 cd /home/pi/voice-satellite
-docker compose up -d --build
+sudo docker build -t voice-satellite:0.1.0 .
+sudo docker rm -f voice-satellite
+sudo docker run -d --name voice-satellite --restart unless-stopped \
+  --device /dev/snd --device /dev/fb1 \
+  --group-add audio --group-add 44 \
+  -p 8770:8770 -v voice-satellite-data:/data --env-file .env \
+  voice-satellite:0.1.0
+```
+
+Wo Compose verfügbar ist, genügt:
+
+```bash
+docker compose up -d --build    # compose-Datei enthält /dev/fb1 + group_add 29/44
 ```
 
 Voraussetzungen: `.env` (siehe `.env.example`; AccessKeys nur dort, nie
