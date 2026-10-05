@@ -130,10 +130,16 @@ class Pipeline:
             self._fail("TTS lieferte kein Audio")
             return
         self.state = "speaking"
-        self.mic.restart()          # nichts Aufgestautes (inkl. eigener Stimme) lesen
         try:
             audio.play_wav(wav)
         finally:
+            # Mic-ECHO erst NACH dem fertigen Sprechen verwerfen.
+            # Bisher lag mic.restart() VOR play_wav: die Pipe füllte sich
+            # während der Wiedergabe mit der eigenen TTS-Stimme, und die
+            # Follow-up-Aufnahme las sie sofort als neue Sprache – der Agent
+            # hörte sich selbst und antwortete zu früh. Erst wenn play_wav()
+            # zurück ist (Lautsprecher still), Stream leeren und lauschen.
+            self.mic.restart()
             self.vad.reset()         # Geräuschuntergrenze neu lernen
             self.state = "wake"
 
