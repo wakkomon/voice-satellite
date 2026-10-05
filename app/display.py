@@ -97,9 +97,10 @@ _G.update({
 })
 
 GLYPH_W, GLYPH_H = 5, 7
-CELL_W, CELL_H = GLYPH_W + 1, GLYPH_H + 2   # 1 px seitlich, 2 px vertikal
+SCALE = config.FB_FONT_SCALE               # 1 = klein, 2 = doppelt (Default)
+CELL_W, CELL_H = (GLYPH_W + 1) * SCALE, (GLYPH_H + 2) * SCALE
 MARGIN = 4
-HEADER_H = 20                                # Kopfzeile inkl. Trennlinie
+HEADER_H = 20 * SCALE                      # Kopfzeile inkl. Trennlinie
 PAGE_SEC = config.FB_PAGE_SEC                    # Auto-Blätterrhythmus
 
 
@@ -247,7 +248,8 @@ class Display:
                     cur = w
             if cur:
                 lines.append(cur)
-        body_rows = max(1, (self._h - HEADER_H - MARGIN) // CELL_H)
+        body_rows = max(1, (self._h - HEADER_H - MARGIN
+                            - GLYPH_H * SCALE - 2) // CELL_H)
         pages = [lines[i:i + body_rows] for i in range(0, max(len(lines), 1),
                                                     body_rows)]
         return pages, heading
@@ -284,7 +286,7 @@ class Display:
     def _pager(self, idx: int, total: int):
         s = f"{idx + 1}/{total}"
         x = self._w - MARGIN - len(s) * CELL_W
-        y = self._h - GLYPH_H - 2
+        y = self._h - GLYPH_H * SCALE - 2
         for ch in s:
             self._glyph(ch, x, y, COL_DIM)
             x += CELL_W
@@ -297,13 +299,13 @@ class Display:
 
     def _glyph(self, ch: str, x: int, y: int, color: bytes):
         g = _G.get(ch)
-        if g is None or x + GLYPH_W > self._w or y + GLYPH_H > self._h:
+        if g is None or x + GLYPH_W * SCALE > self._w or y + GLYPH_H * SCALE > self._h:
             return
         for ry, bits in enumerate(g):
             for rx in range(GLYPH_W):
                 if bits & (1 << (GLYPH_W - 1 - rx)):
-                    off = ((y + ry) * self._w + x + rx) * 2
-                    self._buf[off:off + 2] = color
+                    self._fill(x + rx * SCALE, y + ry * SCALE,
+                               SCALE, SCALE, color)
 
 
 # ── Modul-Fassade (von main.py genutzt) ───────────────────────
