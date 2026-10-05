@@ -82,7 +82,7 @@ class Handler(BaseHTTPRequestHandler):
             # Kontext (oder Echo) in der Sprachantwort auftauchen.
             answer, kind, _ok = router.handle(text, channel="web")
             dt = time.time() - t0
-            self._ev(f"Web-Intent {dt:.1f}s ({kind}): {answer[:80]}")
+            self._ev(f"Web-Intent {dt:.1f}s ({kind}): {answer}")
             return self._send(200, {"answer": answer, "route": kind})
         if self.path == "/tone":
             # Alarm-/Klingelton: {"tone": "alarm|wake|end|boot|error",

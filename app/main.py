@@ -14,6 +14,7 @@ Zwei Erweiterungen laufen hier zusammen:
 """
 import logging
 import os
+import re
 import signal
 import sys
 import time
@@ -21,6 +22,20 @@ import time
 from . import audio, config, display, memory, router, stt, tones, tts, wake, web
 
 log = logging.getLogger("satellite")
+
+# Kurze Abschluesse: danach ist das Gespräech zu – kein Follow-up-
+# Listening, direkt zurück zum Wake-Word.
+_ACK_WORDS = {"danke", "danke dir", "danke schön", "danke schoen",
+              "ok", "okay", "okey", "alles klar", "gut", "sehr gut",
+              "genau", "super", "perfekt"}
+
+
+def _is_ack(text):
+    """'Danke' & aehnliches als gesprochene Eingabe erkennen (komplett
+    normalisiert, ohne Satzzeichen). Nur exakte Kurz-Abschluesse –
+    'Danke, mach noch X' ist KEIN Abschluss."""
+    t = re.sub(r"[^\wäöüß]+", " ", (text or "").lower())
+    return re.sub(r"\s+", " ", t).strip() in _ACK_WORDS
 
 
 class Pipeline:
@@ -76,7 +91,7 @@ class Pipeline:
         tones.play("wake")          # hohes Signal: Codewort erkannt, Aufnahme an
         try:
             pcm = self.rec.capture()
-            if self._respond(pcm):
+            if self._respond(pcm) is True:
                 if config.FOLLOWUP:
                     self._followup()
         finally:
@@ -84,8 +99,10 @@ class Pipeline:
                 self._to_wake()
 
     def _respond(self, pcm):
-        """Audio -> STT -> Router -> TTS -> Display. True, wenn eine Antwort
-        gesprochen wurde (Follow-up-Bedingung)."""
+        """Audio -> STT -> Router -> TTS -> Display.
+        True, wenn eine Antwort gesprochen wurde (Follow-up offen);
+        "ack" bei kurzen Abschlüssen ("Danke") – Session zu, kein
+        Follow-up, direkt zurück zum Wake-Word; sonst False."""
         if pcm is None:
             tones.play("error")     # tiefes Signal: keine Sprache erkannt
             self._fail("Keine Sprache erkannt")
@@ -100,6 +117,13 @@ class Pipeline:
             return False
         log.info("STT erkannt: %s", text)
         self.ev(f"STT: {text[:80]}")
+        if _is_ack(text):
+            # "Danke" & aehnliches: Abschlusston, Session zu – nicht
+            # weiter zuhören, direkt auf Wake-Word warten.
+            log.info("Abschluss: %r – zurück zum Wake-Word", text)
+            self.ev(f"Abschluss: {text[:40]} – zurück zum Wake-Word")
+            tones.play("end")
+            return "ack"
         self.state = "processing"
         display.show_text("Frage", text)
         t0 = time.time()
@@ -107,7 +131,7 @@ class Pipeline:
         self.stats["commands" if kind == "smarthome" else "llm"] += 1
         dt = time.time() - t0
         log.info("Antwort (%s, %.1fs): %s", kind, dt, answer[:160])
-        self.ev(f"{kind} {dt:.1f}s -> {answer[:80]}")
+        self.ev(f"{kind} {dt:.1f}s -> {answer}")
         if not llm_ok:
             tones.play("error")   # tiefes Signal: LLM-Ausfall/leere Antwort
             self._fail("LLM-Fehler – Fehlerton abgespielt")
@@ -140,7 +164,11 @@ class Pipeline:
             rounds += 1
             self.stats["followups"] += 1
             self.state = "recording"
-            self._respond(pcm)
+            if self._respond(pcm) == "ack":
+                # "Danke" & aehnliches: Session zu – kein "ich hoere zu"-
+                # Ton, kein erneutes Lauschen, zurück zum Wake-Word.
+                self.ev("Abschluss erkannt – Session beendet")
+                return
         self.ev(f"Follow-up: nach {rounds} Runden beendet")
         tones.play("end")               # tiefes Signal: Follow-up-Pause zu Ende
 
