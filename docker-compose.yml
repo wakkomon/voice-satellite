@@ -5,11 +5,13 @@ services:
     image: voice-satellite:0.1.0
     container_name: voice-satellite
     restart: unless-stopped
-    # Kein privileged! Nur das Audio-Device durchreichen.
+    # Kein privileged! Nur Audio- + Framebuffer-Device durchreichen.
     devices:
       - /dev/snd:/dev/snd
+      - /dev/fb1:/dev/fb1     # Display (480x320, Text-Ausgabe der Antworten)
     group_add:
-      - audio
+      - "29"                    # audio (GID auf dem Pi)
+      - "44"                    # video  (/dev/fb1 gehoert root:video)
     env_file:
       - .env              # Secrets & API-URLs lives on the Pi, never in the image
     environment:
@@ -18,6 +20,10 @@ services:
       - WAKE_SENS=${WAKE_SENS:-0.5}
       - VAD_MODE=${VAD_MODE:-energy}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - FB_DEVICE=${FB_DEVICE:-/dev/fb1}
+      - FOLLOWUP=${FOLLOWUP:-1}
+      - FOLLOWUP_SEC=${FOLLOWUP_SEC:-3.0}
+      - WAKE_PPN=${WAKE_PPN:-/app/wake/computer_raspberry-pi.ppn}
     volumes:
       - voice-satellite-data:/data   # gleichnamiges Volume wie docker run
     ports:

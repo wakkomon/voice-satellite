@@ -21,7 +21,8 @@ COPY asound.conf /etc/asound.conf
 # Datenverzeichnis (SQLite-Gedächtnis) – Volume in der compose-Datei
 RUN mkdir -p /data
 
-# Läuft nicht privilegiert; braucht nur /dev/snd (via compose devices + audio-Gruppe)
+# Läuft nicht privilegiert; braucht /dev/snd + /dev/fb1
+# (via compose devices + audio-/video-Gruppe; video = GID 44 auf dem Pi)
 # (Gruppe heisst 'sat', nicht 'voice' – die Basis-Debian hat bereits eine voice-Gruppe)
 RUN useradd -m -u 1000 -G audio sat && chown -R sat /app /data
 USER sat

@@ -160,11 +160,23 @@ class Recorder:
         """Wake-Rest verwerfen, dann Sprache bis Stille-Ende sammeln. -> pcm|None."""
         if not self._skip_wake_tail():
             return None
+        return self._record(allow_wait=0.0)
+
+    def capture_followup(self, wait_sec):
+        """Follow-up-Modus: OHNE Wake-Word lauschen, bis Sprache kommt oder
+        wait_sec Stille vergehen (FOLLOWUP_SEC). -> pcm | None."""
+        return self._record(allow_wait=wait_sec)
+
+    def _record(self, allow_wait):
+        """Gemeinsames Herzstück: Sprache einsammeln bis Stille-Ende.
+        allow_wait: wie lange vor dem ersten Sprach-Frame ohne Sprache
+        gewartet wird (0 = wie bisher; Folgefrage wartet FOLLOWUP_SEC)."""
         preroll_len = max(1, int(config.PREROLL_SEC / self.frame_sec))
         preroll = collections.deque(maxlen=preroll_len)
         chunks = []
         started = False
         silence = 0.0
+        waited = 0.0
         total = 0.0
         while True:
             frame = self.mic.read()
@@ -180,12 +192,17 @@ class Recorder:
             else:
                 silence += self.frame_sec
                 if not started:
+                    waited += self.frame_sec
                     preroll.append(frame)
+                    if allow_wait and waited >= allow_wait:
+                        return None          # keine Folgefrage -> Follow-up zu
+                    if not allow_wait and waited >= config.MAX_REC_SEC:
+                        break                # Nach dem Wake-Word nichts gesagt
             if started:
                 chunks.append(frame)
             if started and silence >= config.SILENCE_SEC:
                 break
-            if total >= config.MAX_REC_SEC:
+            if started and total >= config.MAX_REC_SEC:
                 break
         if not started:
             return None
