@@ -18,16 +18,35 @@ _lock = threading.Lock()
 
 def _conn():
     con = sqlite3.connect(config.MEMORY_DB)
-    con.execute("CREATE TABLE IF NOT EXISTS history (ts INTEGER, role TEXT, content TEXT)")
+    con.execute("CREATE TABLE IF NOT EXISTS history "
+                "(ts INTEGER, role TEXT, content TEXT, channel TEXT DEFAULT 'voice')")
     con.execute("CREATE TABLE IF NOT EXISTS facts  (ts INTEGER, fact TEXT UNIQUE)")
+    try:
+        # Altes Schema ohne channel-Spalte: Migration + einmaliges Leeren der
+        # Kurzzeithistorie. Alte Webui-Eingaben sind nicht nachträglich von
+        # echten Sprachwechseln zu trennen und würden sonst weiter in den
+        # Voice-Prompt sickern (genau der Bug, den der channel fixes).
+        con.execute("ALTER TABLE history ADD COLUMN channel TEXT DEFAULT 'voice'")
+        con.execute("DELETE FROM history")
+        con.commit()
+    except sqlite3.OperationalError:
+        pass  # Spalte existiert bereits
     return con
 
 
-def add_exchange(user_msg: str, assistant_msg: str):
+def add_exchange(user_msg: str, assistant_msg: str, channel: str = "voice"):
+    """Ein Frage-Antwort-Paar in den Kurzzeitspeicher eines Kanals.
+
+    'voice' = Wake-Word-Pipeline, 'web' = Webui-Texteingabe (/intent).
+    Die Kanäle sind getrennt: was im Webui getippt wurde, hängt das
+    Voice-Gespräch nicht voll – und umgekehrt.
+    """
     with _lock, _conn() as con:
         now = int(__import__("time").time())
-        con.execute("INSERT INTO history VALUES (?,?,?)", (now, "user", user_msg))
-        con.execute("INSERT INTO history VALUES (?,?,?)", (now, "assistant", assistant_msg))
+        con.execute("INSERT INTO history VALUES (?,?,?,?)",
+                    (now, "user", user_msg, channel))
+        con.execute("INSERT INTO history VALUES (?,?,?,?)",
+                    (now, "assistant", assistant_msg, channel))
         con.execute(
             "DELETE FROM history WHERE rowid NOT IN "
             "(SELECT rowid FROM history ORDER BY ts DESC LIMIT ?)",
@@ -35,11 +54,16 @@ def add_exchange(user_msg: str, assistant_msg: str):
         )
 
 
-def recent_history():
+def recent_history(channel: str = "voice"):
+    """Kurzzeitgedaechtnis NUR dieses Kanals – getrennte Unterhaltungen.
+    rowid DESC bricht Gleichstand bei gleicher Sekunde (user/assistant
+    werden im selben Insert geschrieben) – sonst waere die Reihenfolge
+    im Prompt unspecified."""
     with _lock, _conn() as con:
         rows = con.execute(
-            "SELECT role, content FROM history ORDER BY ts DESC LIMIT ?",
-            (config.MAX_HISTORY * 2,),
+            "SELECT role, content FROM history WHERE channel=? "
+            "ORDER BY ts DESC, rowid DESC LIMIT ?",
+            (channel, config.MAX_HISTORY * 2),
         ).fetchall()
     return [{"role": r, "content": c} for r, c in reversed(rows)]
 

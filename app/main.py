@@ -31,6 +31,8 @@ class Pipeline:
         self.vad = audio.make_vad()
         self.rec = audio.Recorder(self.mic, self.vad, self.frame_bytes)
         self.state = "wake"           # wake | recording | processing | speaking | followup
+        self.web_audio_busy = False   # Web-TTS/Ton läuft -> Wake-Loop taub stellen
+        self._mic_restart_requested = False
         self.events = []              # Ring-Puffer für /status & SSE-Feed
         self.seq = 0                  # monotone Event-Nummer (SSE-Reconnect)
         self.stats = {"wakes": 0, "commands": 0, "llm": 0, "errors": 0,
@@ -55,6 +57,14 @@ class Pipeline:
         self.mic.restart()
         self.vad.reset()
         self.state = "wake"
+
+    def drain_mic(self):
+        """Vom Web-Audiothread aufgerufen (nach /speak, /tone): markiert den
+        Mic-Stream zum Leeren. Der Wake-Loop-Thread vollzieht den restart()
+        beim naechsten durchlauf – am arecord sitzt immer nur EIN Leser.
+        Ohne Leeren hoert der Satellit sein eigenes Web-TTS und Whisper
+        haengt es beim naechsten Wake an die gesprochene Frage an."""
+        self._mic_restart_requested = True
 
     # ── Zyklus nach dem Codewort ──────────────────────────────
     def conversation(self):
@@ -162,13 +172,24 @@ class Pipeline:
         display.init()              # /dev/fb1, falls vorhanden
         try:
             while True:
+                if self._mic_restart_requested:
+                    # Vom Web-Audiothread gesetzt (drain_mic) NACH dessen
+                    # Wiedergabe: arecord neu starten und die Pipe leeren.
+                    # Der Restart passiert immer hier im Pipeline-Thread –
+                    # am arecord sitzt genau EIN Leser (Audio-Modul-Doku).
+                    self._mic_restart_requested = False
+                    self.mic.restart()
+                    self.vad.reset()
                 frame = self.mic.read()
                 if frame is None:
                     log.warning("arecord beendet – Neustart in 2s")
                     time.sleep(2)
                     self.mic.restart()
                     continue
-                if self.state != "wake":
+                if self.state != "wake" or self.web_audio_busy:
+                    # Web-TTS/Ton aus dem Lautsprecher waehrend Wiedergabe:
+                    # Frames verwerfen, sonst feuert Porcupine/VAD auf dem
+                    # eigenen Echo und Whisper haengt es an die naechste Frage
                     continue
                 if (self.wake.feed(frame)
                         and time.time() - self._last_wake >= 2.0):
