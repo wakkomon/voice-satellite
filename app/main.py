@@ -106,13 +106,21 @@ class Pipeline:
         return True                 # Antwort wurde gesprochen -> Follow-up offen
 
     def _followup(self):
-        """Direkt weitersprechen, ohne Codewort. Erst wenn FOLLOWUP_SEC
-        Sekunden (Default: 3) kein Audio-Eingang kommt, zurück in die
-        Wake-Word-Bereitschaft. speak() hat mic/vad bereits gereinigt,
-        eigenes Echo triggert die Folgeaufnahme nicht."""
+        """Direkt weitersprechen, ohne Codewort. Vor jeder Folgeaufnahme
+        erklingt der "ich höre zu"-Ton (wie beim Wake-Word) – damit man
+        hören kann, wann wieder gelauscht wird. Der Ton-Echo wird danach aus
+        dem Mic-Stream gelehrt und der VAD zurückgesetzt, damit der Ton die
+        Folgeaufnahme nicht selbst triggert. Erst wenn FOLLOWUP_SEC Sekunden
+        (Default: 3) kein Audio-Eingang kommt, zurück in die
+        Wake-Word-Bereitschaft."""
         rounds = 0
         while rounds < config.FOLLOWUP_MAX:
             self.state = "followup"
+            self.ev("Follow-up: lausche auf Folgefrage")
+            display.show_text("Hört zu", "")
+            tones.play("wake")          # Signal: jetzt bitte weitersprechen
+            self.mic.restart()          # TON-ECHO aus dem Mic-Stream verwerfen
+            self.vad.reset()
             pcm = self.rec.capture_followup(config.FOLLOWUP_SEC)
             if pcm is None:
                 self.ev(f"Follow-up: {config.FOLLOWUP_SEC:.0f} s Stille – "
