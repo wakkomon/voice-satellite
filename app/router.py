@@ -117,12 +117,27 @@ def _value_for(text):
     return None
 
 
+def _is_state_question(t):
+    """Satz enthaelt BOTH ON- und OFF-Wort (z.B. 'licht an oder aus?') ->
+    das ist eine Frage, KEIN Schalten. Rueckgabe True = ans LLM
+    weitergeben, nichts schalten."""
+    on = any(re.search(rf"\b{w}\b", t) for w in DEFAULT_SYNONYMS["on"])
+    off = any(re.search(rf"\b{w}\b", t) for w in DEFAULT_SYNONYMS["off"])
+    return on and off
+
+
 def try_openhab(text):
     """-> Antwortstring wenn Befehl an openHAB ging, sonst None (-> LLM)."""
     match = _match_device(text)
     if not match:
         return None
     label, item = match
+    t = _normalize(text)
+    if _is_state_question(t):
+        # '... an oder aus?' – beides vorgehalten = Frage, kein Befehl.
+        # Nichts schalten, an das LLM weitergeben.
+        log.info("Zustandsfrage erkannt – ans LLM: %r", text[:60])
+        return None
     value = _value_for(text)
     if value is None:
         # Gerät erkannt aber kein Zustand -> Status abfragen
