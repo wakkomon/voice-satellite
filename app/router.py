@@ -147,8 +147,11 @@ def try_openhab(text):
         return None  # dann doch LLM fragen
 
 
-def ask_llm(text):
+def ask_llm(text, channel="voice"):
     """LLM-Fallback mit Kurz- + Langzeitgedächtnis.
+
+    channel: Kurzhistorie NUR dieses Kanals im Prompt – Webui-Tippsachen
+    contaminieren keine Sprachkonversation (und umgekehrt).
 
     Werkzeug-Modus (Hermes-Gateway): anderer Systemprompt, der dem Agenten
     erlaubt – und befoehlt! – Tatsachen per Kommando zu pruefen statt zu
@@ -158,7 +161,9 @@ def ask_llm(text):
     facts = memory.load_facts()
     if facts:
         system += "\n\nDas weißt du bereits über den Nutzer:\n- " + "\n- ".join(facts[:30])
-    messages = [{"role": "system", "content": system}] + memory.recent_history() + [{"role": "user", "content": text}]
+    messages = ([{"role": "system", "content": system}]
+                + memory.recent_history(channel)
+                + [{"role": "user", "content": text}])
     payload = {"model": config.LLM_MODEL, "messages": messages, "stream": False,
                "max_tokens": config.LLM_MAX_TOKENS}
     if not tools:
@@ -224,16 +229,19 @@ def warm_async():
     threading.Thread(target=_w, daemon=True).start()
 
 
-def handle(text):
+def handle(text, channel="voice"):
     """Haupt-Route: erst openHAB, sonst LLM.
+
+    channel 'voice'|'web' – steuert, in welchen Kurzzeitgedächtnis-Zweig
+    der Austausch geschrieben wird und aus welchem er Kontext liest.
 
     Gibt (antwort, 'smarthome'|'llm', llm_ok) zurück; llm_ok=False bei
     LLM-Ausfall/leerer Antwort (für den Fehlerton)."""
     oh = try_openhab(text)
     if oh is not None:
-        memory.add_exchange(text, oh)
+        memory.add_exchange(text, oh, channel)
         return oh, "smarthome", True
-    ans, ok = ask_llm(text)
-    memory.add_exchange(text, ans)
+    ans, ok = ask_llm(text, channel)
+    memory.add_exchange(text, ans, channel)
     memory.extract_facts_async(text, ans)
     return ans, "llm", ok

@@ -77,7 +77,10 @@ class Handler(BaseHTTPRequestHandler):
             if not text:
                 return self._send(400, {"error": "text fehlt"})
             t0 = time.time()
-            answer, kind, _ok = router.handle(text)
+            # channel='web': Kurzhistorie getrennt von der Sprachpipeline –
+            # ein getippter Webui-Text darf nicht beim naechsten Wake als
+            # Kontext (oder Echo) in der Sprachantwort auftauchen.
+            answer, kind, _ok = router.handle(text, channel="web")
             dt = time.time() - t0
             self._ev(f"Web-Intent {dt:.1f}s ({kind}): {answer[:80]}")
             return self._send(200, {"answer": answer, "route": kind})
@@ -147,19 +150,36 @@ class Handler(BaseHTTPRequestHandler):
 
     @staticmethod
     def _play(wav):
+        """Web-TTS abspielen; Wake-Loop bleibt waehrenddessen taub und der
+        Mic-Stream wird hinterher geleert (kein Echo ins naechste Wake)."""
+        p = _pipeline
+        if p:
+            p.web_audio_busy = True
         try:
             audio.play_wav(wav)
         except Exception as e:
             log.error("Speak-Fehler: %s", e)
+        finally:
+            if p:
+                p.drain_mic()          # Echo-Reste verwerfen
+                p.web_audio_busy = False
 
     @staticmethod
     def _play_tone(tone, repeat):
-        """Ton wiederholt abspielen; audio.play_wav blockiert bis aplay fertig."""
+        """Ton wiederholt abspielen; audio.play_wav blockiert bis aplay fertig.
+        Wie beim Web-TTS: Wake-Loop taub + Mic-Stream leer nach dem Ton."""
+        p = _pipeline
+        if p:
+            p.web_audio_busy = True
         try:
             for _ in range(repeat):
                 tones.play(tone)
         except Exception as e:
             log.error("Ton-Fehler: %s", e)
+        finally:
+            if p:
+                p.drain_mic()
+                p.web_audio_busy = False
 
     def log_message(self, fmt, *args):
         log.debug("http: " + fmt, *args)
