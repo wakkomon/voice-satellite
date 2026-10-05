@@ -169,6 +169,7 @@ FOLLOWUP_MAX    = int(_env("FOLLOWUP_MAX", "10"))  # Runden, dann Pflichtpause
 FB_DEVICE    = _env("FB_DEVICE", "/dev/fb1")
 FB_WIDTH     = int(_env("FB_WIDTH", "480"))
 FB_HEIGHT    = int(_env("FB_HEIGHT", "320"))
+FB_FONT_SCALE = int(_env("FB_FONT_SCALE", "2"))  # Schrift-Vergrößerungsfaktor
 FB_TIMEOUT   = float(_env("FB_TIMEOUT", "60"))   # s ohne neuen Inhalt, dann dunkel
 FB_PAGE_SEC  = float(_env("FB_PAGE_SEC", "5"))   # s pro Seite bei langen Antworten
 
