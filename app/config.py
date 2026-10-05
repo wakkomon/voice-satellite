@@ -41,6 +41,10 @@ SAMPLE_RATE     = 16000
 FRAME_SAMPLES   = 512          # = porcupine frame_length (32 ms)
 
 # ── Wake ───────────────────────────────────────────────────────
+# WAKE_PPN: Pfad zur .ppn-Datei – alle 15 Raspberry-Pi-Wake-Words liegen
+# unter /app/wake/ (computer, alexa, ...). Auswahl via ENV:
+#   WAKE_PPN=/app/wake/bumble_bee_raspberry-pi.ppn
+# WAKE_WORD ist nur Anzeige-Text (UI/Logs), kein technischer Bezug.
 WAKE_PPN        = _env("WAKE_PPN", "/app/wake/computer_raspberry-pi.ppn")
 WAKE_SENS       = float(_env("WAKE_SENS", "0.5"))
 WAKE_WORD       = _env("WAKE_WORD", "Computer")
@@ -147,6 +151,26 @@ TONE_END_HZ   = float(_env("TONE_END_HZ", "523"))    # tiefer: Spracheingabe zu 
 TONE_BOOT_HZ  = float(_env("TONE_BOOT_HZ", "660"))   # Boot-Ton 1: mittel (E5), beim Container-Start
 TONE_BOOT2_HZ = float(_env("TONE_BOOT2_HZ", "1320")) # Boot-Ton 2: eine Oktave hoeher – zweifaches Signal
 TONE_ERROR_HZ = float(_env("TONE_ERROR_HZ", "220"))  # Fehler:  tief  (A3), LLM-Ausfall/leere Antwort
+TONE_ALARM_HZ = float(_env("TONE_ALARM_HZ", "880"))  # Alarmton: hoch (A5)
+TONE_ALARM_HZ2 = float(_env("TONE_ALARM_HZ2", "440"))# Alarmton: tief (A4) – Wechselton
+TONE_ALARM_REPEATS = int(_env("TONE_ALARM_REPEATS", "3"))  # Sirenen-Halbzyklen
+
+# ── Follow-up-Modus ────────────────────────────────────────────
+# Nach einer Antwort ohne erneutes Wake-Word weitersprechen: Das Mikrofon
+# lauscht direkt weiter, erst nach FOLLOWUP_SEC Stille ohne Spracheingabe
+# gibt es auf und wartet wieder auf das Codewort.
+FOLLOWUP        = _env("FOLLOWUP", "1") in ("1", "true", "yes", "on")
+FOLLOWUP_SEC    = float(_env("FOLLOWUP_SEC", "3.0"))
+FOLLOWUP_MAX    = int(_env("FOLLOWUP_MAX", "10"))  # Runden, dann Pflichtpause
+
+# ── Framebuffer-Display (LLM-Antworten als Text) ───────────────
+# /dev/fb1 wird direkt beschrieben (16-Bit BGR565, wie fbi es rendert).
+# Ohne /dev/fb1 im Container bleibt das Display stumm – Feature optional.
+FB_DEVICE    = _env("FB_DEVICE", "/dev/fb1")
+FB_WIDTH     = int(_env("FB_WIDTH", "480"))
+FB_HEIGHT    = int(_env("FB_HEIGHT", "320"))
+FB_TIMEOUT   = float(_env("FB_TIMEOUT", "60"))   # s ohne neuen Inhalt, dann dunkel
+FB_PAGE_SEC  = float(_env("FB_PAGE_SEC", "5"))   # s pro Seite bei langen Antworten
 
 # ── Web ────────────────────────────────────────────────────────
 WEB_PORT        = int(_env("WEB_PORT", "8770"))

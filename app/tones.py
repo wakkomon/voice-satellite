@@ -58,6 +58,14 @@ def get(kind):
             pcm = _sine(config.TONE_ERROR_HZ, config.TONE_SEC, config.SAMPLE_RATE, config.TONE_GAIN)
         elif kind == "wake":
             pcm = _sine(config.TONE_WAKE_HZ, config.TONE_SEC, config.SAMPLE_RATE, config.TONE_GAIN)
+        elif kind == "alarm":
+            # Sirenen-Wechselton: hoch (880) und tief (440) im Wechsel,
+            # ALARM_REPEATS Halbzyklen – lautes, eindeutig anderes Signal.
+            step = config.TONE_SEC * 3
+            pcm = b""
+            for _ in range(config.TONE_ALARM_REPEATS):
+                pcm += _sine(config.TONE_ALARM_HZ, step, config.SAMPLE_RATE, config.TONE_GAIN)
+                pcm += _sine(config.TONE_ALARM_HZ2, step, config.SAMPLE_RATE, config.TONE_GAIN)
         else:
             pcm = _sine(config.TONE_END_HZ, config.TONE_SEC, config.SAMPLE_RATE, config.TONE_GAIN)
         _cache[kind] = _wav(pcm, config.SAMPLE_RATE)

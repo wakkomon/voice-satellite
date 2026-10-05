@@ -6,6 +6,7 @@ GET  /status        -> Zustand, Statistik, letzte Events
 GET  /events        -> SSE-Stream: alle Pipeline-Events in Echtzeit
 POST /speak         -> {"text": "..."}  (antwortet direkt per TTS)
 POST /intent        -> {"text": "..."}  (Router testen, ohne Mikrofon)
+POST /tone          -> {"tone": "alarm"}  (Alarm-/Klingelton abspielen)
 """
 import json
 import logging
@@ -14,7 +15,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import audio, config, router, tts
+from . import audio, config, router, tones, tts
 
 log = logging.getLogger("web")
 _pipeline = None
@@ -80,6 +81,21 @@ class Handler(BaseHTTPRequestHandler):
             dt = time.time() - t0
             self._ev(f"Web-Intent {dt:.1f}s ({kind}): {answer[:80]}")
             return self._send(200, {"answer": answer, "route": kind})
+        if self.path == "/tone":
+            # Alarm-/Klingelton: {"tone": "alarm|wake|end|boot|error",
+            #                     "repeat": 3?}  – repeat nur bei alarm.
+            tone = (data.get("tone") or data.get("kind") or "alarm").strip().lower()
+            if tone not in ("alarm", "wake", "end", "boot", "error"):
+                return self._send(400, {"error": f"unknown tone {tone!r} "
+                                                 "(alarm|wake|end|boot|error)"})
+            try:
+                repeat = max(1, min(20, int(data.get("repeat", 1))))
+            except (TypeError, ValueError):
+                return self._send(400, {"error": "repeat muss eine Zahl sein"})
+            self._ev(f"Web: Ton {tone!r} ({repeat}x)")
+            threading.Thread(target=self._play_tone, args=(tone, repeat),
+                             daemon=True).start()
+            return self._send(200, {"ok": True, "tone": tone, "repeat": repeat})
         self._send(404, {"error": "unknown path"})
 
     def _ev(self, msg):
@@ -135,6 +151,15 @@ class Handler(BaseHTTPRequestHandler):
             audio.play_wav(wav)
         except Exception as e:
             log.error("Speak-Fehler: %s", e)
+
+    @staticmethod
+    def _play_tone(tone, repeat):
+        """Ton wiederholt abspielen; audio.play_wav blockiert bis aplay fertig."""
+        try:
+            for _ in range(repeat):
+                tones.play(tone)
+        except Exception as e:
+            log.error("Ton-Fehler: %s", e)
 
     def log_message(self, fmt, *args):
         log.debug("http: " + fmt, *args)
