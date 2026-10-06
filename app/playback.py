@@ -261,10 +261,11 @@ class MusicPlayer:
                         pass
 
     def _spawn(self, item, skip_frames=0.0):
-        """curl [Stream] -> mpg123 -s -> aplay raw. Gibt Prozessliste."""
+        """curl [Stream] -> mpg123 -s -> aplay raw. Gibt Prozessliste zurück."""
         dec = ["mpg123", "-q", "-s", "-r", str(_SR), "-m"]
         if skip_frames:
             dec += ["-k", str(int(skip_frames))]
+        c = None
         if item.startswith(("http://", "https://")):
             dec += ["-"]
             curl = ["curl", "-sSL", "-m", "86400", "--no-progress-meter", item]
@@ -273,7 +274,6 @@ class MusicPlayer:
             dec_stdin = c.stdout
         else:
             dec += [item]
-            curl = None
             dec_stdin = None
         m = subprocess.Popen(dec, stdin=dec_stdin, stdout=subprocess.PIPE,
                              stderr=subprocess.DEVNULL, preexec_fn=_setsid)
@@ -284,7 +284,7 @@ class MusicPlayer:
              "-r", str(_SR), "-c", "2", "-f", "S16_LE", "-"],
             stdin=m.stdout, stderr=subprocess.DEVNULL, preexec_fn=_setsid)
         m.stdout.close()
-        procs = [x for x in (curl, m, a) if x]
+        procs = [x for x in (c, m, a) if x]
         with self._lock:
             if self._worker is threading.current_thread():
                 self._procs = procs
