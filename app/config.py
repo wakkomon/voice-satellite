@@ -120,7 +120,30 @@ AGENT_SYSTEM_PROMPT = _env(
     "flichtigen Fakten: fuehre IMMER zuerst das passende Kommando aus "
     "(z.B. `date`) und nenne das tatsaechliche Ergebnis – niemals raten oder "
     "aus dem Modellgedaechtnis antworten. Antworte auf Deutsch, per Du, kurz "
-    "und ohne Emojis. Maximal 3 Saetze – deine Antwort wird vorgelesen.",
+    "und ohne Emojis. Maximal 3 Saetze – deine Antwort wird vorgelesen.\n\n"
+    "MUSIK: Wenn der Nutzer Musik oder Radio hoeren will ('spiele ...', "
+    "'putz dir ... auf', 'mach Jazz an', Radio-Sender), suchst du die Quelle "
+    "im Fileserver und spielst sie per HTTP an den Pi (192.168.1.32:8770) "
+    "an:\n"
+    "  1. Mediathek: MP3-Ordner liegen unter /fileserver/mp3/<Genre>/<Künstler>/"
+    " (z.B. Jazz, Rock, Deutsch, Heavy Metal, Klassik). Mit `ls`/`find` den "
+    "passenden Titel oder Ordner suchen – bei Genres/Alben eine einzelne "
+    "Datei oder einen zufaellig gewaehlten Titel auswaehlen (z.B. mit `shuf`).\n"
+    "  2. Feste Playlists (Dateien) liegen in /fileserver/mp3/, z.B. "
+    "Carmix.m3u8, Anime.m3u8, Filmmusik.m3u8, Weihnachtsmusik.m3u8, "
+    "trancedance.m3u8, Disco/pop-mixes – der Nutzer nennt sie mit Namen.\n"
+    "  3. Radio: Sendernamen ueber die Radio-Browser-API auflösen, z.B. "
+    "  curl -s 'https://all.api.radio-browser.info/json/stations/search?"
+    "name=<Sender>&limit=1' | python3 -c \"import sys,json;print(json.load(sys.stdin)[0]['url_resolved'])\"\n"
+    "  4. Wiedergabe: curl -s -X POST http://192.168.1.32:8770/play "
+    "  -H 'Content-Type: application/json' "
+    "  -d '{\"path\": \"mp3/<Genre>/<Titel>.mp3\"}'        (Mediathek, relativ zu /fileserver/mp3)\n"
+    "  oder -d '{\"url\": \"<Stream-URL>\", \"title\": \"<Sender>\"}' (Radio)\n"
+    "  Stoppen: curl -s -X POST http://192.168.1.32:8770/stop\n"
+    "  Antworte KURZ, nachdem der Request durch ist (z.B. 'Klar, jetzt läuft "
+    "Jazz.'), und gib die Wiedergabe NICHT selbst ab – der Pi spielt ab.\n"
+    "  Falls der Pi nicht antwortet oder der Titel nicht auffindbar ist, "
+    "sag das kurz.",
 )
 
 # ── Gedächtnis ─────────────────────────────────────────────────
@@ -172,6 +195,13 @@ FB_HEIGHT    = int(_env("FB_HEIGHT", "320"))
 FB_FONT_SCALE = int(_env("FB_FONT_SCALE", "2"))  # Schrift-Vergrößerungsfaktor
 FB_TIMEOUT   = float(_env("FB_TIMEOUT", "60"))   # s ohne neuen Inhalt, dann dunkel
 FB_PAGE_SEC  = float(_env("FB_PAGE_SEC", "5"))   # s pro Seite bei langen Antworten
+
+# ── Musik-Player (mpg123: Dateien vom SMB-Share + Radio-Streams) ──
+# MUSIC_ROOT: read-only Bind-Mount des Fileserver-SMB-Shares in den
+# Container (z.B. -v /media/private:/m). Relative Pfade in /play beziehen
+# sich auf diesen Ordner. Ohne Mount (Tests auf dem Desktop) leer ->
+# /play meldet 'Musikordner nicht erreichbar'.
+MUSIC_ROOT      = _env("MUSIC_ROOT", "/m")
 
 # ── Web ────────────────────────────────────────────────────────
 WEB_PORT        = int(_env("WEB_PORT", "8770"))

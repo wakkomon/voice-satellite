@@ -2,8 +2,11 @@ FROM python:3.11-slim
 
 # arecord/aplay + ALSA-Libs (USB-Mic & Headphone-Jack).
 # alsa-utils zieht libasound2 (trixie: libasound2t64) automatisch nach.
+# mpg123 dekodiert MP3 (Mediathek + Radio-Streams) fuer den Musik-Player.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         alsa-utils \
+        mpg123 \
+        curl \
         && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
