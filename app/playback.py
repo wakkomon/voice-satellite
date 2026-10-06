@@ -91,18 +91,31 @@ class MusicPlayer:
         target = self._safe_join(root, relpath)
         if target is None:
             return "Pfad liegt nicht im Musikordner."
-        if not os.path.isfile(target):
-            return "Nicht gefunden: " + relpath
-        if target.lower().endswith((".m3u8", ".m3u", ".pls")):
-            tracks = self._parse_playlist(target, root)
-            if not tracks:
-                return "Playliste leer oder nicht lesbar."
-            name = os.path.splitext(os.path.basename(target))[0]
-            self._arm(tracks, "playlist", f"Playliste {name}")
-        else:
-            self._arm([target], "file",
-                      os.path.splitext(os.path.basename(target))[0])
-        return None
+        if os.path.isfile(target):
+            if target.lower().endswith((".m3u8", ".m3u", ".pls")):
+                tracks = self._parse_playlist(target, root)
+                if not tracks:
+                    return "Playliste leer oder nicht lesbar."
+                name = os.path.splitext(os.path.basename(target))[0]
+                self._arm(tracks, "playlist", f"Playliste {name}")
+            else:
+                self._arm([target], "file",
+                          os.path.splitext(os.path.basename(target))[0])
+            return None
+        if os.path.isdir(target):
+            # Ordner: alle Audio-Dateien alphabetisch hintereinander
+            exts = {".mp3", ".m4a", ".ogg", ".oga", ".flac", ".opus", ".wav"}
+            found = []
+            for dirpath, dirnames, filenames in os.walk(target):
+                dirnames.sort()
+                for fn in sorted(filenames):
+                    if os.path.splitext(fn)[1].lower() in exts:
+                        found.append(os.path.join(dirpath, fn))
+            if not found:
+                return "Keine Audio-Dateien in: " + relpath
+            self._arm(found, "dir", os.path.basename(target.rstrip("/")))
+            return None
+        return "Nicht gefunden: " + relpath
 
     def play_url(self, url, title=""):
         """Radio-Stream (http/https). Fehlerstring oder None."""
@@ -356,18 +369,25 @@ class MusicPlayer:
             self._item_t0 = time.monotonic()
             rc = procs[-1].wait()
             self._kill_procs(procs)     # nur EIGENEN Baum (mpg123/curl)
+            # pause() toetet zuerst mpg123; aplay sieht dann Pipe-EOF und
+            # beendet sich mit rc=0, BEVOR sein SIGTERM ankommt. Der rc von
+            # aplay ist also NICHT zuverlässig – massgeblich ist, ob irgendein
+            # Prozess im Baum durch ein Signal starb (Unterbrechung).
+            killed = any((p.returncode or 0) < 0 for p in procs)
             if not self._me():
                 return                  # ersetzt: neuer Worker owns _procs
             with self._lock:
                 self._procs = []
             if self._stop_evt.is_set():
                 return
-            if self._hold > 0 and rc < 0:
-                # pause() hat den Baum getötet (SIGTERM) -> dasselbe Stueck
-                # an der gemerkten Position (kein idx++, kein 'beendet').
-                # rc >= 0 bei hold: Stueck lief von selbst zu Ende -> unten
-                # normal weiterzählen, sonst würde es nach resume wieder von
-                # vorn anfangen.
+            if self._hold > 0 or killed:
+                # pause() hat den Baum getoetet -> dasselbe Stueck an der
+                # gemerkten Position weiter (kein idx++, kein 'beendet').
+                # hold kann schon wieder 0 sein (resume kam vor diesem Check)
+                # -> continue faellt dann direkt durch die Warte-Schleife.
+                # Kein Signal-Tod: Stueck lief von selbst zu Ende -> unten
+                # normal weiterzaehlen, sonst wuerde es wieder von vorn
+                # anfangen.
                 continue
             self._idx += 1
             self._item_t0 = 0.0
