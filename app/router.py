@@ -11,7 +11,7 @@ import logging
 import re
 import threading
 
-from . import config, http, memory
+from . import config, http, memory, playback
 
 log = logging.getLogger("router")
 
@@ -244,14 +244,39 @@ def warm_async():
     threading.Thread(target=_w, daemon=True).start()
 
 
+def try_music_stop(text):
+    """'Stopp', 'Musik aus', 'Radio aus' ... -> Wiedergabe direkt beenden,
+    ohne LLM-Runde (schnell + deterministisch). None, wenn es kein
+    Stop-Kommando ist."""
+    t = _normalize(text)
+    stop_words = ("stopp", "stop", "pause", "pausiere", "genug",
+                  "ausreichend", "lass gut", "lass es gut")
+    has_stop = any(re.search(rf"\b{w}\b", t) for w in stop_words)
+    if not has_stop:
+        return None
+    # '... aus' gilt nur fuer Musik/Radio, nicht fuer Lampen:
+    if not any(w in t for w in ("musik", "radio", "wiedergabe",
+                                "spielen", "laeuft", "song")):
+        if not re.fullmatch(r"(bitte\s+)?stopp(.*?)\?", t):
+            return None
+    stopped = playback.player.stop()
+    if stopped:
+        return "Musik gestoppt."
+    return None  # nichts lief -> evtl. doch LLM (z.B. 'Stopp, sag mal ...')
+
+
 def handle(text, channel="voice"):
-    """Haupt-Route: erst openHAB, sonst LLM.
+    """Haupt-Route: erst Musik-Stop, dann openHAB, sonst LLM.
 
     channel 'voice'|'web' – steuert, in welchen Kurzzeitgedächtnis-Zweig
     der Austausch geschrieben wird und aus welchem er Kontext liest.
 
     Gibt (antwort, 'smarthome'|'llm', llm_ok) zurück; llm_ok=False bei
     LLM-Ausfall/leerer Antwort (für den Fehlerton)."""
+    ms = try_music_stop(text)
+    if ms is not None:
+        memory.add_exchange(text, ms, channel)
+        return ms, "smarthome", True
     oh = try_openhab(text)
     if oh is not None:
         memory.add_exchange(text, oh, channel)

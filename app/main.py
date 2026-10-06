@@ -19,7 +19,7 @@ import signal
 import sys
 import time
 
-from . import audio, config, display, memory, router, stt, tones, tts, wake, web
+from . import audio, config, display, memory, playback, router, stt, tones, tts, wake, web
 
 log = logging.getLogger("satellite")
 
@@ -42,6 +42,7 @@ class Pipeline:
     def __init__(self):
         self.wake = wake.WakeWord(config.WAKE_PPN, config.WAKE_SENS)
         self.frame_bytes = self.wake.frame_length * 2
+        playback.player.set_on_event(self._on_music_event)
         self.mic = audio.MicStream(self.frame_bytes)
         self.vad = audio.make_vad()
         self.rec = audio.Recorder(self.mic, self.vad, self.frame_bytes)
@@ -81,11 +82,24 @@ class Pipeline:
         haengt es beim naechsten Wake an die gesprochene Frage an."""
         self._mic_restart_requested = True
 
+    def _on_music_event(self, msg):
+        """Musik-Player-Events (aus dem Playback-Thread) in den Feed +
+        Display bringen: Trackwechsel/Stop erscheinen live, ohne dass der
+        Wake-Loop-Thread beteiligt ist."""
+        self.ev(msg)
+        if msg.startswith("Laueft:") or msg.startswith("Radio:"):
+            title = msg.split(":", 1)[1].strip()
+            display.show_text("Musik", title)
+
     # ── Zyklus nach dem Codewort ──────────────────────────────
     def conversation(self):
         """Ein kompletter Frage-Antwort-Zyklus inkl. optionaler
-        Follow-up-Session. Stellt am Ende sicher, dass der Zustand zurück
-        auf 'wake' geht – sonst wird der Satellit taub."""
+        Follow-up-Session. Hält das Geraet über die ganze Unterhaltung
+        (Wake-Ton bis zur letzten Antwort): Musik macht via Hold-Counter
+        Platz und setzt nach resume() an der gemerkten Position ein.
+        Stellt am Ende sicher, dass der Zustand zurück auf 'wake' geht –
+        sonst wird der Satellit taub."""
+        playback.player.pause()
         self.state = "recording"
         self.stats["wakes"] += 1
         tones.play("wake")          # hohes Signal: Codewort erkannt, Aufnahme an
@@ -97,6 +111,7 @@ class Pipeline:
         finally:
             if self.state != "wake":
                 self._to_wake()
+            playback.player.resume()
 
     def _respond(self, pcm):
         """Audio -> STT -> Router -> TTS -> Display.

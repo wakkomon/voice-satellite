@@ -15,7 +15,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import audio, config, router, tones, tts
+from . import audio, config, playback, router, tones, tts
 
 log = logging.getLogger("web")
 _pipeline = None
@@ -57,6 +57,7 @@ class Handler(BaseHTTPRequestHandler):
                 "stats": p.stats,
                 "uptime_s": round(time.time() - p.stats["started"]),
                 "events": p.events[-20:],
+                "music": playback.player.status(),
             })
         else:
             self._send(404, {"error": "unknown path"})
@@ -99,6 +100,24 @@ class Handler(BaseHTTPRequestHandler):
             threading.Thread(target=self._play_tone, args=(tone, repeat),
                              daemon=True).start()
             return self._send(200, {"ok": True, "tone": tone, "repeat": repeat})
+        if self.path == "/play":
+            # Musik: {"path": "mp3/..."} (relativ zu MUSIC_ROOT, Datei oder
+            # .m3u8-Playliste) ODER {"url": "http(s)://..."} (Radio-Stream).
+            rel = (data.get("path") or "").strip()
+            url = (data.get("url") or "").strip()
+            if not rel and not url:
+                return self._send(400, {"error": "path oder url fehlt"})
+            if rel:
+                err = playback.player.play_path(rel)
+            else:
+                err = playback.player.play_url(url, data.get("title") or "")
+            if err:
+                self._ev(f"Web-Play fehlgeschlagen: {err}")
+                return self._send(404, {"error": err})
+            return self._send(200, {"ok": True, **playback.player.status()})
+        if self.path == "/stop":
+            playback.player.stop()
+            return self._send(200, {"ok": True})
         self._send(404, {"error": "unknown path"})
 
     def _ev(self, msg):
@@ -151,15 +170,19 @@ class Handler(BaseHTTPRequestHandler):
     @staticmethod
     def _play(wav):
         """Web-TTS abspielen; Wake-Loop bleibt waehrenddessen taub und der
-        Mic-Stream wird hinterher geleert (kein Echo ins naechste Wake)."""
+        Mic-Stream wird hinterher geleert (kein Echo ins naechste Wake).
+        Musik macht ueber den Player-Hold Platz, sonst schreibt aplay auf
+        ein bereits belegtes Geraet."""
         p = _pipeline
         if p:
             p.web_audio_busy = True
+        playback.player.pause()
         try:
             audio.play_wav(wav)
         except Exception as e:
             log.error("Speak-Fehler: %s", e)
         finally:
+            playback.player.resume()
             if p:
                 p.drain_mic()          # Echo-Reste verwerfen
                 p.web_audio_busy = False
@@ -167,16 +190,19 @@ class Handler(BaseHTTPRequestHandler):
     @staticmethod
     def _play_tone(tone, repeat):
         """Ton wiederholt abspielen; audio.play_wav blockiert bis aplay fertig.
-        Wie beim Web-TTS: Wake-Loop taub + Mic-Stream leer nach dem Ton."""
+        Wie beim Web-TTS: Wake-Loop taub + Mic-Stream leer nach dem Ton +
+        Player-Hold, damit die Musik nicht mit schreibt."""
         p = _pipeline
         if p:
             p.web_audio_busy = True
+        playback.player.pause()
         try:
             for _ in range(repeat):
                 tones.play(tone)
         except Exception as e:
             log.error("Ton-Fehler: %s", e)
         finally:
+            playback.player.resume()
             if p:
                 p.drain_mic()
                 p.web_audio_busy = False
