@@ -405,7 +405,7 @@ class MusicPlayer:
                 self._procs = []
             if self._stop_evt.is_set():
                 return
-            if self._hold > 0 or killed:
+            if self._hold > 0 or self._web_hold > 0 or killed:
                 # pause() hat den Baum getoetet -> dasselbe Stueck an der
                 # gemerkten Position weiter (kein idx++, kein 'beendet').
                 # hold kann schon wieder 0 sein (resume kam vor diesem Check)
