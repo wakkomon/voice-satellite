@@ -1,2 +1,2 @@
 """Voice-Satellite – schlanker Voice-Assistent für den Pi 3 (Rhasspy-Ersatz)."""
-__version__ = "0.1.0"
+__version__ = "1.0.0"
