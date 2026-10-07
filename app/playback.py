@@ -55,6 +55,7 @@ class MusicPlayer:
         self._item_offset = 0.0          # Sek. im Stück, die schon liefen
         self._paused_elapsed = 0.0       # gemerkt bei pause()
         self._hold = 0                   # >0: Geraet gehoert TTS/Pipeline
+        self._web_hold = 0               # >0: Web-UI haelt die Wiedergabe an
 
     # ── Status ─────────────────────────────────────────────────
     def is_playing(self):
@@ -65,8 +66,11 @@ class MusicPlayer:
         return self._job is not None
 
     def status(self):
+        with self._lock:
+            paused = self._hold > 0 or self._web_hold > 0
         return {"playing": self.is_playing(),
                 "pending": self.has_pending() and not self.is_playing(),
+                "paused": paused,
                 "title": self._title, "source": self._source}
 
     def set_on_event(self, cb):
@@ -136,6 +140,7 @@ class MusicPlayer:
         self._paused_elapsed = 0.0
         self._hold = 0                  # sonst warte die neue Wiedergabe
                                        # ewig auf ein nie kommendes resume
+        self._web_hold = 0
         self._kill_procs()
         if was:
             self._ev("Musik gestoppt")
@@ -156,6 +161,25 @@ class MusicPlayer:
         with self._lock:
             self._hold = max(0, self._hold - 1)
             free = self._hold == 0
+            job = self._job
+        if free and job and not self._worker_alive():
+            self._start_worker()
+
+    def pause_web(self):
+        """Web-UI haelt die Wiedergabe an (eigener Zaeher, nicht der
+        Pipeline-Hold fuer Sprachausgabe). Position wird gemerkt."""
+        with self._lock:
+            self._web_hold += 1
+            self._paused_elapsed = self._elapsed_now() if self._procs else 0.0
+        self._kill_procs()
+        if self._job is not None:
+            self._ev(f"Wiedergabe pausiert (Web): {self._title or ''}")
+
+    def resume_web(self):
+        """Web-UI setzt die Wiedergabe fort (an der gemerkten Position)."""
+        with self._lock:
+            self._web_hold = max(0, self._web_hold - 1)
+            free = self._hold == 0 and self._web_hold == 0
             job = self._job
         if free and job and not self._worker_alive():
             self._start_worker()
@@ -281,7 +305,7 @@ class MusicPlayer:
             dec_stdin.close()
         a = subprocess.Popen(
             ["aplay", "-q", "-D", config.SPEAKER_DEVICE, "-t", "raw",
-             "-r", str(_SR), "-c", "2", "-f", "S16_LE", "-"],
+             "-r", str(_SR), "-c", "1", "-f", "S16_LE", "-"],
             stdin=m.stdout, stderr=subprocess.DEVNULL, preexec_fn=_setsid)
         m.stdout.close()
         procs = [x for x in (c, m, a) if x]
@@ -308,9 +332,10 @@ class MusicPlayer:
             items, source = job[0], job[1]
             if self._idx >= len(items):
                 break
-            # Auf freies Geraet warten (Pipeline/Web-TTS halten 'hold'):
+            # Auf freies Geraet warten (Pipeline/Web-TTS halten 'hold',
+            # Web-UI 'web_hold'):
             waiting = False
-            while self._hold > 0:
+            while self._hold > 0 or self._web_hold > 0:
                 if self._stop_evt.is_set() or not self._me():
                     return
                 if not waiting:

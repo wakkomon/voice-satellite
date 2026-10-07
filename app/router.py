@@ -10,6 +10,7 @@ Item-Cache (5 min) spart REST-Last und Latenz.
 import logging
 import re
 import threading
+from urllib.parse import quote
 
 from . import config, http, memory, playback
 
@@ -139,27 +140,34 @@ def try_openhab(text):
         log.info("Zustandsfrage erkannt – ans LLM: %r", text[:60])
         return None
     value = _value_for(text)
+    item_name = item.get("name") or ""
+    if not item_name:
+        log.warning("Item ohne Namen – nicht schaltbar: %r", item.get("label"))
+        return None
+    # Item-Name URL-encodiert: Namen mit '/' & Co. duerfen keine
+    # kaputten REST-Pfade bauen (openHAB antwortete sonst 'URI is null').
+    url = f"{config.OPENHAB_URL}/{quote(item_name, safe='')}"
     if value is None:
         # Gerät erkannt aber kein Zustand -> Status abfragen
         try:
-            st = http.get_text(f"{config.OPENHAB_URL}/{item['name']}/state",
+            st = http.get_text(f"{url}/state",
                                token=config.OPENHAB_TOKEN, timeout=10)
             st = {"ON": "an", "OFF": "aus"}.get(st, st)
             return f"{label} ist {st}."
         except Exception as e:
-            return f"{label}: Status nicht abrufbar ({e})."
+            log.error("openHAB-Status fehlgeschlagen: %s", e)
+            return "Bei der Verbindung zum Smarthome ist ein fehler aufgetreten."
     try:
-        ok = http.post_raw(f"{config.OPENHAB_URL}/{item['name']}", value,
-                           token=config.OPENHAB_TOKEN, timeout=10)
+        ok = http.post_raw(url, value, token=config.OPENHAB_TOKEN, timeout=10)
         if ok:
             if value in ("ON", "OFF"):
                 return f"{label} ist {'an' if value == 'ON' else 'aus'}."
-            unit = " Prozent" if re.search(r"prozent|%", _normalize(text)) else ""
+            unit = " Prozent" if re.search(r"prozent|%|prozent", _normalize(text)) else ""
             return f"{label} auf {value}{unit}."
         return f"{label}: Kommando fehlgeschlagen."
     except Exception as e:
         log.error("openHAB-Befehl fehlgeschlagen: %s", e)
-        return None  # dann doch LLM fragen
+        return "Bei der Verbindung zum Smarthome ist ein fehler aufgetreten."
 
 
 def ask_llm(text, channel="voice"):
@@ -254,9 +262,13 @@ def try_music_stop(text):
     has_stop = any(re.search(rf"\b{w}\b", t) for w in stop_words)
     if not has_stop:
         return None
-    # '... aus' gilt nur fuer Musik/Radio, nicht fuer Lampen:
-    if not any(w in t for w in ("musik", "radio", "wiedergabe",
-                                "spielen", "laeuft", "song")):
+    # '... aus' gilt nur fuer Musik/Radio, nicht fuer Lampen.
+    # Ein schlichtes 'Stop'/'Stopp' (ggf. 'bitte ...') stoppt immer –
+    # auch ohne Musik-Wort und ohne Fragezeichen.
+    bare_stop = re.fullmatch(r"(bitte\s+)?(stop|stopp)\s*[?!.]?\s*$", t)
+    if (not any(w in t for w in ("musik", "radio", "wiedergabe",
+                                 "spielen", "laeuft", "song"))
+            and not bare_stop):
         if not re.fullmatch(r"(bitte\s+)?stopp(.*?)\?", t):
             return None
     stopped = playback.player.stop()
