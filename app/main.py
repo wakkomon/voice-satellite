@@ -90,6 +90,12 @@ class Pipeline:
         if msg.startswith("Laueft:") or msg.startswith("Radio:"):
             title = msg.split(":", 1)[1].strip()
             display.show_text("Musik", title)
+        elif msg.startswith("Wiedergabe beendet"):
+            display.show_text("Musik", "Beendet")
+        elif msg.startswith("Wiedergabe fehlgeschlagen"):
+            display.show_text("Musik", "Fehler")
+        elif msg.startswith("Musik gestoppt"):
+            display.show_text("Musik", "Gestoppt")
 
     # ── Zyklus nach dem Codewort ──────────────────────────────
     def conversation(self):

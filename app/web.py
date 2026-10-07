@@ -118,6 +118,16 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/stop":
             playback.player.stop()
             return self._send(200, {"ok": True})
+        if self.path == "/pause":
+            # Web-UI-Pause: eigener Counter, haengt die Wiedergabe an der
+            # Position an (ohne die Sprachpipeline zu betreffen).
+            if not (playback.player.is_playing() or playback.player.has_pending()):
+                return self._send(200, {"ok": True, "paused": False})
+            playback.player.pause_web()
+            return self._send(200, {"ok": True, "paused": True})
+        if self.path == "/resume":
+            playback.player.resume_web()
+            return self._send(200, {"ok": True, **playback.player.status()})
         self._send(404, {"error": "unknown path"})
 
     def _ev(self, msg):
@@ -157,6 +167,7 @@ class Handler(BaseHTTPRequestHandler):
                         "stats": p.stats,
                         "uptime_s": round(time.time() - p.stats["started"]),
                         "events": p.events[-20:],
+                        "music": playback.player.status(),
                     }
                     self.wfile.write(f"id: {p.seq}\n".encode("utf-8"))
                     self.wfile.write(("data: "

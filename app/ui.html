@@ -44,6 +44,16 @@ button { padding:9px 14px; border-radius:8px; border:0; background:#2563eb;
 button:hover { background:#1d4ed8; }
 button:disabled { opacity:.5; cursor:default; }
 .res { margin-top:8px; font-size:13px; color:#9fb3c8; min-height:18px; }
+.music { margin-top:14px; background:#11151b; border:1px solid #232833;
+         border-radius:10px; padding:12px 14px; }
+.music .row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.music .title { font-size:14px; font-weight:600; flex:1; min-width:0;
+                overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.music .tag { font-size:11px; color:#8b93a1; text-transform:uppercase;
+              letter-spacing:.5px; }
+.music button { padding:7px 12px; font-size:13px; }
+.music button.stop { background:#b3372f; }
+.music button.stop:hover { background:#8f2b24; }
 @keyframes pulse { 50% { opacity:.45; } }
 </style>
 </head>
@@ -61,6 +71,15 @@ button:disabled { opacity:.5; cursor:default; }
   <div class="card"><div class="v" id="st-errors">0</div><div class="l">Fehler</div></div>
 </div>
 <main>
+  <div class="music">
+    <div class="row">
+      <span class="tag" id="m-state">Musik</span>
+      <span class="title" id="m-title">Nichts abspielt</span>
+      <button id="b-music-resume" style="display:none">Weiter</button>
+      <button id="b-music-pause" style="display:none">Pause</button>
+      <button id="b-music-stop" class="stop">Stopp</button>
+    </div>
+  </div>
   <ul class="feed" id="feed"><li class="empty" id="feed-empty">Noch keine Aktivität</li></ul>
   <div class="forms">
     <form id="f-speak">
@@ -123,7 +142,21 @@ function render(d) {
   setStat("st-commands", s.commands ?? 0);
   setStat("st-llm", s.llm ?? 0);
   setStat("st-errors", s.errors ?? 0);
+  renderMusic(d.music || {});
   (d.events || []).forEach(addEvent);
+}
+
+function renderMusic(m) {
+  const playing = !!m.playing, paused = !!m.paused;
+  const title = m.title || (m.source === "radio" ? "Radio" : null);
+  $("m-state").textContent = paused ? "Pausiert"
+    : playing ? (m.source === "radio" ? "Radio läuft" : "Läuft")
+    : m.pending ? "Gestartet" : "Musik";
+  $("m-title").textContent = title || (paused || playing ? "–" : "Nichts abspielt");
+  const active = playing || paused || m.pending;
+  $("b-music-stop").style.display = active ? "" : "none";
+  $("b-music-pause").style.display = playing && !paused ? "" : "none";
+  $("b-music-resume").style.display = (paused || m.pending) ? "" : "none";
 }
 
 function connect() {
@@ -165,6 +198,19 @@ $("f-intent").addEventListener("submit", ev => {
   const t = $("in-intent").value.trim();
   if (t) post("/intent", t, $("res-intent"), $("b-intent"));
 });
+
+async function musicBtn(path) {
+  try {
+    await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}"
+    });
+  } catch (e) { /* Zustand kommt per SSE von selbst */ }
+}
+$("b-music-stop").addEventListener("click", () => musicBtn("/stop"));
+$("b-music-pause").addEventListener("click", () => musicBtn("/pause"));
+$("b-music-resume").addEventListener("click", () => musicBtn("/resume"));
 </script>
 </body>
 </html>
