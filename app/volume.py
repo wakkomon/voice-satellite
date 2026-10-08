@@ -13,12 +13,13 @@ from . import config
 
 log = logging.getLogger("volume")
 
-MUTE_RE = re.compile(r"\[(\d+)%\]\s*(\[(on|off)\])?")
+MUTE_RE = re.compile(r"\[(\d+)%\](?:\s*\[-?[\d.]+dB\])?\s*(\[(on|off)\])?")
 
 
 def _parse(amix_out):
-    """'[80%]' -> (80, False); '[80%] [off]' -> (80, True).
-    amixer gibt [off] nur bei gemuetet aus; ohne Suffix = nicht gemuetet."""
+    """Amixer-Status -> (prozent, gemuetet) oder None.
+    echtes Format:  'Mono: Playback -3536 [63%] [-35.36dB] [off]'
+    das [off] steht NACH dem dB-Teil; ohne [off] = nicht gemuetet."""
     m = MUTE_RE.search(amix_out or "")
     if not m:
         return None
@@ -79,6 +80,9 @@ def set_volume(pct=None, muted=None):
         if muted is True:
             a.append("mute")
         elif muted is False:
+            a.append("unmute")
+        elif pct is not None:
+            # Neue Lautstärke bedeutet "das soll hörbar sein" -> entmuten.
             a.append("unmute")
         subprocess.run(a, capture_output=True, timeout=5)
     st = get()
