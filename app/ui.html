@@ -59,6 +59,12 @@ button:disabled { opacity:.5; cursor:default; }
 .pp svg { width:22px; height:22px; fill:#fff; }
 #b-music-stop { background:#b3372f; }
 #b-music-stop:hover { background:#8f2b24; }
+.vol-row { margin-top:10px; }
+input[type=range] { width:auto; flex:1; padding:0; margin:0;
+                    accent-color:#2563eb; }
+.vol-pct { font-size:13px; color:#e6e9ee; font-variant-numeric:tabular-nums;
+           min-width:52px; text-align:right; }
+.vol-pct.muted { color:#e8b34b; }
 @keyframes pulse { 50% { opacity:.45; } }
 </style>
 </head>
@@ -84,6 +90,11 @@ button:disabled { opacity:.5; cursor:default; }
         <svg viewBox="0 0 24 24"><path id="pp-icon" d="M7 4h3.5v16H7zM13.5 4H17v16h-3.5z"/></svg>
       </button>
       <button id="b-music-stop" class="stop">Stopp</button>
+    </div>
+    <div class="row vol-row">
+      <span class="tag">Lautstärke</span>
+      <input type="range" id="vol-slider" min="0" max="100" step="1" value="100">
+      <span class="vol-pct" id="vol-pct">100 %</span>
     </div>
   </div>
   <ul class="feed" id="feed"><li class="empty" id="feed-empty">Noch keine Aktivität</li></ul>
@@ -149,6 +160,7 @@ function render(d) {
   setStat("st-llm", s.llm ?? 0);
   setStat("st-errors", s.errors ?? 0);
   renderMusic(d.music || {});
+  renderVolume(d.volume);
   (d.events || []).forEach(addEvent);
 }
 
@@ -168,6 +180,16 @@ function renderMusic(m) {
     ? "M7 4h3.5v16H7zM13.5 4H17v16h-3.5z"   // Pause: zwei Balken
     : "M8 5v14l11-7z");                        // Play: Dreieck
   $("b-music-stop").style.display = active ? "" : "none";
+}
+
+let volBusy = false;
+function renderVolume(v) {
+  if (!v) return;
+  const s = $("vol-slider"), p = $("vol-pct");
+  if (!volBusy) s.value = v.volume;
+  s.disabled = false;
+  p.textContent = v.muted ? "stumm" : (v.volume + " %");
+  p.className = "vol-pct" + (v.muted ? " muted" : "");
 }
 
 function connect() {
@@ -223,6 +245,23 @@ $("b-music-stop").addEventListener("click", () => musicBtn("/stop"));
 $("b-music-toggle").addEventListener("click", ev => {
   // Pause-Symbol sichtbar -> Pause, Play-Symbol -> Weiter
   musicBtn(ev.target.closest("button").title === "Pause" ? "/pause" : "/resume");
+});
+// Lautstärkeregler: erst bei loslassen/loosen setzen (nicht beim Schieben)
+let volTimer = null;
+$("vol-slider").addEventListener("input", ev => {
+  volBusy = true;
+  const p = ev.target.value + " %";
+  $("vol-pct").textContent = p;
+  $("vol-pct").className = "vol-pct";
+  clearTimeout(volTimer);
+  volTimer = setTimeout(() => {
+    volBusy = false;
+    fetch("/volume", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ volume: Number(ev.target.value) })
+    }).catch(() => { /* Zustand kommt per SSE von selbst */ });
+  }, 400);
 });
 </script>
 </body>

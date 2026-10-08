@@ -12,7 +12,7 @@ import re
 import threading
 from urllib.parse import quote
 
-from . import config, http, memory, playback
+from . import config, http, memory, playback, volume
 
 log = logging.getLogger("router")
 
@@ -277,8 +277,52 @@ def try_music_stop(text):
     return None  # nichts lief -> evtl. doch LLM (z.B. 'Stopp, sag mal ...')
 
 
+def try_volume(text):
+    """'Lauter'/'Leiser' (±10) und 'Lautstärke [auf] 0-100[Prozent]' ->
+    amixer auf allen Karten (deterministisch, ohne LLM-Runde).
+    None, wenn es kein Lautstärke-Kommando ist."""
+    t = _normalize(text)
+    if re.search(r"\b(lauter|leiser)\b", t):
+        try:
+            new, old = volume.step(10 if "lauter" in t else -10)
+        except Exception as e:
+            return f"Lautstärke geht nicht: {e}"
+        o_v, o_m = old
+        if o_m:
+            return f"Lautstärke auf {new} Prozent."
+        return f"Lautstärke von {o_v} auf {new} Prozent."
+    m = re.search(r"\blauts?taerke\b", t)
+    if not m:
+        return None
+    n = re.search(r"\b(\d{1,3})\b(?:\s*(?:prozent|%))?\s*$", t[m.end():])
+    n2 = re.search(r"\b(?:auf|bei|setzen|machen)\s+(\d{1,3})\b",
+                   t[m.end():])
+    num = n or n2
+    if not num:
+        try:
+            st = volume.get()
+        except Exception:
+            st = None
+        if st is None:
+            return "Lautstärke ist gerade nicht abrufbar."
+        v, muted = st
+        return (f"Lautstärke ist {v} Prozent."
+                + (" Stumm." if muted else ""))
+    try:
+        pct = int(num.group(1))
+        if not 0 <= pct <= 100:
+            return "Lautstärke muss zwischen 0 und 100 Prozent liegen."
+        old = volume.get()
+        o_v = old[0] if old else -1
+        volume.set_volume(pct)
+    except Exception as e:
+        return f"Lautstärke geht nicht: {e}"
+    return (f"Lautstärke von {o_v} auf {pct} Prozent."
+            if o_v >= 0 else f"Lautstärke auf {pct} Prozent.")
+
+
 def handle(text, channel="voice"):
-    """Haupt-Route: erst Musik-Stop, dann openHAB, sonst LLM.
+    """Haupt-Route: erst Musik-Stop, dann Lautstärke, dann openHAB, sonst LLM.
 
     channel 'voice'|'web' – steuert, in welchen Kurzzeitgedächtnis-Zweig
     der Austausch geschrieben wird und aus welchem er Kontext liest.
@@ -289,6 +333,10 @@ def handle(text, channel="voice"):
     if ms is not None:
         memory.add_exchange(text, ms, channel)
         return ms, "smarthome", True
+    vol = try_volume(text)
+    if vol is not None:
+        memory.add_exchange(text, vol, channel)
+        return vol, "smarthome", True
     oh = try_openhab(text)
     if oh is not None:
         memory.add_exchange(text, oh, channel)
