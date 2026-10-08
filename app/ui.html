@@ -51,9 +51,14 @@ button:disabled { opacity:.5; cursor:default; }
                 overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .music .tag { font-size:11px; color:#8b93a1; text-transform:uppercase;
               letter-spacing:.5px; }
-.music button { padding:7px 12px; font-size:13px; }
-.music button.stop { background:#b3372f; }
-.music button.stop:hover { background:#8f2b24; }
+.pp { width:52px; height:52px; flex:none; border-radius:50%; border:0;
+      background:#2563eb; color:#fff; cursor:pointer; padding:0;
+      display:flex; align-items:center; justify-content:center;
+      box-shadow:0 0 14px rgba(37,99,235,.45); transition:transform .1s; }
+.pp:hover { background:#1d4ed8; transform:scale(1.06); }
+.pp svg { width:22px; height:22px; fill:#fff; }
+#b-music-stop { background:#b3372f; }
+#b-music-stop:hover { background:#8f2b24; }
 @keyframes pulse { 50% { opacity:.45; } }
 </style>
 </head>
@@ -75,8 +80,9 @@ button:disabled { opacity:.5; cursor:default; }
     <div class="row">
       <span class="tag" id="m-state">Musik</span>
       <span class="title" id="m-title">Nichts abspielt</span>
-      <button id="b-music-resume" style="display:none">Weiter</button>
-      <button id="b-music-pause" style="display:none">Pause</button>
+      <button id="b-music-toggle" class="pp" title="Pause" style="display:none">
+        <svg viewBox="0 0 24 24"><path id="pp-icon" d="M7 4h3.5v16H7zM13.5 4H17v16h-3.5z"/></svg>
+      </button>
       <button id="b-music-stop" class="stop">Stopp</button>
     </div>
   </div>
@@ -154,9 +160,14 @@ function renderMusic(m) {
     : m.pending ? "Gestartet" : "Musik";
   $("m-title").textContent = title || (paused || playing ? "–" : "Nichts abspielt");
   const active = playing || paused || m.pending;
+  const toggle = $("b-music-toggle");
+  toggle.style.display = active ? "" : "none";
+  const showPause = playing && !paused;
+  toggle.title = showPause ? "Pause" : "Weiterspielen";
+  $("pp-icon").setAttribute("d", showPause
+    ? "M7 4h3.5v16H7zM13.5 4H17v16h-3.5z"   // Pause: zwei Balken
+    : "M8 5v14l11-7z");                        // Play: Dreieck
   $("b-music-stop").style.display = active ? "" : "none";
-  $("b-music-pause").style.display = playing && !paused ? "" : "none";
-  $("b-music-resume").style.display = (paused || m.pending) ? "" : "none";
 }
 
 function connect() {
@@ -209,8 +220,10 @@ async function musicBtn(path) {
   } catch (e) { /* Zustand kommt per SSE von selbst */ }
 }
 $("b-music-stop").addEventListener("click", () => musicBtn("/stop"));
-$("b-music-pause").addEventListener("click", () => musicBtn("/pause"));
-$("b-music-resume").addEventListener("click", () => musicBtn("/resume"));
+$("b-music-toggle").addEventListener("click", ev => {
+  // Pause-Symbol sichtbar -> Pause, Play-Symbol -> Weiter
+  musicBtn(ev.target.closest("button").title === "Pause" ? "/pause" : "/resume");
+});
 </script>
 </body>
 </html>
