@@ -3,9 +3,11 @@
 GET  /              -> HTML-Echtzeitansicht (app/ui.html)
 GET  /health        -> {"ok": true}
 GET  /status        -> Zustand, Statistik, letzte Events
+GET  /volume        -> aktuelle Lautstärke {"volume": 80, "muted": false}
 GET  /events        -> SSE-Stream: alle Pipeline-Events in Echtzeit
 POST /speak         -> {"text": "..."}  (antwortet direkt per TTS)
 POST /intent        -> {"text": "..."}  (Router testen, ohne Mikrofon)
+POST /volume        -> {"volume": 0..100} und/oder {"muted": true|false}
 POST /tone          -> {"tone": "alarm"}  (Alarm-/Klingelton abspielen)
 """
 import json
@@ -15,7 +17,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import audio, config, playback, router, tones, tts
+from . import audio, config, playback, router, tones, tts, volume
 
 log = logging.getLogger("web")
 _pipeline = None
@@ -48,6 +50,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send_html()
         elif path == "/events":
             self._sse()
+        elif path == "/volume":
+            st = volume.get()
+            if st is None:
+                return self._send(500, {"error": "Lautstärke nicht ermittelbar"})
+            vol, muted = st
+            return self._send(200, {"volume": vol, "muted": muted})
         elif path == "/status":
             p = _pipeline
             if not p:
@@ -58,6 +66,7 @@ class Handler(BaseHTTPRequestHandler):
                 "uptime_s": round(time.time() - p.stats["started"]),
                 "events": p.events[-20:],
                 "music": playback.player.status(),
+                "volume": _vol_snap(),
             })
         else:
             self._send(404, {"error": "unknown path"})
@@ -100,6 +109,32 @@ class Handler(BaseHTTPRequestHandler):
             threading.Thread(target=self._play_tone, args=(tone, repeat),
                              daemon=True).start()
             return self._send(200, {"ok": True, "tone": tone, "repeat": repeat})
+        if self.path == "/volume":
+            # {"volume": 0..100?} und/oder {"muted": true|false} –
+            # mindestens eines muss vorhanden sein.
+            vol = data.get("volume")
+            muted = data.get("muted")
+            if vol is None and muted is None:
+                return self._send(400, {"error": "volume oder muted fehlt"})
+            try:
+                if vol is not None:
+                    vol = int(vol)
+                if not isinstance(muted, bool):
+                    if muted is not None:
+                        raise ValueError("muted muss true/false sein")
+                volume.set_volume(vol, muted=muted)
+            except Exception as e:
+                return self._send(400, {"error": str(e)})
+            st = volume.get()
+            if st is not None:
+                cur = st
+            elif vol is None:
+                cur = (-1, bool(muted))
+            else:
+                cur = (vol, bool(muted))
+            self._ev(f"Web: Lautstärke auf {cur[0]}%")
+            return self._send(200, {"ok": True, "volume": cur[0],
+                                    "muted": cur[1]})
         if self.path == "/play":
             # Musik: {"path": "mp3/..."} (relativ zu MUSIC_ROOT, Datei oder
             # .m3u8-Playliste) ODER {"url": "http(s)://..."} (Radio-Stream).
@@ -168,6 +203,7 @@ class Handler(BaseHTTPRequestHandler):
                         "uptime_s": round(time.time() - p.stats["started"]),
                         "events": p.events[-20:],
                         "music": playback.player.status(),
+                        "volume": _vol_snap(),
                     }
                     self.wfile.write(f"id: {p.seq}\n".encode("utf-8"))
                     self.wfile.write(("data: "
@@ -220,6 +256,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         log.debug("http: " + fmt, *args)
+
+
+def _vol_snap():
+    """Lautstaere-Zustand fuer Status/SSE (ohne Crash bei amixer-Fehler)."""
+    try:
+        st = volume.get()
+    except Exception:
+        return None
+    if st is None:
+        return None
+    vol, muted = st
+    return {"volume": vol, "muted": muted}
 
 
 def start(pipeline):
