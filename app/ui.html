@@ -72,6 +72,7 @@ input[type=range] { width:auto; flex:1; padding:0; margin:0;
 <header>
   <h1>Voice Satellite</h1>
   <span id="state" class="badge wake">Bereit</span>
+  <span class="badge" id="ver" title="Software-Version">–</span>
   <span class="dot" id="conn" title="Live-Verbindung"></span>
 </header>
 <div class="stats">
@@ -153,6 +154,7 @@ function render(d) {
   st.className = "badge " + (d.state || "") +
     (d.state === "processing" || d.state === "recording" || d.state === "speaking"
      ? " live" : "");
+  if (d.version) $("ver").textContent = "v" + d.version;
   setStat("st-uptime", fmtUp(d.uptime_s || 0));
   const s = d.stats || {};
   setStat("st-wakes", s.wakes ?? 0);

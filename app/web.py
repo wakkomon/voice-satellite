@@ -17,7 +17,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import audio, config, playback, router, tones, tts, volume
+from . import __version__, audio, config, playback, router, tones, tts, volume
 
 log = logging.getLogger("web")
 _pipeline = None
@@ -64,6 +64,7 @@ class Handler(BaseHTTPRequestHandler):
                 "state": p.state,
                 "stats": p.stats,
                 "uptime_s": round(time.time() - p.stats["started"]),
+                "version": __version__,
                 "events": p.events[-20:],
                 "music": playback.player.status(),
                 "volume": _vol_snap(),
@@ -201,6 +202,7 @@ class Handler(BaseHTTPRequestHandler):
                         "state": p.state,
                         "stats": p.stats,
                         "uptime_s": round(time.time() - p.stats["started"]),
+                        "version": __version__,
                         "events": p.events[-20:],
                         "music": playback.player.status(),
                         "volume": _vol_snap(),
