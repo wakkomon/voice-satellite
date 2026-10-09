@@ -157,6 +157,18 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/stop":
             playback.player.stop()
             return self._send(200, {"ok": True})
+        if self.path == "/stop_agent":
+            # STOP für die Pipeline (LLM/TTS unterbrechen, zurück zu wake)
+            if not _pipeline:
+                return self._send(503, {"error": "Pipeline nicht aktiv"})
+            _pipeline.stop_pipeline()
+            return self._send(200, {"ok": True, "state": "wake"})
+        if self.path == "/listen":
+            # Manuelle Aufnahme vom Web-UI (Start/STOP-Button)
+            if not _pipeline:
+                return self._send(503, {"error": "Pipeline nicht aktiv"})
+            ok, msg = _pipeline.manual_listen()
+            return self._send(200, {"ok": ok, "message": msg, "state": _pipeline.state})
         if self.path == "/pause":
             # Web-UI-Pause: eigener Counter, haengt die Wiedergabe an der
             # Position an (ohne die Sprachpipeline zu betreffen).

@@ -44,6 +44,10 @@ button { padding:9px 14px; border-radius:8px; border:0; background:#2563eb;
 button:hover { background:#1d4ed8; }
 button:disabled { opacity:.5; cursor:default; }
 .res { margin-top:8px; font-size:13px; color:#9fb3c8; min-height:18px; }
+.actions { display:flex; gap:8px; margin-top:14px; flex-wrap:wrap; }
+.action-btn { flex:1; min-width:120px; font-size:13px; }
+.action-btn.stop-btn { background:#b3372f; }
+.action-btn.stop-btn:hover { background:#8f2b24; }
 .music { margin-top:14px; background:#11151b; border:1px solid #232833;
          border-radius:10px; padding:12px 14px; }
 .music .row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
@@ -110,12 +114,16 @@ input[type=range] { width:auto; flex:1; padding:0; margin:0;
       <button id="b-intent">Absenden</button>
       <div class="res" id="res-intent"></div>
     </form>
+    <div class="actions">
+      <button id="b-listen" class="action-btn">🎤 Zuhören</button>
+      <button id="b-stop" class="action-btn stop-btn">⏹ STOP</button>
+    </div>
   </div>
 </main>
 <script>
 const LABELS = {
   wake:       "Bereit",
-  recording:  "H\u00f6rt zu",
+  recording:  "Hört zu",
   processing: "Denkt nach",
   speaking:   "Spricht",
   followup:   "Folgefrage?"
@@ -184,11 +192,10 @@ function renderMusic(m) {
   $("b-music-stop").style.display = active ? "" : "none";
 }
 
-let volBusy = false;
 function renderVolume(v) {
   if (!v) return;
   const s = $("vol-slider"), p = $("vol-pct");
-  if (!volBusy) s.value = v.volume;
+  s.value = v.volume;
   s.disabled = false;
   p.textContent = v.muted ? "stumm" : (v.volume + " %");
   p.className = "vol-pct" + (v.muted ? " muted" : "");
@@ -248,7 +255,47 @@ $("b-music-toggle").addEventListener("click", ev => {
   // Pause-Symbol sichtbar -> Pause, Play-Symbol -> Weiter
   musicBtn(ev.target.closest("button").title === "Pause" ? "/pause" : "/resume");
 });
+
+// Zuhören-Button: startet manuelle Aufnahme
+$("b-listen").addEventListener("click", async () => {
+  const btn = $("b-listen");
+  btn.disabled = true;
+  btn.textContent = "⏳ ...";
+  try {
+    const r = await fetch("/listen", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}"
+    });
+    const j = await r.json();
+    btn.textContent = j.ok ? "✅ OK" : "❌ " + j.message;
+    if (!j.ok) btn.textContent = "❌ " + j.message;
+  } catch (e) {
+    btn.textContent = "❌ Fehler";
+  }
+  setTimeout(() => { btn.textContent = "🎤 Zuhören"; btn.disabled = false; }, 3000);
+});
+
+// STOP-Button: bricht Pipeline ab (LLM/TTS stoppen, zurück zu wake)
+$("b-stop").addEventListener("click", async () => {
+  const btn = $("b-stop");
+  btn.disabled = true;
+  btn.textContent = "⏹ Stoppe...";
+  try {
+    await fetch("/stop_agent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}"
+    });
+    btn.textContent = "✅ Gestoppt";
+  } catch (e) {
+    btn.textContent = "❌ Fehler";
+  }
+  setTimeout(() => { btn.textContent = "⏹ STOP"; btn.disabled = false; }, 2000);
+});
+
 // Lautstärkeregler: erst bei loslassen/loosen setzen (nicht beim Schieben)
+let volBusy = false;
 let volTimer = null;
 $("vol-slider").addEventListener("input", ev => {
   volBusy = true;

@@ -160,7 +160,7 @@ MEMORY_EXTRACT_PROMPT = (
 )
 
 # ── TTS (Piper auf .33:5000) ──────────────────────────────────
-TTS_URL         = _env("TTS_URL", "http://192.168.1.33:5000/v1/audio/speech")
+TTS_URL         = _env("TTS_URL", "http://192.168.1.33:5000/v1/audio/speech", fallback_empty=True)
 TTS_TOKEN       = _env("TTS_TOKEN", "")
 TTS_MODEL       = _env("TTS_MODEL", "kitt")
 TTS_VOICE       = _env("TTS_VOICE", "kitt")

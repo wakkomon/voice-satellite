@@ -57,6 +57,7 @@ class Pipeline:
         self._last_wake = 0.0
         self._music_held = False    # Pipeline haelt Geraet (Aufnahme/Töne/TTS)
         self._duck_mine = False     # diese Session hat das Ducking gestartet
+        self._stop_flag = False     # Thread-safe STOP (von Web-UI/Debug)
 
     def ev(self, msg):
         self.seq += 1
@@ -76,6 +77,36 @@ class Pipeline:
         self.mic.restart()
         self.vad.reset()
         self.state = "wake"
+        display.show_text("Bereit", f"Codewort: {config.WAKE_WORD}")
+
+    def stop_pipeline(self):
+        """STOP: Pipeline sofort unterbrechen und auf 'wake' zurücksetzen."""
+        self._stop_flag = True
+        self.state = "wake"
+        self._to_wake()
+        self.ev("STOP – Pipeline zurückgesetzt")
+
+    def manual_listen(self):
+        """MANUAL LISTEN: Starte manuelle Aufnahme vom Web-UI."""
+        if self.state != "wake":
+            return False, "Gerät gerade belegt"
+        self.state = "recording"
+        self.ev("Manuelle Aufnahme gestartet")
+        try:
+            self._acquire_device()
+            self._play_tone("wake")
+            pcm = self.rec.capture_followup(config.FOLLOWUP_SEC)
+            if pcm is None:
+                return False, "Kein Audio erkannt"
+            self._respond(pcm)
+            return True, "Aufnahme verarbeitet"
+        except Exception as e:
+            log.exception("Manuelle Aufnahme fehlgeschlagen")
+            return False, str(e)
+        finally:
+            if self.state != "wake":
+                self._to_wake()
+            self._release_device()
 
     def drain_mic(self):
         """Vom Web-Audiothread aufgerufen (nach /speak, /tone): markiert den
@@ -299,6 +330,11 @@ class Pipeline:
         display.init()              # /dev/fb1, falls vorhanden
         try:
             while True:
+                # STOP-Check: sofortiger Ausstieg aus Warteschleife
+                if self._stop_flag:
+                    self._stop_flag = False
+                    self._to_wake()
+                    continue
                 if self._mic_restart_requested:
                     # Vom Web-Audiothread gesetzt (drain_mic) NACH dessen
                     # Wiedergabe: arecord neu starten und die Pipe leeren.
