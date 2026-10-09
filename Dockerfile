@@ -25,9 +25,12 @@ COPY asound.conf /etc/asound.conf
 RUN mkdir -p /data
 
 # Läuft nicht privilegiert; braucht /dev/snd + /dev/fb1
-# (via compose devices + audio-/video-Gruppe; video = GID 44 auf dem Pi)
+# (via compose devices; video = GID 44 auf dem Pi, /dev/fb1 gehoert root:video)
 # (Gruppe heisst 'sat', nicht 'voice' – die Basis-Debian hat bereits eine voice-Gruppe)
-RUN useradd -m -u 1000 -G audio sat && chown -R sat /app /data
+# video in sat einbuechen (GID 44): /dev/fb1 ist root:video 660 – funktioniert
+# dadurch unabhaengig vom Container-Start (docker run/compose/Portainer, auch
+# ohne --group-add), weil die Gruppenzugehoerigkeit im Image sitzt.
+RUN groupadd -f -g 44 video && useradd -m -u 1000 -G audio,video sat && chown -R sat /app /data
 USER sat
 
 EXPOSE 8770

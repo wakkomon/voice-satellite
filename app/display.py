@@ -153,7 +153,8 @@ class Display:
             self._fd = os.open(device, os.O_RDWR)
             self._mm = mmap.mmap(self._fd, size)
         except OSError as e:
-            print(f"[display] {device} nicht öffenbar ({e}) – Display deaktiviert")
+            hint = " – Fehler: User fehlt in der video-Gruppe (GID 44)" if e.errno == 13 else ""
+            print(f"[display] {device} nicht öffenbar ({e}) – Display deaktiviert{hint}")
             self.close()
             return
         self._buf = bytearray(size)
