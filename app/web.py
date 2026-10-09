@@ -22,6 +22,8 @@ from . import __version__, audio, config, playback, router, tones, tts, volume
 log = logging.getLogger("web")
 _pipeline = None
 _UI_PATH = os.path.join(os.path.dirname(__file__), "ui.html")
+_blip_lock = threading.Lock()
+_last_blip = 0.0
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -134,6 +136,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 cur = (vol, bool(muted))
             self._ev(f"Web: Lautstärke auf {cur[0]}%")
+            _blip()                                  # Kontrollton
             return self._send(200, {"ok": True, "volume": cur[0],
                                     "muted": cur[1]})
         if self.path == "/play":
@@ -258,6 +261,21 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         log.debug("http: " + fmt, *args)
+
+
+def _blip():
+    """Lautstärke-Kontrollton (Blip): kurzes Klick-Signal, wenn die
+    Lautstärke in der Web-UI geändert wird. Gedrosselt auf 1/10 s –
+    der Slider feuert bei ~400 ms Debounce je Ziehen einen POST,
+    schnelleres Tippen darf nicht zur Tonsalve werden."""
+    global _last_blip
+    with _blip_lock:
+        now = time.time()
+        if now - _last_blip < 1.0:
+            return
+        _last_blip = now
+    threading.Thread(target=Handler._play_tone, args=("blip", 1),
+                     daemon=True).start()
 
 
 def _vol_snap():

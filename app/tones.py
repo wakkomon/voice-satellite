@@ -66,6 +66,11 @@ def get(kind):
             for _ in range(config.TONE_ALARM_REPEATS):
                 pcm += _sine(config.TONE_ALARM_HZ, step, config.SAMPLE_RATE, config.TONE_GAIN)
                 pcm += _sine(config.TONE_ALARM_HZ2, step, config.SAMPLE_RATE, config.TONE_GAIN)
+        elif kind == "blip":
+            # Kurz-Blip: Lautstärke-Feedback in der Web-UI. Kürzer und
+            # etwas leiser als die übrigen Töne – Feedback, kein Alarm.
+            pcm = _sine(config.TONE_WAKE_HZ, config.TONE_BLIP_SEC,
+                        config.SAMPLE_RATE, config.TONE_GAIN * 0.6)
         else:
             pcm = _sine(config.TONE_END_HZ, config.TONE_SEC, config.SAMPLE_RATE, config.TONE_GAIN)
         _cache[kind] = _wav(pcm, config.SAMPLE_RATE)

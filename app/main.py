@@ -104,6 +104,18 @@ class Pipeline:
         if mine:
             duck.exit_()
 
+    def _play_tone(self, name):
+        """Kontrollton über die Pause: Ducking senkt die Systemlautstärke
+        auf DUCK_VOLUME (30 %), dort wären die Töne (Tone-Gain 0.5)
+        praktisch unhörbar. Deshalb während des Tons die gemerkte
+        Pre-Duck-Lautstärke, danach zurück aufs Duck-Level – exakt wie
+        TTS in speak(). Nur wirksam, wenn Ducking aktiv ist."""
+        duck.restore_for_tts()
+        try:
+            tones.play(name)
+        finally:
+            duck.duck_again()
+
     def _on_music_event(self, msg):
         """Musik-Player-Events (aus dem Playback-Thread) in den Feed +
         Display bringen: Trackwechsel/Stop erscheinen live, ohne dass der
@@ -141,7 +153,7 @@ class Pipeline:
         self._duck_mine = self.duck_music()
         self.state = "recording"
         self.stats["wakes"] += 1
-        tones.play("wake")          # hohes Signal: Codewort erkannt, Aufnahme an
+        self._play_tone("wake")     # hohes Signal: Codewort erkannt, Aufnahme an
         try:
             pcm = self.rec.capture()
             if self._respond(pcm) is True:
@@ -174,18 +186,18 @@ class Pipeline:
         "ack" bei kurzen Abschlüssen ("Danke") – Session zu, kein
         Follow-up, direkt zurück zum Wake-Word; sonst False."""
         if pcm is None:
-            tones.play("error")     # tiefes Signal: keine Sprache erkannt
+            self._play_tone("error")  # tiefes Signal: keine Sprache erkannt
             self._fail("Keine Sprache erkannt")
             return False
         dur = len(pcm) / 2 / config.SAMPLE_RATE
         self.ev(f"{dur:.1f}s Audio aufgenommen")
         self._acquire_device()      # Ton "end" erklingt ueber die Pause
-        tones.play("end")       # tiefes Signal: Sprachende, wird verarbeitet
+        self._play_tone("end")   # tiefes Signal: Sprachende, wird verarbeitet
         self._release_device()   # STT+LLM: Musik läuft leise weiter
         text = stt.transcribe(audio.to_wav(pcm))
         if not text:
             self._acquire_device()
-            tones.play("error")     # tiefes Signal: STT hat nichts erkannt
+            self._play_tone("error")  # tiefes Signal: STT hat nichts erkannt
             self._fail("STT leer oder nicht erreichbar")
             return False
         log.info("STT erkannt: %s", text)
@@ -196,7 +208,7 @@ class Pipeline:
             log.info("Abschluss: %r – zurück zum Wake-Word", text)
             self.ev(f"Abschluss: {text[:40]} – zurück zum Wake-Word")
             self._acquire_device()
-            tones.play("end")
+            self._play_tone("end")
             return "ack"
         self._release_device()   # no-op – ist vor dem STT schon gelöst
         self.state = "processing"
@@ -209,7 +221,7 @@ class Pipeline:
         self.ev(f"{kind} {dt:.1f}s -> {answer}")
         if not llm_ok:
             self._acquire_device()   # Fehlerton erklingt ueber die Pause
-            tones.play("error")   # tiefes Signal: LLM-Ausfall/leere Antwort
+            self._play_tone("error")  # tiefes Signal: LLM-Ausfall/leere Antwort
             self._fail("LLM-Fehler – Fehlerton abgespielt")
         display.show_text("Antwort", answer)
         self.speak(answer)
@@ -229,14 +241,14 @@ class Pipeline:
             self.state = "followup"
             self.ev("Follow-up: lausche auf Folgefrage")
             display.show_text("Hört zu", "")
-            tones.play("wake")          # Signal: jetzt bitte weitersprechen
+            self._play_tone("wake")   # Signal: jetzt bitte weitersprechen
             self.mic.restart()          # TON-ECHO aus dem Mic-Stream verwerfen
             self.vad.reset()
             pcm = self.rec.capture_followup(config.FOLLOWUP_SEC)
             if pcm is None:
                 self.ev(f"Follow-up: {config.FOLLOWUP_SEC:.0f} s Stille – "
                         "Codewort wieder fällig")
-                tones.play("end")       # tiefes Signal: ich hör nicht mehr zu
+                self._play_tone("end")  # tiefes Signal: ich hör nicht mehr zu
                 return
             rounds += 1
             self.stats["followups"] += 1
@@ -247,7 +259,7 @@ class Pipeline:
                 self.ev("Abschluss erkannt – Session beendet")
                 return
         self.ev(f"Follow-up: nach {rounds} Runden beendet")
-        tones.play("end")               # tiefes Signal: Follow-up-Pause zu Ende
+        self._play_tone("end")          # tiefes Signal: Follow-up-Pause zu Ende
 
     def speak(self, answer):
         """TTS-Antwort im Normalpegel: erst Geraet freibekommen (Duck-
@@ -283,7 +295,7 @@ class Pipeline:
         log.info("Voice-Satellite bereit – Codewort: %r (Frame %d Bytes)",
                  config.WAKE_WORD, self.frame_bytes)
         self.ev("gestartet")
-        tones.play("boot")          # Startton: Satellit ist online
+        self._play_tone("boot")   # Startton: Satellit ist online
         display.init()              # /dev/fb1, falls vorhanden
         try:
             while True:

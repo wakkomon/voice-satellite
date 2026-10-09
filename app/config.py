@@ -167,7 +167,7 @@ TTS_VOICE       = _env("TTS_VOICE", "kitt")
 TTS_TIMEOUT     = float(_env("TTS_TIMEOUT", "60"))
 
 # ── Feedback-Töne ──────────────────────────────────────────────
-TONE_GAIN     = float(_env("TONE_GAIN", "0.25"))     # Lautstärke 0..1
+TONE_GAIN     = float(_env("TONE_GAIN", "0.5"))      # Lautstärke 0..1
 TONE_SEC      = float(_env("TONE_SEC", "0.15"))      # Tonlänge (s)
 TONE_WAKE_HZ  = float(_env("TONE_WAKE_HZ", "880"))   # höher: Wake-Word erkannt
 TONE_END_HZ   = float(_env("TONE_END_HZ", "523"))    # tiefer: Spracheingabe zu Ende
@@ -177,6 +177,7 @@ TONE_ERROR_HZ = float(_env("TONE_ERROR_HZ", "220"))  # Fehler:  tief  (A3), LLM-
 TONE_ALARM_HZ = float(_env("TONE_ALARM_HZ", "880"))  # Alarmton: hoch (A5)
 TONE_ALARM_HZ2 = float(_env("TONE_ALARM_HZ2", "440"))# Alarmton: tief (A4) – Wechselton
 TONE_ALARM_REPEATS = int(_env("TONE_ALARM_REPEATS", "3"))  # Sirenen-Halbzyklen
+TONE_BLIP_SEC = float(_env("TONE_BLIP_SEC", "0.10"))  # Kurz-Blip: Lautstärke-Feedback (Web-UI)
 
 # ── Follow-up-Modus ────────────────────────────────────────────
 # Nach einer Antwort ohne erneutes Wake-Word weitersprechen: Das Mikrofon
