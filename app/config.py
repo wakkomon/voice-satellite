@@ -186,6 +186,14 @@ FOLLOWUP        = _env("FOLLOWUP", "1") in ("1", "true", "yes", "on")
 FOLLOWUP_SEC    = float(_env("FOLLOWUP_SEC", "3.0"))
 FOLLOWUP_MAX    = int(_env("FOLLOWUP_MAX", "10"))  # Runden, dann Pflichtpause
 
+# ── Musik-Ducking (Wake/TTS) ───────────────────────────────────
+# Beim Wake-Word und während LLM-Antworten per TTS abgespielt werden, wird
+# die MUSIK leiser statt gestoppt: Lautstärke auf DUCK_VOLUME gesenkt,
+# nach Session-Ende auf die vorherige Lautstärke zurück. DUCK_ENABLED=0
+# deaktiviert das Ducking (Musik läuft ungedrückt weiter).
+DUCK_ENABLED   = _env("DUCK_ENABLED", "1") in ("1", "true", "yes", "on")
+DUCK_VOLUME    = int(_env("DUCK_VOLUME", "30"))   # Ziel-Lautstärke in %
+
 # ── Framebuffer-Display (LLM-Antworten als Text) ───────────────
 # /dev/fb1 wird direkt beschrieben (16-Bit BGR565, wie fbi es rendert).
 # Ohne /dev/fb1 im Container bleibt das Display stumm – Feature optional.

@@ -12,6 +12,7 @@ Zwei Erweiterungen laufen hier zusammen:
 * Framebuffer-Display – Frage und Antwort erscheinen als Text auf /dev/fb1
   (app/display.py); ohne Device bleibt alles ein No-Op.
 """
+import contextlib
 import logging
 import os
 import re
@@ -19,7 +20,7 @@ import signal
 import sys
 import time
 
-from . import audio, config, display, memory, playback, router, stt, tones, tts, wake, web
+from . import audio, config, display, duck, memory, playback, router, stt, tones, tts, wake, web
 
 log = logging.getLogger("satellite")
 
@@ -54,6 +55,8 @@ class Pipeline:
         self.stats = {"wakes": 0, "commands": 0, "llm": 0, "errors": 0,
                       "followups": 0, "started": time.time()}
         self._last_wake = 0.0
+        self._music_held = False    # Pipeline haelt Geraet (Aufnahme/Töne/TTS)
+        self._duck_mine = False     # diese Session hat das Ducking gestartet
 
     def ev(self, msg):
         self.seq += 1
@@ -82,6 +85,25 @@ class Pipeline:
         haengt es beim naechsten Wake an die gesprochene Frage an."""
         self._mic_restart_requested = True
 
+    def duck_music(self):
+        """Musik leiser (nicht stoppen): Lautstaere auf DUCK_VOLUME senken,
+        solange die Unterhaltung laeuft – TTS spricht ueber die leise
+        Musik, am Session-Ende stellt exit_() den alten Wert wieder her.
+        Gibt True, wenn dieser Aufruf das Ducking GESTARTET hat (und es
+        am Ende zuruecksetzen MUSS) – verschachtelte Halter (Konversation
+        + Web-TTS) ducken sonst nicht doppelt."""
+        if duck.enter():
+            self.ev("Musik leiser (Ducking)")
+            return True
+        return False
+
+    def unduck_music(self, mine=False):
+        """Gegenteil von duck_music(): stellt die gemerkte Lautstaere
+        wieder her – nur, wenn genau dieser Halter das Ducking
+        gestartet hat (mine=True)."""
+        if mine:
+            duck.exit_()
+
     def _on_music_event(self, msg):
         """Musik-Player-Events (aus dem Playback-Thread) in den Feed +
         Display bringen: Trackwechsel/Stop erscheinen live, ohne dass der
@@ -100,12 +122,23 @@ class Pipeline:
     # ── Zyklus nach dem Codewort ──────────────────────────────
     def conversation(self):
         """Ein kompletter Frage-Antwort-Zyklus inkl. optionaler
-        Follow-up-Session. Hält das Geraet über die ganze Unterhaltung
-        (Wake-Ton bis zur letzten Antwort): Musik macht via Hold-Counter
-        Platz und setzt nach resume() an der gemerkten Position ein.
+        Follow-up-Session. Drei Wiedergabe-Fenster (bcm2835 ohne dmix):
+        1. Mic-Lesefenster (Wake-Ton, capture, Follow-up): Geraet wird
+           ueber den Hold-Counter freigegeben – Duck-Musik waere sonst
+           im Mic zu hoeren und der VAD muesste auf MAX_REC_SEC laufen.
+        2. STT + LLM (Thread blockiert, Mic nicht mehr gelesen): Hold
+           wird gelöst, Musik läuft auf dem Duck-Level weiter (keine
+           tote Stille mehr).
+        3. Töne/TTS: Hold erneut, TTS spricht im Normalpegel (Pre-Duck-
+           Lautstärke) über die Pause, danach zurück auf Duck-Level.
+        Am Session-Ende: Loudness wiederhergestellt (inkl. Mute-Status)
+        und Geraet dauerhaft freigegeben – die Musik setzt an der
+        gemerkten Position ein und läuft im alten Pegel weiter.
         Stellt am Ende sicher, dass der Zustand zurück auf 'wake' geht –
         sonst wird der Satellit taub."""
         playback.player.pause()
+        self._music_held = True
+        self._duck_mine = self.duck_music()
         self.state = "recording"
         self.stats["wakes"] += 1
         tones.play("wake")          # hohes Signal: Codewort erkannt, Aufnahme an
@@ -117,7 +150,23 @@ class Pipeline:
         finally:
             if self.state != "wake":
                 self._to_wake()
+            self.unduck_music(mine=self._duck_mine)
+            self._release_device()   # no-op, wenn speak() schon gelöst hat
+
+    def _release_device(self):
+        """Hold lösen: Musik läuft auf dem Duck-Level weiter (STT/LLM-
+        Fenster – Geraet ist frei, VAD ist inaktiv)."""
+        if self._music_held:
+            self._music_held = False
             playback.player.resume()
+
+    def _acquire_device(self):
+        """Hold erneuten: Geraet für Töne/TTS freibekommen (Duck-Musik
+        bleibt leise stehen, bis resume() sie an der Position weiter-
+        laufen lässt)."""
+        if not self._music_held:
+            self._music_held = True
+            playback.player.pause()
 
     def _respond(self, pcm):
         """Audio -> STT -> Router -> TTS -> Display.
@@ -130,9 +179,12 @@ class Pipeline:
             return False
         dur = len(pcm) / 2 / config.SAMPLE_RATE
         self.ev(f"{dur:.1f}s Audio aufgenommen")
+        self._acquire_device()      # Ton "end" erklingt ueber die Pause
         tones.play("end")       # tiefes Signal: Sprachende, wird verarbeitet
+        self._release_device()   # STT+LLM: Musik läuft leise weiter
         text = stt.transcribe(audio.to_wav(pcm))
         if not text:
+            self._acquire_device()
             tones.play("error")     # tiefes Signal: STT hat nichts erkannt
             self._fail("STT leer oder nicht erreichbar")
             return False
@@ -140,11 +192,13 @@ class Pipeline:
         self.ev(f"STT: {text[:80]}")
         if _is_ack(text):
             # "Danke" & aehnliches: Abschlusston, Session zu – nicht
-            # weiter zuhören, direkt auf Wake-Word warten.
+            # weiter zuhoeren, direkt auf Wake-Word warten.
             log.info("Abschluss: %r – zurück zum Wake-Word", text)
             self.ev(f"Abschluss: {text[:40]} – zurück zum Wake-Word")
+            self._acquire_device()
             tones.play("end")
             return "ack"
+        self._release_device()   # no-op – ist vor dem STT schon gelöst
         self.state = "processing"
         display.show_text("Frage", text)
         t0 = time.time()
@@ -154,6 +208,7 @@ class Pipeline:
         log.info("Antwort (%s, %.1fs): %s", kind, dt, answer[:160])
         self.ev(f"{kind} {dt:.1f}s -> {answer}")
         if not llm_ok:
+            self._acquire_device()   # Fehlerton erklingt ueber die Pause
             tones.play("error")   # tiefes Signal: LLM-Ausfall/leere Antwort
             self._fail("LLM-Fehler – Fehlerton abgespielt")
         display.show_text("Antwort", answer)
@@ -170,6 +225,7 @@ class Pipeline:
         Wake-Word-Bereitschaft."""
         rounds = 0
         while rounds < config.FOLLOWUP_MAX:
+            self._acquire_device()   # Ton + Mic-Lesen: Gerät halten
             self.state = "followup"
             self.ev("Follow-up: lausche auf Folgefrage")
             display.show_text("Hört zu", "")
@@ -194,23 +250,33 @@ class Pipeline:
         tones.play("end")               # tiefes Signal: Follow-up-Pause zu Ende
 
     def speak(self, answer):
+        """TTS-Antwort im Normalpegel: erst Geraet freibekommen (Duck-
+        Musik leise stehen lassen), dann die gemerkte Pre-Duck-Laut-
+        staere zuruecksetzen, damit die Antwort laut ueber die Pause
+        erklingt. Nach dem Sprechen zurueck auf Duck-Level und das
+        Geraet wieder freigeben, damit die Musik beim naechsten
+        Hold-Release leise an der gemerkten Position weiterlaeuft.
+        Mic-ECHO wird erst NACH dem fertigen Sprechen verworfen –
+        die Pipe waehrend der Wiedergabe fuellt sich mit der eigenen
+        TTS-Stimme, und die Follow-up-Aufnahme lasst sie sofort als
+        neue Sprache erscheinen."""
+        self._acquire_device()
         wav = tts.synthesize(answer)
         if not wav:
             self._fail("TTS lieferte kein Audio")
+            self._release_device()
             return
         self.state = "speaking"
+        duck.restore_for_tts()       # TTS im Normalpegel (Pre-Duck)
         try:
             audio.play_wav(wav)
         finally:
-            # Mic-ECHO erst NACH dem fertigen Sprechen verwerfen.
-            # Bisher lag mic.restart() VOR play_wav: die Pipe füllte sich
-            # während der Wiedergabe mit der eigenen TTS-Stimme, und die
-            # Follow-up-Aufnahme las sie sofort als neue Sprache – der Agent
-            # hörte sich selbst und antwortete zu früh. Erst wenn play_wav()
-            # zurück ist (Lautsprecher still), Stream leeren und lauschen.
+            # Mic-ECHO verwerfen: Stream leeren, VAD zuruecksetzen.
             self.mic.restart()
             self.vad.reset()         # Geräuschuntergrenze neu lernen
             self.state = "wake"
+            duck.duck_again()        # zurück auf Duck-Level
+            self._release_device()   # Gerät frei, Musik leise weiter
 
     # ── Hauptloop ─────────────────────────────────────────────
     def run(self):
