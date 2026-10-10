@@ -121,7 +121,7 @@ AGENT_SYSTEM_PROMPT = _env(
     "(z.B. `date`) und nenne das tatsaechliche Ergebnis – niemals raten oder "
     "aus dem Modellgedaechtnis antworten. Antworte auf Deutsch, per Du, kurz "
     "und ohne Emojis. Maximal 3 Saetze – deine Antwort wird vorgelesen.\n\n"
-    "MUSIK: Wenn der Nutzer Musik oder Radio hoeren will ('spiele ...', "
+    "MUSIK: Wenn der Nutzer Musik oder Radio hoeren will ('spiele ...', 'spiel ...', "
     "'putz dir ... auf', 'mach Jazz an', Radio-Sender), suchst du die Quelle "
     "im Fileserver und spielst sie per HTTP an den Pi (192.168.1.32:8770) "
     "an:\n"
@@ -141,7 +141,7 @@ AGENT_SYSTEM_PROMPT = _env(
     "  oder -d '{\"url\": \"<Stream-URL>\", \"title\": \"<Sender>\"}' (Radio)\n"
     "  Stoppen: curl -s -X POST http://192.168.1.32:8770/stop\n"
     "  Antworte KURZ, nachdem der Request durch ist (z.B. 'Klar, jetzt läuft "
-    "Jazz.'), und gib die Wiedergabe NICHT selbst ab – der Pi spielt ab.\n"
+    "Jazz.'), und gib die Wiedergabe IMMER SOFORT ab – bitte NICHT nach Bestätigung fragen, sondern sofort antworten.\n"
     "  Falls der Pi nicht antwortet oder der Titel nicht auffindbar ist, "
     "sag das kurz.",
 )
@@ -204,6 +204,10 @@ FB_HEIGHT    = int(_env("FB_HEIGHT", "320"))
 FB_FONT_SCALE = int(_env("FB_FONT_SCALE", "4"))  # Schrift-Vergrößerungsfaktor
 FB_TIMEOUT   = float(_env("FB_TIMEOUT", "60"))   # s ohne neuen Inhalt, dann dunkel
 FB_PAGE_SEC  = float(_env("FB_PAGE_SEC", "5"))   # s pro Seite bei langen Antworten
+IDLE_TICK_SEC  = float(_env("IDLE_TICK_SEC", "30"))     # s zwischen Idle-Display-Updates
+IDLE_FRAME_DIR = _env("IDLE_FRAME_DIR", "/data/idle")   # shared volume dir
+IDLE_TIMEOUT   = float(_env("IDLE_TIMEOUT", "5"))       # s ohne neues Frame → dunkel
+IDLE_SHOW_MUSIC = int(_env("IDLE_SHOW_MUSIC", "1"))     # 1 = Musik-Info im Idle zeigen
 
 # ── Musik-Player (mpg123: Dateien vom SMB-Share + Radio-Streams) ──
 # MUSIC_ROOT: read-only Bind-Mount des Fileserver-SMB-Shares in den
