@@ -58,6 +58,9 @@ class Pipeline:
         self._music_held = False    # Pipeline haelt Geraet (Aufnahme/Töne/TTS)
         self._duck_mine = False     # diese Session hat das Ducking gestartet
         self._stop_flag = False     # Thread-safe STOP (von Web-UI/Debug)
+        # Idle-Display-Alternierung: weather <-> music info
+        self._idle_at = 0.0           # Zeitstempel: letzte idle-Aktion
+        self._idle_mode = "none"      # "weather" | "music" | "none"
 
     def ev(self, msg):
         self.seq += 1
@@ -147,6 +150,37 @@ class Pipeline:
         finally:
             duck.duck_again()
 
+    # ── Idle-Display-Alternierung ─────────────────────────────
+    def tick_idle(self):
+        """Im Wake-Word-Loop aufgerufen: wechselt zwischen
+        Weather-Frame und Musik-Info-Overlay."""
+        if self.state != "wake":
+            return
+        now = time.time()
+        if now - self._idle_at < config.IDLE_TICK_SEC:
+            return
+        self._idle_at = now
+
+        # Prüfe ob Musik läuft
+        status = playback.player.status()
+        playing = bool(status.get("playing"))
+
+        if playing:
+            # Musik-Info anzeigen (Overlay ueber Weather-Hintergrund)
+            title = status.get("title") or "Musik"
+            display.show_music_info("Musik", title)
+            self._idle_mode = "music"
+            self.ev(f"Idle: Musik-Info – {title}")
+        elif config.IDLE_SHOW_MUSIC:
+            # Weather-Frame anzeigen
+            display.show_weather()
+            self._idle_mode = "weather"
+            self.ev("Idle: Wetter-Frame")
+        else:
+            # Nur Text-Display
+            display.show_text("Bereit", f"Codewort: {config.WAKE_WORD}")
+            self._idle_mode = "none"
+
     def _on_music_event(self, msg):
         """Musik-Player-Events (aus dem Playback-Thread) in den Feed +
         Display bringen: Trackwechsel/Stop erscheinen live, ohne dass der
@@ -154,12 +188,15 @@ class Pipeline:
         self.ev(msg)
         if msg.startswith("Laueft:") or msg.startswith("Radio:"):
             title = msg.split(":", 1)[1].strip()
-            display.show_text("Musik", title)
+            display.show_music_info("Musik", title)
         elif msg.startswith("Wiedergabe beendet"):
+            display.reset_music_info()
             display.show_text("Musik", "Beendet")
         elif msg.startswith("Wiedergabe fehlgeschlagen"):
+            display.reset_music_info()
             display.show_text("Musik", "Fehler")
         elif msg.startswith("Musik gestoppt"):
+            display.reset_music_info()
             display.show_text("Musik", "Gestoppt")
 
     # ── Zyklus nach dem Codewort ──────────────────────────────
@@ -349,6 +386,7 @@ class Pipeline:
                     time.sleep(2)
                     self.mic.restart()
                     continue
+                self.tick_idle()     # Idle-Display: Wetter / Musik-Info
                 if self.state != "wake" or self.web_audio_busy:
                     # Web-TTS/Ton aus dem Lautsprecher waehrend Wiedergabe:
                     # Frames verwerfen, sonst feuert Porcupine/VAD auf dem

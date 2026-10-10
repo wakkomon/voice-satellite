@@ -141,6 +141,9 @@ class Display:
         self._stop = threading.Event()
         self._worker = None
         self._live = False            # Seite zeigt Inhalt (nicht blackout)
+        # Musik-Info-Zustand (von main.py Idle-Cycle genutzt)
+        self._playing = False
+        self._music_info_at = None    # Zeitstempel: wann Musik-Info angezeigt wurde
 
     # ── Lifecycle ─────────────────────────────────────────────
     def init(self):
@@ -195,6 +198,40 @@ class Display:
             self._pending = (heading, body)
             self._cv.notify_all()
 
+    # ── Musik-Info & Weather (für Idle/Alternierung) ─────────────
+    def show_music_info(self, heading: str, body: str = "") -> None:
+        """Zeige Musik-Info-Overlay (temporär während Playback)."""
+        if self._mm is None or self._stop.is_set():
+            return
+        with self._cv:
+            self._playing = True
+            self._music_info_at = time.time()
+            self._pending = (heading, body)
+            self._cv.notify_all()
+
+    def show_weather(self) -> None:
+        """Zeige Weather-PNG aus /data/idle/ als Hintergrund."""
+        if self._mm is None or self._stop.is_set():
+            return
+        with self._cv:
+            # Musik-Info verfallen lassen wenn älter als config.IDLE_TIMEOUT
+            if self._music_info_at and (time.time() - self._music_info_at > config.IDLE_TIMEOUT):
+                self._playing = False
+                self._music_info_at = None
+            self._pending = ("__weather__", "")  # Marker für Worker
+            self._cv.notify_all()
+
+    def is_playing(self) -> bool:
+        """Prüfe ob Musik-Info aktiv ist."""
+        with self._cv:
+            return self._playing
+
+    def set_not_playing(self):
+        """Playback beendet: Musik-Info zurücksetzen."""
+        with self._cv:
+            self._playing = False
+            self._music_info_at = None
+
     # ── Worker ────────────────────────────────────────────────
     def _run(self):
         pages, idx, head = [], 0, ""
@@ -208,7 +245,21 @@ class Display:
                 else:
                     self._cv.wait(timeout=0.25)
             now = time.time()
-            if frame is not None:
+            if frame is not None and frame[0] == "__weather__":
+                # Weather-Frame (hostseitig gerendert, RGB565 raw)
+                self._blit_weather()
+                shown_at = now
+            elif frame is not None and self._playing:
+                # Musik-Info: Text als Overlay ueber Weather-Hintergrund
+                pages, head = self._layout(*frame)
+                idx = 0
+                self._blit_weather()
+                if self._buf is not None:
+                    with self._lock:
+                        self._paint_overlay(pages, idx, head)
+                self._live = True
+                shown_at = now
+            elif frame is not None:
                 pages, head = self._layout(*frame)
                 idx = 0
                 self._paint(pages, idx, head)
@@ -224,6 +275,33 @@ class Display:
                     idx = (idx + 1) % len(pages)
                     self._paint(pages, idx, head)
                     shown_at = now
+
+    def _blit_weather(self):
+        """Weather-Frame (RGB565 raw) aus /data/idle/weather.bin lesen und auf fb1 blitten."""
+        import glob
+        path = None
+        # Neueste .bin-Datei in /data/idle/ finden
+        files = glob.glob(os.path.join(config.IDLE_FRAME_DIR, "*.bin"))
+        if files:
+            files.sort(key=os.path.getmtime, reverse=True)
+            path = files[0]
+        if path is None or not os.path.exists(path):
+            return  # Kein Weather-Frame vorhanden
+        try:
+            with open(path, "rb") as f:
+                raw = f.read()
+            expected = self._w * self._h * 2
+            if len(raw) != expected:
+                return  # Falsche Dateigröße (z.B. 1024x600 statt 480x320)
+            with self._lock:
+                self._buf[:] = raw[:expected]
+            try:
+                self._mm.seek(0)
+                self._mm.write(self._buf[:expected])
+            except (ValueError, OSError):
+                pass
+        except (OSError, IOError):
+            pass
 
     def _layout(self, heading: str, body: str):
         heading = _sanitize(heading or "").replace("\n", " ")
@@ -277,6 +355,37 @@ class Display:
             except (ValueError, OSError):
                 pass
 
+    def _paint_overlay(self, pages, idx, heading: str):
+        """Text-Overlay ueber dem Weather-Hintergrund (Buffer bleibt
+        weather-bebildet, nur die Text-Flaeche wird schwarz abgedeckt).
+        Rufer hält _lock."""
+        if self._mm is None or self._buf is None:
+            return
+        if pages:
+            w = (self._w - 2 * MARGIN) * 2
+            # Kopfzeile + Textblöcke abdecken, damit der Text lesbar ist
+            self._fill(0, 0, self._w, HEADER_H + 2, COL_BG)
+            y = HEADER_H
+            for ln in pages[idx]:
+                tw = (len(ln) * CELL_W + MARGIN * 2) * 2
+                self._fill(MARGIN, y, tw, CELL_H - 2, COL_BG)
+                y += CELL_H
+            self._header(heading)
+            y = HEADER_H
+            for ln in pages[idx]:
+                x = MARGIN
+                for ch in ln:
+                    self._glyph(ch, x, y, COL_FG)
+                    x += CELL_W
+                y += CELL_H
+            if len(pages) > 1:
+                self._pager(idx, len(pages))
+        try:
+            self._mm.seek(0)
+            self._mm.write(self._buf)
+        except (ValueError, OSError):
+            pass
+
     def _header(self, heading: str):
         x = MARGIN
         for ch in heading[: (self._w - 2 * MARGIN) // CELL_W]:
@@ -323,6 +432,24 @@ def init():
 def show_text(heading: str, body: str = "") -> None:
     if _instance is not None:
         _instance.show(heading, body)
+
+
+def show_weather() -> None:
+    """Weather-Frame anzeigen (hostseitig gerendert)."""
+    if _instance is not None:
+        _instance.show("__weather__", "")
+
+
+def show_music_info(heading: str, body: str) -> None:
+    """Musik-Info-Overlay auf Weather-Hintergrund malen."""
+    if _instance is not None:
+        _instance.show_music_info(heading, body)
+
+
+def reset_music_info() -> None:
+    """Playback beendet: Overlay-Zustand zuruecksetzen."""
+    if _instance is not None:
+        _instance.set_not_playing()
 
 
 def shutdown() -> None:
