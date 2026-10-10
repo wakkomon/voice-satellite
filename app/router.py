@@ -12,7 +12,7 @@ import re
 import threading
 from urllib.parse import quote
 
-from . import config, http, memory, playback, volume
+from . import config, http, intent, memory, playback, volume
 
 log = logging.getLogger("router")
 
@@ -333,14 +333,36 @@ def handle(text, channel="voice"):
     if ms is not None:
         memory.add_exchange(text, ms, channel)
         return ms, "smarthome", True
+
+    # --- Lokale Intents (vor LLM) ---
+    handled, resp = intent.try_set_volume(text)
+    if handled:
+        memory.add_exchange(text, resp, channel)
+        return resp, "smarthome", True
+
+    # Existing try_volume: "Lauter"/"Leiser" + "Lautstärke [0-100][Prozent]"
     vol = try_volume(text)
     if vol is not None:
         memory.add_exchange(text, vol, channel)
         return vol, "smarthome", True
+
     oh = try_openhab(text)
     if oh is not None:
         memory.add_exchange(text, oh, channel)
         return oh, "smarthome", True
+
+    # Playlist / Radio / MP3 / Kamera — nur wenn nichts von openHAB gematched
+    for name, fn in [
+        ("playlist", intent.try_play_playlist),
+        ("radio", intent.try_play_radio),
+        ("mp3", intent.try_play_mp3),
+        ("kamera", intent.try_show_camera),
+    ]:
+        handled, resp = fn(text)
+        if handled:
+            memory.add_exchange(text, resp, channel)
+            return resp, "smarthome", True
+
     ans, ok = ask_llm(text, channel)
     memory.add_exchange(text, ans, channel)
     memory.extract_facts_async(text, ans)

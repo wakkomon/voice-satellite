@@ -224,6 +224,14 @@ IDLE_SHOW_MUSIC = int(_env("IDLE_SHOW_MUSIC", "1"))     # 1 = Musik-Info im Idle
 # 'Musikordner nicht erreichbar'. Überschreibbar per MUSIC_ROOT=… in .env.
 MUSIC_ROOT      = _env("MUSIC_ROOT", "/m")
 
+# ── Pi-Bridge (RTSP-Relay + Kamera-Snapshot) ──────────────────
+# Bridge-Daemon auf Pi: RTSP→MP3-Relay + Kamera-Snapshot-HTTP
+BRIDGE_HOST     = _env("BRIDGE_HOST", "192.168.1.32")
+BRIDGE_PORT     = int(_env("BRIDGE_PORT", "8790"))
+BRIDGE_URL      = f"http://{BRIDGE_HOST}:{BRIDGE_PORT}"
+RTSP_USER       = _env("RTSP_USER", "", fallback_empty=True)
+RTSP_PASS       = _env("RTSP_PASS", "", fallback_empty=True)
+
 # ── Web ────────────────────────────────────────────────────────
 WEB_PORT        = int(_env("WEB_PORT", "8770"))
 LOG_LEVEL       = _env("LOG_LEVEL", "INFO")

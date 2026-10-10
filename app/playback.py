@@ -142,6 +142,7 @@ class MusicPlayer:
                                        # ewig auf ein nie kommendes resume
         self._web_hold = 0
         self._kill_procs()
+        self.stop_bridge_relay()        # Pi-Relay ebenfalls beenden
         if was:
             self._ev("Musik gestoppt")
         return was
@@ -422,6 +423,76 @@ class MusicPlayer:
             if self._job is not None:
                 self._job = None
                 self._title, self._source = None, None
+
+
+    # ── Pi-Bridge ──────────────────────────────────────────────
+    def play_bridge_url(self, rtsp_url: str, title: str = "") -> str | None:
+        """RTSP-Stream über Pi-Bridge abspielen.
+        
+        Startet Relay auf Pi (RTSP→HTTP), spielt über HTTP-Stream ab.
+        Fehlerstring oder None.
+        """
+        import json as _json
+        import urllib.request as _urllib
+        
+        if not config.BRIDGE_URL:
+            return "Pi-Bridge nicht erreichbar"
+        
+        try:
+            # Relay starten
+            payload = _json.dumps({"url": rtsp_url, "title": title}).encode()
+            req = _urllib.Request(
+                f"{config.BRIDGE_URL}/relay",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with _urllib.urlopen(req, timeout=10) as resp:
+                data = _json.loads(resp.read())
+        except Exception as e:
+            log.error("Bridge-Relay-Start fehlgeschlagen: %s", e)
+            return f"Pi-Bridge: Relay start fehlgeschlagen"
+        
+        relay_id = data.get("relay_id", "")
+        playback_url = data.get("playback_url", "")
+        
+        if not playback_url:
+            return "Bridge-Relay: Keine playback_url zurück"
+        
+        log.info("Bridge-Relay gestartet: %s", relay_id)
+        
+        # Relay-ID speichern für Stop
+        self._bridge_relay_id = relay_id
+        self._bridge_url = playback_url
+        
+        # Über normale play_url abspielen
+        return self.play_url(playback_url, title=title)
+    
+    def stop_bridge_relay(self):
+        """Bridge-Relay auf Pi beenden."""
+        import json as _json
+        import urllib.request as _urllib
+        
+        relay_id = getattr(self, "_bridge_relay_id", "")
+        if not relay_id:
+            return
+        
+        try:
+            payload = _json.dumps({"relay_id": relay_id}).encode()
+            req = _urllib.Request(
+                f"{config.BRIDGE_URL}/stop_relay",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with _urllib.urlopen(req, timeout=5) as resp:
+                resp.read()
+            log.info("Bridge-Relay beendet: %s", relay_id)
+        except Exception as e:
+            log.error("Bridge-Relay-Stop fehlgeschlagen: %s", e)
+        finally:
+            self._bridge_relay_id = None
+            self._bridge_url = None
 
 
 # Modul-Einzelinstanz (Web-Endpoints + Router greifen darauf zu)
