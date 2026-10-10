@@ -1,5 +1,9 @@
 FROM python:3.11-slim
 
+# Logs in der Zeitzone des Host-Systems (Pi = Europe/Berlin);
+# per -e TZ=... beim Start ueberschreibbar (tzdata liegt im Basis-Image).
+ENV TZ=Europe/Berlin
+
 # arecord/aplay + ALSA-Libs (USB-Mic & Headphone-Jack).
 # alsa-utils zieht libasound2 (trixie: libasound2t64) automatisch nach.
 # mpg123 dekodiert MP3 (Mediathek + Radio-Streams) fuer den Musik-Player.

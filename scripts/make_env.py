@@ -27,8 +27,9 @@ values = {
     "LLM_TOKEN": grab("ollama.py", "TOKEN"),
     "LLM_MODEL": "",                       # Hermes-Gateway braucht keinen Modelnamen
     "TTS_TOKEN": grab("tts_piper.py", "API_KEY"),
-    "TTS_MODEL": grab("tts_piper.py", "MODEL"),
+    "TTS_MODEL": "piper",                    # war: grab("tts_piper.py", "MODEL")
     "TTS_VOICE": grab("tts_piper.py", "VOICE"),
+    "TTS_LANGUAGE": "de",                    # Sprache der Synthese (API-Feld "language")
     "MIC_DEVICE": "virt_mic_16k",
     "SPEAKER_DEVICE": "hw:1,0",
     "WAKE_SENS": "0.5",

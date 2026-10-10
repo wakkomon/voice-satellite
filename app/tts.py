@@ -19,6 +19,8 @@ def synthesize(text, retries: int = 2) -> bytes:
         "response_format": "wav",
         "stream": True,
     }
+    if config.TTS_LANGUAGE:
+        payload["language"] = config.TTS_LANGUAGE
     for attempt in range(1, retries + 2):
         chunks = []
         try:
