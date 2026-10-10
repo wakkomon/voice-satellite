@@ -172,10 +172,9 @@ class Pipeline:
             self._idle_mode = "music"
             self.ev(f"Idle: Musik-Info – {title}")
         elif config.IDLE_SHOW_MUSIC:
-            # Weather-Frame anzeigen
+            # Weather-Frame anzeigen (nicht loggen: smärt das Log)
             display.show_weather()
             self._idle_mode = "weather"
-            self.ev("Idle: Wetter-Frame")
         else:
             # Nur Text-Display
             display.show_text("Bereit", f"Codewort: {config.WAKE_WORD}")
