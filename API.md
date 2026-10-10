@@ -15,14 +15,14 @@ wake --(Wake-Word)--> recording --(VAD-Ende)--> processing --> speaking
       naechsten Wake-Word
 ```
 
-| state        | Bedeutung                                        |
-|--------------|--------------------------------------------------|
-| `wake`       | lauscht auf das Wake-Word ("Bereit")             |
-| `recording`  | nimmt Sprache auf                                |
-| `processing` | STT + Router/LLM arbeiten                        |
-| `speaking`   | Antwort wird vorgelesen                          |
-| `followup`   | Antwort fertig — Mikrofon bleibt offen, keine    |
-|              | erneutes Wake-Word noetig; 3 s Stille -> `wake`  |
+|| state        | Bedeutung                                        |
+||--------------|--------------------------------------------------|
+|| `wake`       | lauscht auf das Wake-Word ("Bereit")             |
+|| `recording`  | nimmt Sprache auf                                |
+|| `processing` | STT + Router/LLM arbeiten                        |
+|| `speaking`   | Antwort wird vorgelesen                          |
+|| `followup`   | Antwort fertig — Mikrofon bleibt offen, keine    |
+||              | erneutes Wake-Word noetig; 3 s Stille -> `wake`  |
 
 ## GET-Endpoints
 
@@ -65,10 +65,10 @@ Audio laeuft asynchron im Hintergrund-Thread). Fehler: `400 text fehlt`,
 curl -X POST $PI/tone -H 'Content-Type: application/json' \
      -d '{"tone": "alarm", "repeat": 3}'
 ```
-| Feld     | Werte                                  | Default |
-|----------|----------------------------------------|---------|
-| `tone`   | `alarm` \| `wake` \| `end` \| `boot` \| `error` | `alarm` |
-| `repeat` | 1..20 (nur bei `alarm` sinnvoll; Alarm = 2-Ton-Sirene 880/440 Hz) | 1 |
+|| Feld     | Werte                                  | Default |
+||----------|----------------------------------------|---------|
+|| `tone`   | `alarm` \| `wake` \| `end` \| `boot` \| `error` | `alarm` |
+|| `repeat` | 1..20 (nur bei `alarm` sinnvoll; Alarm = 2-Ton-Sirene 880/440 Hz) | 1 |
 
 Antwort: `{"ok": true, "tone": "alarm", "repeat": 3}` — Ton spielt
 asynchron. Fehler: `400 unknown tone ...`, `400 repeat muss eine Zahl sein`.
@@ -81,11 +81,32 @@ curl -X POST $PI/intent -H 'Content-Type: application/json' \
 Antwort: `{"answer": "...", "route": "llm"}` (`route`: Regel-/Intent-Kategorie
 des Routers). Antwort wird NICHT gesprochen.
 
-## offene Fragen / Edge-Cases
-- `repeat` wird auf max. 20 begrenzt; hohere Werte werden gekappt statt abgelehnt.
-- `/speak` und `/tone` blockieren nicht — der Speaker ist mit dem
-  Pipeline-Audio geteilt; gleichzeitige Ausgaben werden von ALSA
-  (`plughw`, SPEAKER_DEVICE) gemischt bzw. sequenziell gespielt.
+## Musik-Wiedergabe (`/play`)
+
+### Datei-/Ordnerpfade und `/m`
+
+`POST /play {"path": "mp3/artist/album.mp3"}` spielt Dateien ab, deren
+Pfade relativ zu `MUSIC_ROOT` sind (Default `/m`).
+
+**Was ist `/m`?**
+
+Ein read-only Bind-Mount des Fileserver-Shares in den Container —
+wird beim `docker run` eingebunden (Muster: `-v <host_share>:/m:ro`).
+Der konkrete Inhalt richtet sich nach dem jeweils eingebundenen Share
+(typische Ordner: `mp3/`, `Record/`, `Bilder/`, `download/` u.a.) —
+im Container immer unter `/m/` erreichbar.
+
+**Pfad-Notation:** relative Pfade, z.B. `mp3/Beispiel/track.mp3`.
+Playlist-Dateien (.m3u/.m3u8) werden automatisch geparst.
+Ordner-Pfade werden per walk gesammelt und sortiert wiedergegeben.
+
+**Umgebung:** überschreibbar per `MUSIC_ROOT=…` in der `.env`. Ohne
+Mount (Desktop-Tests) zeigt `/play` 'Musikordner nicht erreichbar'.
+
+### Ordner-Wiedergabe
+
+`POST /play {"path": "mp3/mein_ordner"}` spielt alle Dateien im
+Ordner sortiert ab (rekursiv nur erste Ebene, keine Unterordner).
 
 ## Beispiel: Sprachnachricht + Alarm aus openHAB
 
@@ -111,3 +132,8 @@ Shell-Variante mit JSON-Escaping und Fehlerbehandlung:
 ./scripts/openhab_voice.sh tone alarm 3
 ```
 
+## offene Fragen / Edge-Cases
+- `repeat` wird auf max. 20 begrenzt; hohere Werte werden gekappt statt abgelehnt.
+- `/speak` und `/tone` blockieren nicht — der Speaker ist mit dem
+  Pipeline-Audio geteilt; gleichzeitige Ausgaben werden von ALSA
+  (`plughw`, SPEAKER_DEVICE) gemischt bzw. sequenziell gespielt.
