@@ -50,6 +50,15 @@ button:disabled { opacity:.5; cursor:default; }
 .action-btn.stop-btn:hover { background:#8f2b24; }
 .music { margin-top:14px; background:#11151b; border:1px solid #232833;
          border-radius:10px; padding:12px 14px; }
+.display { margin-top:14px; background:#11151b; border:1px solid #232833;
+           border-radius:10px; padding:12px 14px; }
+.display .head { display:flex; align-items:center; gap:10px; margin-bottom:8px; }
+.display .tag { font-size:11px; color:#8b93a1; text-transform:uppercase;
+                letter-spacing:.5px; }
+#disp-img { width:100%; max-width:480px; display:block; background:#000;
+            border:1px solid #232833; border-radius:6px;
+            image-rendering:pixelated; }
+.disp-note { font-size:12px; color:#5b6472; margin-top:6px; }
 .music .row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
 .music .title { font-size:14px; font-weight:600; flex:1; min-width:0;
                 overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -87,6 +96,14 @@ input[type=range] { width:auto; flex:1; padding:0; margin:0;
   <div class="card"><div class="v" id="st-errors">0</div><div class="l">Fehler</div></div>
 </div>
 <main>
+  <div class="display">
+    <div class="head">
+      <span class="tag">Display</span>
+      <span class="tag" id="disp-ts" title="Zeitstempel des zuletzt geladenen Bildes"></span>
+    </div>
+    <img id="disp-img" alt="Aktuelles Display-Bild">
+    <div class="disp-note" id="disp-note" style="display:none">Display nicht aktiv</div>
+  </div>
   <div class="music">
     <div class="row">
       <span class="tag" id="m-state">Musik</span>
@@ -209,6 +226,30 @@ function connect() {
   return es;
 }
 connect();
+
+// Display-Bild: alle 2 s neu laden (Server-Cache 1 s, Bild ändert sich selten)
+const dispImg = $("disp-img"), dispNote = $("disp-note");
+let dispUrl = null;
+async function pollFrame() {
+  try {
+    const r = await fetch("/frame", { cache: "no-store" });
+    if (!r.ok) {
+      dispImg.style.display = "none";
+      dispNote.style.display = "";
+      return;
+    }
+    dispNote.style.display = "none";
+    dispImg.style.display = "";
+    const buf = await r.arrayBuffer();
+    const url = URL.createObjectURL(new Blob([buf], { type: "image/png" }));
+    if (dispUrl) URL.revokeObjectURL(dispUrl);  // vorheriges freigeben
+    dispImg.src = url;
+    dispUrl = url;
+    $("disp-ts").textContent = new Date().toLocaleTimeString("de-DE");
+  } catch (e) { /* Server kurz weg – ignorieren */ }
+}
+pollFrame();
+setInterval(pollFrame, 2000);
 
 async function post(path, text, resEl, btn) {
   btn.disabled = true;
