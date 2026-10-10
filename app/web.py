@@ -2,6 +2,7 @@
 
 GET  /              -> HTML-Echtzeitansicht (app/ui.html)
 GET  /health        -> {"ok": true}
+GET  /frame         -> PNG: aktuelles Display-Bild (Framebuffer)
 GET  /status        -> Zustand, Statistik, letzte Events
 GET  /volume        -> aktuelle Lautstärke {"volume": 80, "muted": false}
 GET  /events        -> SSE-Stream: alle Pipeline-Events in Echtzeit
@@ -17,7 +18,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import __version__, audio, config, playback, router, tones, tts, volume
+from . import __version__, audio, config, display, playback, router, tones, tts, volume
 
 log = logging.getLogger("web")
 _pipeline = None
@@ -48,6 +49,8 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if path == "/health":
             self._send(200, {"ok": True})
+        elif path == "/frame":
+            self._send_frame()
         elif path == "/":
             self._send_html()
         elif path == "/events":
@@ -188,6 +191,20 @@ class Handler(BaseHTTPRequestHandler):
             p.ev(msg)
 
     # ── UI & SSE ──────────────────────────────────────────────
+    def _send_frame(self):
+        """Aktuelles Display-Bild als PNG (Framebuffer-Snapshot).
+        Cache: 1 s – das Bild ändert sich nur bei neuen Inhalten,
+        und das Encoding auf armv7l soll nicht unnötig die CPU belegen."""
+        body = display.snapshot_png()
+        if body is None:
+            return self._send(404, {"error": "Display nicht aktiv"})
+        self.send_response(200)
+        self.send_header("Content-Type", "image/png")
+        self.send_header("Cache-Control", "max-age=1")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _send_html(self):
         try:
             body = open(_UI_PATH, "rb").read()

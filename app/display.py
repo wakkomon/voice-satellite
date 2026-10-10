@@ -18,6 +18,7 @@ import os
 import struct
 import threading
 import time
+import zlib
 
 from . import config
 
@@ -102,6 +103,38 @@ CELL_W, CELL_H = (GLYPH_W + 1) * SCALE, (GLYPH_H + 2) * SCALE
 MARGIN = 4
 HEADER_H = 20 * SCALE                      # Kopfzeile inkl. Trennlinie
 PAGE_SEC = config.FB_PAGE_SEC                    # Auto-Blätterrhythmus
+
+# ---------------------------------------------------------------------------
+# PNG-Ausgabe für die Web-UI (stdlib zlib, kein Pillow auf armv7l).
+# ---------------------------------------------------------------------------
+def _png_chunk(tag: bytes, data: bytes) -> bytes:
+    return (struct.pack(">I", len(data)) + tag + data
+            + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+
+_LUT565 = None    # list[bytes]: RGB565-Wert -> RGB888-3-Bytes
+
+
+def _lut565():
+    """RGB565→RGB888-Lookupliste (einmalig gebaut)."""
+    global _LUT565
+    if _LUT565 is None:
+        _LUT565 = [bytes((( (i >> 11) & 31) * 255 // 31,
+                          ((i >> 6) & 31) * 255 // 31,
+                          (i & 31) * 255 // 31)) for i in range(65536)]
+    return _LUT565
+
+
+def _encode_png(rgb: bytes, w: int, h: int) -> bytes:
+    """RGB888-Buffer -> PNG (8-Bit, Farbtyp 2, nicht interlaced)."""
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
+    stride = w * 3
+    raw = bytearray()
+    for y in range(h):
+        raw.append(0)                                   # Filter: none
+        raw += rgb[y * stride:(y + 1) * stride]
+    return (b"\x89PNG\r\n\x1a\n" + _png_chunk(b"IHDR", ihdr)
+            + _png_chunk(b"IDAT", zlib.compress(bytes(raw), 6))
+            + _png_chunk(b"IEND", b""))
 
 
 def _c565(r: int, g: int, b: int) -> bytes:
@@ -231,6 +264,25 @@ class Display:
         with self._cv:
             self._playing = False
             self._music_info_at = None
+
+    # ── Snapshot für die Web-UI ───────────────────────────────
+    def snapshot_png(self) -> bytes | None:
+        """Aktueller Framebuffer (was grade auf dem Display steht) als PNG.
+
+        None wenn kein Framebuffer (Display deaktiviert). Konsistenter
+        Snapshot: Buffer-Kopie unter Lock, Konvertierung+Enc. außerhalb.
+        """
+        if self._buf is None:
+            return None
+        with self._lock:
+            fb = bytes(self._buf)
+        w, h = self._w, self._h
+        lut = _lut565()
+        rgb = bytearray(w * h * 3)
+        # RGB565 (klein-Endian) -> RGB888 via Lookupliste
+        for px in range(w * h):
+            rgb[px * 3:px * 3 + 3] = lut[fb[px * 2] | (fb[px * 2 + 1] << 8)]
+        return _encode_png(bytes(rgb), w, h)
 
     # ── Worker ────────────────────────────────────────────────
     def _run(self):
@@ -457,3 +509,10 @@ def shutdown() -> None:
     if _instance is not None:
         _instance.shutdown()
         _instance = None
+
+
+def snapshot_png() -> bytes | None:
+    """Aktuelles Display-Bild als PNG (Web-UI); None wenn Display aus."""
+    if _instance is not None:
+        return _instance.snapshot_png()
+    return None
