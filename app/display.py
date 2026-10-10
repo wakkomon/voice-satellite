@@ -18,7 +18,10 @@ import os
 import struct
 import threading
 import time
+import logging
 import zlib
+
+log = logging.getLogger(__name__)
 
 from . import config
 
@@ -265,6 +268,52 @@ class Display:
             self._playing = False
             self._music_info_at = None
 
+    def show_camera(self, camera_name: str) -> None:
+        """Kamera-Snapshot vom Pi holen und direkt in Framebuffer blitten.
+        
+        Bridge liefert 307200 Bytes (480×320 RGB565 raw) über /frame/<name>.
+        """
+        import urllib.request as _urllib
+        
+        if self._mm is None or self._stop.is_set() or self._buf is None:
+            return
+        
+        # Frame von Bridge holen (rohe RGB565-Daten)
+        try:
+            url = f"{config.BRIDGE_URL}/frame/{camera_name}"
+            req = _urllib.Request(url)
+            with _urllib.urlopen(req, timeout=15) as resp:
+                raw = resp.read()
+        except Exception as e:
+            log.warning("show_camera: Bridge-Fehler für %s: %s", camera_name, e)
+            self.show("Kamera", f"Verbindung fehlgeschlagen")
+            return
+        
+        expected = config.FB_WIDTH * config.FB_HEIGHT * 2  # 307200
+        if len(raw) != expected:
+            log.warning("show_camera: Frame %s: %d Bytes erwartet, %d erhalten",
+                        camera_name, expected, len(raw))
+            self.show("Kamera", f"Frame-Fehler: {len(raw)} Bytes")
+            return
+        
+        # Direkt in Buffer + mmap blitten (keine Konvertierung nötig!)
+        try:
+            buf = bytearray(raw)
+            with self._lock:
+                self._buf[:] = buf
+                try:
+                    self._mm.seek(0)
+                    self._mm.write(buf)
+                except (ValueError, OSError):
+                    pass
+        except Exception as e:
+            log.error("show_camera: Blit-Fehler für %s: %s", camera_name, e)
+            self.show("Kamera", f"Blit-Fehler")
+            return
+        
+        # Kurze Bestätigung als Text-Overlay
+        self.show("Kamera", f"{camera_name}: Live")
+
     # ── Snapshot für die Web-UI ───────────────────────────────
     def snapshot_png(self) -> bytes | None:
         """Aktueller Framebuffer (was grade auf dem Display steht) als PNG.
@@ -481,6 +530,12 @@ def init():
         _instance.init()
 
 
+def show(heading: str, body: str = "") -> None:
+    """Display-Text ausgeben (von intent.py genutzt)."""
+    if _instance is not None:
+        _instance.show(heading, body)
+
+
 def show_text(heading: str, body: str = "") -> None:
     if _instance is not None:
         _instance.show(heading, body)
@@ -516,3 +571,12 @@ def snapshot_png() -> bytes | None:
     if _instance is not None:
         return _instance.snapshot_png()
     return None
+
+
+def show_camera(camera_name: str) -> None:
+    """Modul-Fassade: Kamera-Snapshot vom Pi holen und auf Display blitten."""
+    if _instance is not None:
+        _instance.show_camera(camera_name)
+
+
+# ── Ende ──────────────────────────────────────────────────────
