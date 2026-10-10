@@ -212,10 +212,16 @@ IDLE_TIMEOUT   = float(_env("IDLE_TIMEOUT", "5"))       # s ohne neues Frame →
 IDLE_SHOW_MUSIC = int(_env("IDLE_SHOW_MUSIC", "1"))     # 1 = Musik-Info im Idle zeigen
 
 # ── Musik-Player (mpg123: Dateien vom SMB-Share + Radio-Streams) ──
-# MUSIC_ROOT: read-only Bind-Mount des Fileserver-SMB-Shares in den
-# Container (z.B. -v /media/private:/m). Relative Pfade in /play beziehen
-# sich auf diesen Ordner. Ohne Mount (Tests auf dem Desktop) leer ->
-# /play meldet 'Musikordner nicht erreichbar'.
+# MUSIC_ROOT: Wurzelordner aller Musik-/Medien-Dateien IM CONTAINER.
+#
+# Standard: /m — read-only Bind-Mount des Fileserver-Share, der beim
+# docker run eingebunden wird (Muster: -v <host_share>:/m:ro).
+# Der Inhalt richtet sich nach dem geteilten Fileserver-Share — typische
+# Struktur: mp3/ (Musik), Record/ (Aufnahmen), Bilder/, download/ u.a.
+#
+# Relative Pfade in POST /play {path: "mp3/artist/album.mp3"} beziehen
+# sich auf MUSIC_ROOT (/m). Ohne Mount (Desktop-Tests) → /play meldet
+# 'Musikordner nicht erreichbar'. Überschreibbar per MUSIC_ROOT=… in .env.
 MUSIC_ROOT      = _env("MUSIC_ROOT", "/m")
 
 # ── Web ────────────────────────────────────────────────────────
