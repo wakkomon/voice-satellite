@@ -80,12 +80,12 @@ CACHE_TTL       = float(_env("OPENHAB_CACHE_TTL", "300"))  # Item-Liste cachen (
 # diese vLLM-Variante legt die Antwort dann ABER in reasoning_content,
 # content bleibt null -> router.ask_llm liest beide Felder.
 LLM_ENABLE_THINKING = _env("LLM_ENABLE_THINKING", "false") == "true"
-LLM_URL         = _env("LLM_URL", "http://192.168.1.33:4000/v1/chat/completions",
+LLM_URL         = _env("LLM_URL", "http://192.168.1.33:8642/v1/chat/completions",
                        fallback_empty=True)
 LLM_TOKEN       = _env("LLM_TOKEN", "")            # LiteLLM: sk-Key; Ollama: leer
-LLM_MODEL       = _env("LLM_MODEL", "Qwen3.8-27B",  # 27B via LiteLLM; lokal: qwen2.5:3b
+LLM_MODEL       = _env("LLM_MODEL", "hermes-agent",  # Hermes-Gateway-Agent
                        fallback_empty=True)
-LLM_TIMEOUT     = float(_env("LLM_TIMEOUT", "60", fallback_empty=True))  # Kaltstart (Modell-Load) darf ~35s brauchen
+LLM_TIMEOUT     = float(_env("LLM_TIMEOUT", "180", fallback_empty=True))  # Kaltstart (Gateway-Agent braucht länger)
 LLM_MAX_TOKENS  = int(_env("LLM_MAX_TOKENS", "1024", fallback_empty=True))  # mit Thinking-aus reicht 1024 fuer Voice-Antworten
 SYSTEM_PROMPT   = _env(
     "SYSTEM_PROMPT",
@@ -165,7 +165,7 @@ TTS_TOKEN       = _env("TTS_TOKEN", "")
 TTS_MODEL       = _env("TTS_MODEL", "piper")
 TTS_VOICE       = _env("TTS_VOICE", "kitt")
 # Sprache der Synthese (API-Feld "language"); leer = Server-Default.
-TTS_LANGUAGE    = _env("TTS_LANGUAGE", "")
+TTS_LANGUAGE    = _env("TTS_LANGUAGE", "de")
 TTS_TIMEOUT     = float(_env("TTS_TIMEOUT", "60"))
 
 # ── Feedback-Töne ──────────────────────────────────────────────

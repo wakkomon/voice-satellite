@@ -30,17 +30,17 @@ def grab(fname, var):
 
 
 # Seed-Werte: werden NUR angelegt, wenn der Key in der .env noch fehlt.
-# Sind alte Defaults — eine laufende .env mit korrekten Werten gewinnt.
+# Sind Live-Defaults — eine laufende .env mit korrekten Werten gewinnt.
+# Nur nicht-geheim Werte (Tokens/Secrets werden nicht gesetzt, weil leer).
 seed = {
-    "OPENHAB_TOKEN": grab("openhab_switch.py", "OPENHAB_TOKEN"),
-    "LLM_TOKEN": grab("ollama.py", "TOKEN"),
-    "LLM_MODEL": "",                       # Hermes-Gateway braucht keinen Modelnamen
-    "TTS_TOKEN": grab("tts_piper.py", "API_KEY"),
-    "TTS_MODEL": "piper",
-    "TTS_VOICE": grab("tts_piper.py", "VOICE"),
+    "LLM_TOKEN": "",                       # nicht-geheim → leer (kein Seed)
+    "TTS_TOKEN": "",                       # nicht-geheim → leer (kein Seed)
+    "OPENHAB_TOKEN": "",                   # nicht-geheim → leer (kein Seed)
+    "LLM_URL": "http://192.168.1.33:8642/v1/chat/completions",
+    "LLM_MODEL": "",                       # Gateway-Agent (auto-detect via URL)
+    "LLM_TIMEOUT": "180",                  # Gateway-Agent braucht längeren Timeout
+    "TTS_VOICE": "kitt",
     "TTS_LANGUAGE": "de",
-    # plughw konvertiert softwareseitig (virt_mic_16k/hw sind auf trixie armv7l
-    # kaputt: Container-ALSA 1.2.14, rate-Plugin 'Unknown field rate'):
     "MIC_DEVICE": "plughw:2,0",
     "SPEAKER_DEVICE": "plughw:1,0",
     "WAKE_SENS": "0.5",
