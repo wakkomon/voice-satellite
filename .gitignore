@@ -6,3 +6,7 @@ __pycache__/
 *.pyc
 *.db
 data/
+
+# Deploy-Staging (sshx-upgeladen, kein Repo-Content)
+.incoming-patch/
+.incoming-v15/
