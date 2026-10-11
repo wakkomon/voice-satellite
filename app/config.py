@@ -66,14 +66,14 @@ STT_LANGUAGE    = _env("STT_LANGUAGE", "de")   # fest Deutsch vorgeben, sonst r�
 STT_TIMEOUT     = float(_env("STT_TIMEOUT", "30"))
 
 # ── openHAB Rules ─────────────────────────────────────────────
-OPENHAB_URL     = _env("OPENHAB_URL", "http://192.168.1.33:8080/rest/items")
+OPENHAB_URL     = _env("OPENHAB_URL", "http://openhab.example.net:8080/rest/items")
 OPENHAB_TOKEN   = _env("OPENHAB_TOKEN", "")
 RULES_FILE      = _env("RULES_FILE", "/data/rules.yaml")
 CACHE_TTL       = float(_env("OPENHAB_CACHE_TTL", "300"))  # Item-Liste cachen (s)
 
 # ── LLM-Fallback (Hermes-Gateway-Agent .33:8642) ──────────────
 # Live-Default: Hermes-Gateway (:8642, Modell hermes-agent) – ein echter
-# Agent MIT Terminal. Reine Chat-Endpunkte (vLLM/Ollama/LiteLLM) werden
+# Agent MIT Terminal. Reine Chat-Endpunkte (vLLM/Ollama) werden
 # unterstuetzt: mit enable_thinking=false antworten sie schnell; die Antwort
 # kann in content oder reasoning_content liegen -> router.ask_llm liest beide.
 LLM_ENABLE_THINKING = _env("LLM_ENABLE_THINKING", "false") == "true"
@@ -156,13 +156,13 @@ MEMORY_EXTRACT_PROMPT = (
     "Gespräch:\nNutzer: {user}\nDu: {assistant}"
 )
 
-# ── TTS (Qwen3-TTS auf .31:7811) ───────────────────────────────
-TTS_URL         = _env("TTS_URL", "http://192.168.1.31:7811/v1/audio/speech", fallback_empty=True)
+# ── TTS (Piper auf .33:5000) ───────────────────────────────
+TTS_URL         = _env("TTS_URL", "http://192.168.1.33:5000/v1/audio/speech", fallback_empty=True)
 TTS_TOKEN       = _env("TTS_TOKEN", "")
-TTS_MODEL       = _env("TTS_MODEL", "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice")
-TTS_VOICE       = _env("TTS_VOICE", "Uncle_fu")
+TTS_MODEL       = _env("TTS_MODEL", "piper")
+TTS_VOICE       = _env("TTS_VOICE", "kitt")
 # Sprache der Synthese (API-Feld "language"); leer = Server-Default.
-TTS_LANGUAGE    = _env("TTS_LANGUAGE", "German")
+TTS_LANGUAGE    = _env("TTS_LANGUAGE", "de")
 TTS_TIMEOUT     = float(_env("TTS_TIMEOUT", "60"))
 
 # ── Feedback-Töne ──────────────────────────────────────────────

@@ -59,7 +59,7 @@ Satellite: 192.168.1.32 (Container voice-satellite, hostnet)
   ├─ openHAB      http://openhab.example.net:8080/rest
   ├─ TTS Piper    http://192.168.1.33:5000/v1/audio/speech
   ├─ STT Whisper  http://192.168.1.31:9000/v1/audio/transcriptions
-  ├─ LLM (LiteLLM) http://192.168.1.33:4000/v1/chat/completions
+  ├─ LLM (Hermes-Gateway) http://192.168.1.33:8642/v1/chat/completions
   └─ Pi-Bridge    http://192.168.1.32:8790
 ```
 
@@ -115,10 +115,10 @@ gruppiert:
 
 | Variable | Default | Bedeutung |
 |---|---|---|
-| `LLM_URL` | `http://192.168.1.33:4000/v1/chat/completions` | Chat-Completions-Endpunkt |
-| `LLM_TOKEN` | *(leer)* | API-Key (LiteLLM); Ollama leer |
-| `LLM_MODEL` | `Qwen3.8-27B` | Modell (27B via LiteLLM; lokal `qwen2.5:3b`) |
-| `LLM_TIMEOUT` | `60` | Timeout (Kaltstart/Modell-Load darf ~35s) |
+| `LLM_URL` | `http://192.168.1.33:8642/v1/chat/completions` | Chat-Completions-Endpunkt (Hermes-Gateway) |
+| `LLM_TOKEN` | *(leer)* | API-Key (Gateway/Agent); Ollama leer |
+| `LLM_MODEL` | `hermes-agent` | Modell (Hermes-Gateway-Agent mit Terminal) |
+| `LLM_TIMEOUT` | `180` | Timeout (Gateway-Agent braucht länger) |
 | `LLM_MAX_TOKENS` | `1024` | max. Antwort-Tokens (mit Thinking-aus reicht 1024) |
 | `LLM_ENABLE_THINKING` | `false` | Reine Chat-Endpunkte: aus = schneller |
 | `LLM_HAS_TOOLS` | `auto` | `true\|false\|auto` — erkennt Agent-Endpunkte |
@@ -139,7 +139,7 @@ gruppiert:
 | `TTS_TOKEN` | *(leer)* | Zugriffstoken des Piper-Servers (Secret) |
 | `TTS_MODEL` | `piper` | Piper-Modell |
 | `TTS_VOICE` | `kitt` | Stimme |
-| `TTS_LANGUAGE` | *(leer)* | Sprache; leer = Server-Default |
+| `TTS_LANGUAGE` | `de` | Sprache; leer = Server-Default |
 | `TTS_TIMEOUT` | `60` | Timeout in s |
 
 ### Töne / Alarm

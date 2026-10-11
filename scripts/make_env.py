@@ -69,7 +69,7 @@ seed = {
     "MIN_REC_SEC": "0.4",
     "MUSIC_ROOT": "/m",
     "OPENHAB_CACHE_TTL": "300",
-    "OPENHAB_URL": "http://192.168.1.33:8080/rest/items",
+    "OPENHAB_URL": "http://openhab.example.net:8080/rest/items",
     # "OPENHAB_TOKEN": – Secret, bleibt in der .env (kein Seed)
     "PREROLL_SEC": "0.3",
     "RULES_FILE": "/data/rules.yaml",
@@ -91,11 +91,11 @@ seed = {
     "TONE_SEC": "0.15",
     "TONE_WAKE_HZ": "880",
     "TTS_LANGUAGE": "German",
-    "TTS_MODEL": "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+    "TTS_MODEL": "piper",
     # "TTS_TOKEN": – Secret, bleibt in der .env (kein Seed)
     "TTS_TIMEOUT": "60",
-    "TTS_URL": "http://192.168.1.31:7811/v1/audio/speech",
-    "TTS_VOICE": "Uncle_fu",
+    "TTS_URL": "http://192.168.1.33:5000/v1/audio/speech",
+    "TTS_VOICE": "kitt",
     "VAD_AGGRESSIVENESS": "3",
     "VAD_MODE": "energy",
     "VOLUME_STEP": "10",
