@@ -11,7 +11,6 @@ handled=True → Befehl wurde lokal verarbeitet, nicht ans LLM weitergeben.
 """
 from __future__ import annotations
 
-import asyncio
 import glob
 import fnmatch
 import logging
@@ -66,61 +65,81 @@ def _fuzzy_match(query: str, candidates: list[str],
 # Avoids slow CIFS scans on every playlist request
 # ---------------------------------------------------------------------------
 
-_m3u_index: dict[str, list[str]] | None = None  # name.lower() -> [relpaths]
-_m3u_refresh_task: "asyncio.Task | None" = None
+_m3u_index: dict[str, list[str]] | None = None  # name.lower() -> [relpaths (rel. MUSIC_ROOT)]
+_m3u_all: list[str] | None = None               # alle Playlists (rel. MUSIC_ROOT)
+_m3u_indexer_started = False
 
 
-def _build_m3u_index(root: str) -> dict[str, list[str]]:
-    """Scan root once and build a name->relpath lookup dict."""
+def _build_m3u_index(root: str) -> tuple[dict[str, list[str]], list[str]]:
+    """Scan root/mp3 once and build (name->relpath dict, all-relpaths).
+
+    Only the mp3 subdirectory is walked — der Rest des CIFS-Mounts
+    (SteamLibrary, Videos, …) wird bewusst ausgelassen, da jeder
+    Verzeichnis-Roundtrip über SMB teuer ist.
+    """
     idx: dict[str, list[str]] = {}
-    for dirpath, _dirs, files in os.walk(root):
+    all_paths: list[str] = []
+    scan_root = os.path.join(root, "mp3")
+    if not os.path.isdir(scan_root):
+        return idx, all_paths
+    for dirpath, _dirs, files in os.walk(scan_root):
         for f in files:
             if f.lower().endswith((".m3u", ".m3u8")):
                 rel = os.path.relpath(os.path.join(dirpath, f), root)
+                all_paths.append(rel)
                 base = f.rsplit(".", 1)[0]  # strip extension
                 # Index every whitespace-separated token, plus the full base name
-                tokens = [t.lower() for t in base.replace("_", " ").split()]
+                tokens = [t.lower() for t in base.replace("_", " ").split() if t]
                 if not tokens:
                     tokens = [base.lower()]
                 for token in tokens:
                     idx.setdefault(token, []).append(rel)
                 # Also index the full base (minus extension) as one entry
                 idx.setdefault(base.lower(), []).append(rel)
-    return idx
+    return idx, all_paths
 
 
-async def _start_m3u_indexer(root: str, interval: int = 300) -> None:
-    """Build M3U index, then refresh every `interval` seconds."""
-    global _m3u_index, _m3u_refresh_task
+def start_m3u_indexer(root: str, interval: int = 300) -> None:
+    """Start background thread: build M3U index, refresh every `interval` s.
 
-    def _refresh():
-        try:
-            log.info("intent: refreshing M3U index …")
-            idx = _build_m3u_index(root)
-            log.info("intent: M3U index ready — %d entries", len(idx))
-            with _lock:
-                _m3u_index = idx
-        except Exception:
-            log.exception("intent: M3U index refresh failed")
+    Threaded (not asyncio) — die App läuft ohne Event-Loop.
+    """
+    global _m3u_indexer_started
+    if _m3u_indexer_started:
+        return
+    _m3u_indexer_started = True
 
-    _refresh()  # build immediately
-    _timer: asyncio.TimerHandle | None = None
+    def _worker():
+        global _m3u_index, _m3u_all
+        while True:
+            try:
+                log.info("intent: M3U-Index wird gebaut …")
+                t0 = time.time()
+                idx, all_paths = _build_m3u_index(root)
+                with _lock:
+                    _m3u_index = idx
+                    _m3u_all = all_paths
+                log.info("intent: M3U-Index bereit — %d Namen, %d Playlists, %.1f s",
+                         len(idx), len(all_paths), time.time() - t0)
+            except Exception:
+                log.exception("intent: M3U-Index-Refresh fehlgeschlagen")
+            time.sleep(interval)
 
-    def _schedule():
-        nonlocal _timer
-        _timer = asyncio.get_event_loop().call_later(
-            interval, lambda: (_refresh(), _schedule())[1]
-        )
-
-    _schedule()
+    threading.Thread(target=_worker, name="m3u-indexer", daemon=True).start()
 
 
 def _find_m3u_in_root(name: str, root: str) -> str | None:
     """Search root (and subdirs) for M3U/M3U8 file matching *name*."""
     # Use index if available (avoids slow CIFS scan on every call)
     if _m3u_index is not None:
-        for match in _m3u_index.get(name.lower(), []):
-            return match
+        n = name.lower()
+        matches = _m3u_index.get(n)
+        if matches:
+            return matches[0]
+        # Substring-Fallback im In-Memory-Index (gleichzeitig wie Glob *name*)
+        for k, paths in _m3u_index.items():
+            if n in k or k in n:
+                return paths[0]
     # Fallback: direct file check (instant, no walk)
     full = os.path.join(root, name)
     for ext in (".m3u", ".m3u8"):
@@ -274,13 +293,18 @@ def try_play_music(text: str) -> tuple[bool, str | None]:
             mp3_dir = os.path.join(config.MUSIC_ROOT, "mp3")
             if not os.path.isdir(mp3_dir):
                 return True, "MP3-Ordner nicht erreichbar."
-            playlists = []
-            for root_dir, _dirs, files in os.walk(mp3_dir):
-                for f in files:
-                    if f.lower().endswith((".m3u", ".m3u8")):
-                        playlists.append(
-                            os.path.relpath(os.path.join(root_dir, f), config.MUSIC_ROOT)
-                        )
+            playlists: list[str] = []
+            with _lock:
+                if _m3u_all is not None:
+                    playlists = list(_m3u_all)
+            if not playlists:
+                # Index noch nicht fertig (Startphase) → einmaliger Scan
+                for root_dir, _dirs, files in os.walk(mp3_dir):
+                    for f in files:
+                        if f.lower().endswith((".m3u", ".m3u8")):
+                            playlists.append(
+                                os.path.relpath(os.path.join(root_dir, f), config.MUSIC_ROOT)
+                            )
             if playlists:
                 import random as _rand
                 selected = _rand.choice(playlists)
@@ -333,17 +357,16 @@ def try_play_mp3(text: str) -> tuple[bool, str | None]:
                 return True, err
             return True, f"'{name}{ext}' wird abgespielt"
 
-    # 2. Glob match for m3u/m3u8 playlists
+    # 2. Playlist match via M3U-Index (substrings, ohne CIFS-Traversal)
+    rel = _find_m3u_in_root(name, root)
+    if rel:
+        err = playback.player.play_path(rel)
+        if err:
+            return True, err
+        return True, f"Playlist '{os.path.splitext(os.path.basename(rel))[0]}' wird abgespielt"
+    # 2b. Index noch nicht fertig (Startphase) → einmaliger, begrenzter Glob
     for pat in (f"*{name}*.m3u", f"*{name}*.m3u8"):
         for f in glob.glob(os.path.join(mp3_dir, pat), recursive=False):
-            if os.path.isfile(f):
-                rel = os.path.relpath(f, root)
-                err = playback.player.play_path(rel)
-                if err:
-                    return True, err
-                return True, f"Playlist '{os.path.basename(f)}' wird abgespielt"
-            # Also recursive
-        for f in glob.glob(os.path.join(mp3_dir, "**", pat), recursive=True):
             if os.path.isfile(f):
                 rel = os.path.relpath(f, root)
                 err = playback.player.play_path(rel)
