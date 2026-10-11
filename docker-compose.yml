@@ -12,8 +12,8 @@ services:
     group_add:
       - "29"                    # audio (GID auf dem Pi)
       - "44"                    # video  (/dev/fb1 gehoert root:video)
-    env_file:
-      - .env              # Secrets & API-URLs lives on the Pi, never in the image
+    # KEINE env_file! Config-Defaults in app/config.py sind die Live-Werte;
+    # Secrets unten inline setzen (Portainer-Web-Editor / .env auf dem Host).
     environment:
       - MIC_DEVICE=${MIC_DEVICE:-plughw:2,0}
       - SPEAKER_DEVICE=${SPEAKER_DEVICE:-plughw:1,0}
@@ -24,6 +24,12 @@ services:
       - FOLLOWUP=${FOLLOWUP:-1}
       - FOLLOWUP_SEC=${FOLLOWUP_SEC:-3.0}
       - WAKE_PPN=${WAKE_PPN:-/app/wake/computer_raspberry-pi.ppn}
+      # Secrets (leer = deaktiviert) — pro Gerät im Portainer-Editor setzen:
+      - OPENHAB_TOKEN=${OPENHAB_TOKEN:-}
+      - TTS_TOKEN=${TTS_TOKEN:-}
+      - LLM_TOKEN=${LLM_TOKEN:-}
+      - RTSP_USER=${RTSP_USER:-}
+      - RTSP_PASS=${RTSP_PASS:-}
     volumes:
       - voice-satellite-data:/data   # gleichnamiges Volume wie docker run
       - /media/private:/m:ro        # Musik-/Radio-/Kamera-M3U (SMB-Bind-Mount, Host muss es haben)
