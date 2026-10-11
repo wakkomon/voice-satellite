@@ -70,32 +70,69 @@ _m3u_all: list[str] | None = None               # alle Playlists (rel. MUSIC_ROO
 _m3u_indexer_started = False
 
 
-def _build_m3u_index(root: str) -> tuple[dict[str, list[str]], list[str]]:
-    """Scan root/mp3 once and build (name->relpath dict, all-relpaths).
+def _build_m3u_index(root: str, max_depth: int = 2, budget: float = 90.0
+                     ) -> tuple[dict[str, list[str]], list[str]]:
+    """Scan root/mp3 (max_depth Ebenen) und bauen (name->relpath, all-relpaths).
 
-    Only the mp3 subdirectory is walked — der Rest des CIFS-Mounts
-    (SteamLibrary, Videos, …) wird bewusst ausgelassen, da jeder
-    Verzeichnis-Roundtrip über SMB teuer ist.
+    Begrenzung: nur mp3-Unterverzeichnis, nur max_depth Ebenen, harte
+    Zeitgrenze (budget s) — der Baum liegt auf CIFS/SMB, jeder Roundtrip
+    kostet ~0,2 s; ein Voll-Walk würde Minuten dauern. Playlists liegen
+    praktisch immer oben (Ebene 1) oder in einer Sammlungs-Unterstufe.
     """
     idx: dict[str, list[str]] = {}
     all_paths: list[str] = []
     scan_root = os.path.join(root, "mp3")
     if not os.path.isdir(scan_root):
         return idx, all_paths
-    for dirpath, _dirs, files in os.walk(scan_root):
-        for f in files:
-            if f.lower().endswith((".m3u", ".m3u8")):
-                rel = os.path.relpath(os.path.join(dirpath, f), root)
-                all_paths.append(rel)
-                base = f.rsplit(".", 1)[0]  # strip extension
-                # Index every whitespace-separated token, plus the full base name
-                tokens = [t.lower() for t in base.replace("_", " ").split() if t]
-                if not tokens:
-                    tokens = [base.lower()]
-                for token in tokens:
-                    idx.setdefault(token, []).append(rel)
-                # Also index the full base (minus extension) as one entry
-                idx.setdefault(base.lower(), []).append(rel)
+    t0 = time.time()
+
+    def add(path: str) -> None:
+        rel = os.path.relpath(path, root)
+        if rel in all_paths:
+            return
+        all_paths.append(rel)
+        base = os.path.basename(path).rsplit(".", 1)[0]
+        tokens = [t.lower() for t in base.replace("_", " ").split() if t] or [base.lower()]
+        for token in sorted(set(tokens)):
+            idx.setdefault(token, []).append(rel)
+        if base.lower() not in tokens:
+            idx.setdefault(base.lower(), []).append(rel)
+
+    def listdir_sorted(d: str) -> list[str]:
+        try:
+            return sorted(os.listdir(d))
+        except OSError:
+            return []
+
+    def rec(d: str, depth: int) -> None:
+        for e in listdir_sorted(d):
+            if time.time() - t0 > budget:
+                return
+            p = os.path.join(d, e)
+            try:
+                if os.path.isfile(p):
+                    if e.lower().endswith((".m3u", ".m3u8")):
+                        add(p)
+                elif depth < max_depth and os.path.isdir(p):
+                    rec(p, depth + 1)
+            except OSError:
+                continue
+
+    entries = listdir_sorted(scan_root)
+    # Pass 1: alle Level-1-Playlists (schnell, garantiert)
+    for e in entries:
+        p = os.path.join(scan_root, e)
+        try:
+            if os.path.isfile(p) and e.lower().endswith((".m3u", ".m3u8")):
+                add(p)
+        except OSError:
+            continue
+    # Pass 2: Unterverzeichnisse bis max_depth, mit Time-Budget
+    rec(scan_root, 0)
+    if time.time() - t0 >= budget and len(idx) > 0:
+        log.warning("intent: M3U-Scan: Zeitbudget (%.0f s) erreicht — Index ggfl. unvollständig", budget)
+    # De-duplizierung (Pass 1 + rec überlappen sich bei Level-1-Dateien)
+    all_paths = list(dict.fromkeys(all_paths))
     return idx, all_paths
 
 
