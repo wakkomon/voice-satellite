@@ -268,7 +268,7 @@ class Pipeline:
             self._fail("STT leer oder nicht erreichbar")
             return False
         log.info("STT erkannt: %s", text)
-        self.ev(f"STT: {text[:80]}")
+        self.ev(f"STT: {text}")
         if _is_ack(text):
             # "Danke" & aehnliches: Abschlusston, Session zu – nicht
             # weiter zuhoeren, direkt auf Wake-Word warten.

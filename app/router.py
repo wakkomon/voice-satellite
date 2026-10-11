@@ -278,13 +278,13 @@ def try_music_stop(text):
 
 
 def try_volume(text):
-    """'Lauter'/'Leiser' (±10) und 'Lautstärke [auf] 0-100[Prozent]' ->
+    """'Lauter'/'Leiser' (±VOLUME_STEP, immer eine Stufe) und 'Lautstärke [auf] 0-100[Prozent]' ->
     amixer auf allen Karten (deterministisch, ohne LLM-Runde).
     None, wenn es kein Lautstärke-Kommando ist."""
     t = _normalize(text)
     if re.search(r"\b(lauter|leiser)\b", t):
         try:
-            new, old = volume.step(10 if "lauter" in t else -10)
+            new, old = volume.step(config.VOLUME_STEP if "lauter" in t else -config.VOLUME_STEP)
         except Exception as e:
             return f"Lautstärke geht nicht: {e}"
         o_v, o_m = old
