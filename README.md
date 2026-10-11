@@ -142,6 +142,21 @@ gruppiert:
 | `TTS_LANGUAGE` | `German` | Sprache; leer = Server-Default |
 | `TTS_TIMEOUT` | `60` | Timeout in s |
 
+#### Alternative: Piper TTS
+
+Statt Qwen3-TTS kann der Satellite alternativ auf einen [Piper](https://github.com/OHF-Voice/piper1-gpl)-Server
+zugreifen. In der `.env` die folgenden Werte setzen (gleiche Variablennamen):
+
+```env
+TTS_MODEL=piper
+TTS_VOICE=kitt
+TTS_URL=http://192.168.1.33:5000/v1/audio/speech
+TTS_LANGUAGE=de
+```
+
+`TTS_LANGUAGE` wird dann als `language`-Feld in den Piper-Request übergeben
+(leer = Server-Default).
+
 ### Töne / Alarm
 
 | Variable | Default | Bedeutung |
