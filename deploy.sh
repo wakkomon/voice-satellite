@@ -40,7 +40,10 @@ echo "[0/6] No-Overwrite-Prüfung: .env-Keys gegen App-Defaults..."
 DRIFT_FOUND=0
 while IFS=$'\t' read -r key default; do
   [ -z "$key" ] && continue
-  env_val=$(grep "^${key}=" .env 2>/dev/null | cut -d= -f2- | sed 's/^"//;s/\"$//')
+  # || true: grep ohne Treffer liefert rc=1 – unter 'set -euo pipefail'
+  # würde das Assignement den Deploy hier sonst abbrechen (leere Werte sind
+  # gewuenscht: Key fehlt in .env -> kein Drift).
+  env_val=$(grep "^${key}=" .env 2>/dev/null | cut -d= -f2- | sed 's/^"//;s/\"$//' || true)
   # Nur anzeigen, wenn Key in .env gesetzt UND Wert != Default
   if [ -n "$env_val" ] && [ "$env_val" != "$default" ]; then
     if [ "$DRIFT_FOUND" -eq 0 ]; then
