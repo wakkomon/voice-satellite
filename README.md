@@ -32,20 +32,20 @@ gleiche Mounts/Volumes wie `deploy.sh`).
 
 ### Deploy via Portainer (Stack aus Repository)
 
+Die `docker-compose.yml` referenziert **kein** `.env`-File — alle
+Konfigurations-Werte kommen aus den Defaults in `app/config.py` (Pi-Live-Werte)
+bzw. aus den `${VAR:-…}`-Interpolationen. So deployt man den Stack:
+
 1. Portainer → **Stacks → Add stack → Web editor** → Repository-URL
    `https://<user>:<token>@github.com/wakkomon/voice-satellite.git`
    (Private-Repo: GitHub-Personal-Access-Token mit `repo`-Scope).
-2. **Vor dem Deploy** im Web-Editor unter „Add a file" eine Datei `.env`
-   anlegen und den Inhalt einfügen. Die `docker-compose.yml` referenziert
-   `env_file: .env` **relativ** zum Compose-Verzeichnis — in Portainer ist
-   das `/data/compose/<id>/`, wo eine frische Klon kein `.env` enthält
-   (Secrets gehören ins `.env`, nicht ins Repo). Ohne Datei schlägt der
-   Deploy mit `env file /data/compose/<id>/.env not found` fehl.
-3. `.env`-Inhalt: von einem bestehenden Pi übernehmen, oder lokal
-   `python3 scripts/make_env.py` laufen lassen und die erzeugte `.env`
-   kopieren; Secrets (`OPENHAB_TOKEN`, `TTS_TOKEN`, `LLM_TOKEN`, `RTSP_*`)
-   pro Gerät eintragen.
-4. **Build and deploy** — Portainer baut das Image selbst (entspricht
+2. In der Stack-Ansicht unter **Variables** die Secrets für das Gerät setzen:
+   `OPENHAB_TOKEN`, `TTS_TOKEN`, `LLM_TOKEN`, `RTSP_USER`, `RTSP_PASS`
+   (leer = Feature deaktiviert; Portainer füllt die `${…:-}`-Placeholders).
+   Weitere Variablen wie `TTS_URL`, `TTS_MODEL`, `STT_URL`, `LLM_URL` etc.
+   lassen sich dort genauso überschreiben — ausfallen lassen, wenn die
+   Defaults in `app/config.py` passen.
+3. **Build and deploy** — Portainer baut das Image selbst (entspricht
    `deploy.sh` minus Health-Check-Output).
 
 > Hinweis: Portainer-Stacks liegen unter `/data/compose/<id>/`; bei Updates
