@@ -11,6 +11,7 @@ handled=True → Befehl wurde lokal verarbeitet, nicht ans LLM weitergeben.
 """
 from __future__ import annotations
 
+import asyncio
 import glob
 import fnmatch
 import logging
@@ -22,6 +23,7 @@ import time
 from . import config, display, playback, volume
 
 log = logging.getLogger("intent")
+_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # Hilfsfunktionen
@@ -59,14 +61,67 @@ def _fuzzy_match(query: str, candidates: list[str],
     return None
 
 
+# ---------------------------------------------------------------------------
+# Background M3U index — built at startup + refreshed periodically
+# Avoids slow CIFS scans on every playlist request
+# ---------------------------------------------------------------------------
+
+_m3u_index: dict[str, list[str]] | None = None  # name.lower() -> [relpaths]
+_m3u_refresh_task: "asyncio.Task | None" = None
+
+
+def _build_m3u_index(root: str) -> dict[str, list[str]]:
+    """Scan root once and build a name->relpath lookup dict."""
+    idx: dict[str, list[str]] = {}
+    for dirpath, _dirs, files in os.walk(root):
+        for f in files:
+            if f.lower().endswith((".m3u", ".m3u8")):
+                rel = os.path.relpath(os.path.join(dirpath, f), root)
+                base = f.rsplit(".", 1)[0]  # strip extension
+                # Index every whitespace-separated token, plus the full base name
+                tokens = [t.lower() for t in base.replace("_", " ").split()]
+                if not tokens:
+                    tokens = [base.lower()]
+                for token in tokens:
+                    idx.setdefault(token, []).append(rel)
+                # Also index the full base (minus extension) as one entry
+                idx.setdefault(base.lower(), []).append(rel)
+    return idx
+
+
+async def _start_m3u_indexer(root: str, interval: int = 300) -> None:
+    """Build M3U index, then refresh every `interval` seconds."""
+    global _m3u_index, _m3u_refresh_task
+
+    def _refresh():
+        try:
+            log.info("intent: refreshing M3U index …")
+            idx = _build_m3u_index(root)
+            log.info("intent: M3U index ready — %d entries", len(idx))
+            with _lock:
+                _m3u_index = idx
+        except Exception:
+            log.exception("intent: M3U index refresh failed")
+
+    _refresh()  # build immediately
+    _timer: asyncio.TimerHandle | None = None
+
+    def _schedule():
+        nonlocal _timer
+        _timer = asyncio.get_event_loop().call_later(
+            interval, lambda: (_refresh(), _schedule())[1]
+        )
+
+    _schedule()
+
+
 def _find_m3u_in_root(name: str, root: str) -> str | None:
     """Search root (and subdirs) for M3U/M3U8 file matching *name*."""
-    patterns = [f"**/*{name}*.m3u", f"**/*{name}*.m3u8"]
-    for pat in patterns:
-        for f in glob.glob(os.path.join(root, pat), recursive=True):
-            if os.path.isfile(f):
-                return os.path.relpath(f, root)
-    # Also try just the name as-is
+    # Use index if available (avoids slow CIFS scan on every call)
+    if _m3u_index is not None:
+        for match in _m3u_index.get(name.lower(), []):
+            return match
+    # Fallback: direct file check (instant, no walk)
     full = os.path.join(root, name)
     for ext in (".m3u", ".m3u8"):
         if os.path.isfile(full + ext):
