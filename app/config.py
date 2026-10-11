@@ -197,6 +197,11 @@ FOLLOWUP_MAX    = int(_env("FOLLOWUP_MAX", "10"))  # Runden, dann Pflichtpause
 DUCK_ENABLED   = _env("DUCK_ENABLED", "1") in ("1", "true", "yes", "on")
 DUCK_VOLUME    = int(_env("DUCK_VOLUME", "30"))   # Ziel-Lautstärke in %
 
+# ── Lautstärke (amixer) ───────────────────────────────────────
+# Prozent-Schritt pro Stufe: "lauter"/"leiser" ändern die Lautstärke immer
+# um genau EINE Stufe (nicht auf einen absoluten Wert).
+VOLUME_STEP    = int(_env("VOLUME_STEP", "10"))
+
 # ── Framebuffer-Display (LLM-Antworten als Text) ───────────────
 # /dev/fb1 wird direkt beschrieben (16-Bit BGR565, wie fbi es rendert).
 # Ohne /dev/fb1 im Container bleibt das Display stumm – Feature optional.
@@ -210,6 +215,11 @@ IDLE_TICK_SEC  = float(_env("IDLE_TICK_SEC", "30"))     # s zwischen Idle-Displa
 IDLE_FRAME_DIR = _env("IDLE_FRAME_DIR", "/data/idle")   # shared volume dir
 IDLE_TIMEOUT   = float(_env("IDLE_TIMEOUT", "5"))       # s ohne neues Frame → dunkel
 IDLE_SHOW_MUSIC = int(_env("IDLE_SHOW_MUSIC", "1"))     # 1 = Musik-Info im Idle zeigen
+# Quell-URL für das Idle-Standardbild. Der Container selbst lädt NICHT:
+# das Host-Skript render_idle.py (Root-Cron) lädt diese URL, rendert sie
+# nach RGB565 nach IDLE_FRAME_DIR und der Container blittet das Frame.
+# Hier definiert, damit URL und Container dieselbe Quelle (shared .env) nutzen.
+DEFAULT_IMAGE_URL = _env("DEFAULT_IMAGE_URL", "http://192.168.1.33/weather/snap.jpg")
 
 # ── Musik-Player (mpg123: Dateien vom SMB-Share + Radio-Streams) ──
 # MUSIC_ROOT: Wurzelordner aller Musik-/Medien-Dateien IM CONTAINER.
