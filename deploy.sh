@@ -24,11 +24,38 @@ fi
 
 echo "=== Voice-Satellite Deploy ==="
 
-# 0. .env vorhanden?
+# 0. .env vorhanden? No-Overwrite-Prüfung
 if [ ! -f .env ]; then
   echo "Fehler: .env fehlt."
   echo "  python3 scripts/make_env.py && nano .env   # dann ./deploy.sh erneut"
   exit 1
+fi
+
+# No-Overwrite-Guard: Prüft kritische Keys gegen App-Defaults.
+# Nur KEYS mit abweichendem Wert (aber in .env gesetzt) werden angezeigt.
+# Abweichende Werte bleiben UNBERÜHRT – Deploy nimmt sie 1:1 mit.
+echo "[0/6] No-Overwrite-Prüfung: .env-Keys gegen App-Defaults..."
+DRIFT_FOUND=0
+# App-Defaults aus app/config.py extrahieren (Zeilen wie: KEY = _env("KEY", "default"))
+while IFS= read -r line; do
+  key=$(echo "$line" | grep -oP '_env\s*\(\s*"\K[A-Z0-9_]+')
+  default=$(echo "$line" | grep -oP '_env\s*\([^,]+,\s*"\K[^"]+')
+  if [ -n "$key" ] && [ -n "$default" ]; then
+    env_val=$(grep "^${key}=" .env 2>/dev/null | cut -d= -f2- | sed 's/^"//;s/"$//')
+    # Nur anzeigen, wenn Key in .env gesetzt UND Wert != Default
+    if [ -n "$env_val" ] && [ "$env_val" != "$default" ]; then
+      if [ "$DRIFT_FOUND" -eq 0 ]; then
+        echo "  ⚠ Abweichende Werte (werden NICHT überschrieben):"
+        DRIFT_FOUND=1
+      fi
+      echo "    $key: LIVE=$env_val  vs  DEFAULT=$default"
+    fi
+  fi
+done < <(grep '_env(' app/config.py 2>/dev/null)
+if [ "$DRIFT_FOUND" -eq 1 ]; then
+  echo "  ✅ Bestehende .env-Werte bleiben UNVERÄNDERT."
+else
+  echo "  ✅ Alle .env-Keys entsprechen App-Defaults."
 fi
 
 # 1. Daten-Volume erhalten (nie löschen!)
