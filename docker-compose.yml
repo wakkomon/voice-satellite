@@ -12,24 +12,97 @@ services:
     group_add:
       - "29"                    # audio (GID auf dem Pi)
       - "44"                    # video  (/dev/fb1 gehoert root:video)
-    # KEINE env_file! Config-Defaults in app/config.py sind die Live-Werte;
-    # Secrets unten inline setzen (Portainer-Web-Editor / .env auf dem Host).
+    # KEINE env_file! Alle 72 Keys aus app/config.py sind hier als
+    # ${VAR:-Live-Default} editierbar (Portainer: Stack-Variables; Host:
+    # .env + deploy.sh). Secrets sind default leer.
+    # (Ausnahme: SYSTEM_PROMPT/AGENT_SYSTEM_PROMPT — mehrzeilige Defaults,
+    #  bleiben ausschließlich in app/config.py.)
     environment:
-      - MIC_DEVICE=${MIC_DEVICE:-plughw:2,0}
-      - SPEAKER_DEVICE=${SPEAKER_DEVICE:-plughw:1,0}
+      # ── Audio ──
+      - MIC_DEVICE=${MIC_DEVICE:-plughw:2,0}          # USB PCM2902
+      - SPEAKER_DEVICE=${SPEAKER_DEVICE:-plughw:1,0}  # bcm2835 Headphones
+      # ── Wake ──
+      - WAKE_PPN=${WAKE_PPN:-/app/wake/computer_raspberry-pi.ppn}
       - WAKE_SENS=${WAKE_SENS:-0.5}
-      - VAD_MODE=${VAD_MODE:-energy}
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - FB_DEVICE=${FB_DEVICE:-/dev/fb1}
+      - WAKE_WORD=${WAKE_WORD:-Computer}
+      # ── VAD / Aufnahme ──
+      - VAD_MODE=${VAD_MODE:-energy}                  # energy | webrtc (nur x86)
+      - VAD_AGGRESSIVENESS=${VAD_AGGRESSIVENESS:-3}
+      - ENERGY_THRESHOLD=${ENERGY_THRESHOLD:-1200}
+      - SILENCE_SEC=${SILENCE_SEC:-1.3}
+      - MIN_REC_SEC=${MIN_REC_SEC:-0.4}
+      - MAX_REC_SEC=${MAX_REC_SEC:-27}
+      - PREROLL_SEC=${PREROLL_SEC:-0.3}
+      - WAKE_SKIP_SEC=${WAKE_SKIP_SEC:-0.35}
+      # ── STT ──
+      - STT_URL=${STT_URL:-http://192.168.1.31:9000/v1/audio/transcriptions}
+      - STT_MODEL=${STT_MODEL:-whisper-1}
+      - STT_LANGUAGE=${STT_LANGUAGE:-de}
+      - STT_TIMEOUT=${STT_TIMEOUT:-30}
+      # ── openHAB ──
+      - OPENHAB_URL=${OPENHAB_URL:-http://192.168.1.33:8080/rest/items}
+      - OPENHAB_TOKEN=${OPENHAB_TOKEN:-}             # leer = ohne Bearer
+      - RULES_FILE=${RULES_FILE:-/data/rules.yaml}
+      - OPENHAB_CACHE_TTL=${OPENHAB_CACHE_TTL:-300}
+      # ── LLM ──
+      - LLM_URL=${LLM_URL:-http://192.168.1.33:8642/v1/chat/completions}
+      - LLM_TOKEN=${LLM_TOKEN:-}                     # Gateway: Secret; Ollama: leer
+      - LLM_MODEL=${LLM_MODEL:-hermes-agent}
+      - LLM_ENABLE_THINKING=${LLM_ENABLE_THINKING:-false}
+      - LLM_HAS_TOOLS=${LLM_HAS_TOOLS:-auto}         # true | false | auto
+      - LLM_TIMEOUT=${LLM_TIMEOUT:-180}
+      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-1024}
+      # ── Gedächtnis ──
+      - MEMORY_DB=${MEMORY_DB:-/data/memory.db}
+      - MAX_HISTORY=${MAX_HISTORY:-20}
+      - MAX_FACTS=${MAX_FACTS:-100}
+      # ── TTS (Qwen3-Default; Piper: TTS_MODEL=piper, Voice/URL/Language) ──
+      - TTS_URL=${TTS_URL:-http://192.168.1.31:7811/v1/audio/speech}
+      - TTS_TOKEN=${TTS_TOKEN:-}                     # leer = ohne Auth
+      - TTS_MODEL=${TTS_MODEL:-Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice}
+      - TTS_VOICE=${TTS_VOICE:-Uncle_fu}
+      - TTS_LANGUAGE=${TTS_LANGUAGE:-German}
+      - TTS_TIMEOUT=${TTS_TIMEOUT:-60}
+      # ── Feedback-Töne ──
+      - TONE_GAIN=${TONE_GAIN:-0.5}
+      - TONE_SEC=${TONE_SEC:-0.15}
+      - TONE_WAKE_HZ=${TONE_WAKE_HZ:-880}
+      - TONE_END_HZ=${TONE_END_HZ:-523}
+      - TONE_BOOT_HZ=${TONE_BOOT_HZ:-660}
+      - TONE_BOOT2_HZ=${TONE_BOOT2_HZ:-1320}
+      - TONE_ERROR_HZ=${TONE_ERROR_HZ:-220}
+      - TONE_ALARM_HZ=${TONE_ALARM_HZ:-880}
+      - TONE_ALARM_HZ2=${TONE_ALARM_HZ2:-440}
+      - TONE_ALARM_REPEATS=${TONE_ALARM_REPEATS:-3}
+      - TONE_BLIP_SEC=${TONE_BLIP_SEC:-0.10}
+      # ── Follow-up / Ducking / Lautstärke ──
       - FOLLOWUP=${FOLLOWUP:-1}
       - FOLLOWUP_SEC=${FOLLOWUP_SEC:-3.0}
-      - WAKE_PPN=${WAKE_PPN:-/app/wake/computer_raspberry-pi.ppn}
-      # Secrets (leer = deaktiviert) — pro Gerät im Portainer-Editor setzen:
-      - OPENHAB_TOKEN=${OPENHAB_TOKEN:-}
-      - TTS_TOKEN=${TTS_TOKEN:-}
-      - LLM_TOKEN=${LLM_TOKEN:-}
-      - RTSP_USER=${RTSP_USER:-}
+      - FOLLOWUP_MAX=${FOLLOWUP_MAX:-10}
+      - DUCK_ENABLED=${DUCK_ENABLED:-1}
+      - DUCK_VOLUME=${DUCK_VOLUME:-30}
+      - VOLUME_STEP=${VOLUME_STEP:-10}
+      # ── Framebuffer-Display / Idle ──
+      - FB_DEVICE=${FB_DEVICE:-/dev/fb1}
+      - FB_WIDTH=${FB_WIDTH:-480}
+      - FB_HEIGHT=${FB_HEIGHT:-320}
+      - FB_FONT_SCALE=${FB_FONT_SCALE:-4}
+      - FB_TIMEOUT=${FB_TIMEOUT:-60}
+      - FB_PAGE_SEC=${FB_PAGE_SEC:-5}
+      - IDLE_TICK_SEC=${IDLE_TICK_SEC:-30}
+      - IDLE_FRAME_DIR=${IDLE_FRAME_DIR:-/data/idle}
+      - IDLE_TIMEOUT=${IDLE_TIMEOUT:-5}
+      - IDLE_SHOW_MUSIC=${IDLE_SHOW_MUSIC:-1}
+      - DEFAULT_IMAGE_URL=${DEFAULT_IMAGE_URL:-http://192.168.1.33/weather/snap.jpg}
+      # ── Musik-Player / Pi-Bridge ──
+      - MUSIC_ROOT=${MUSIC_ROOT:-/m}
+      - BRIDGE_HOST=${BRIDGE_HOST:-192.168.1.32}
+      - BRIDGE_PORT=${BRIDGE_PORT:-8790}
+      - RTSP_USER=${RTSP_USER:-}                     # leer = ohne Kamera-Auth
       - RTSP_PASS=${RTSP_PASS:-}
+      # ── Web / Logs ──
+      - WEB_PORT=${WEB_PORT:-8770}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
     volumes:
       - voice-satellite-data:/data   # gleichnamiges Volume wie docker run
       - /media/private:/m:ro        # Musik-/Radio-/Kamera-M3U (SMB-Bind-Mount, Host muss es haben)

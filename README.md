@@ -32,19 +32,22 @@ gleiche Mounts/Volumes wie `deploy.sh`).
 
 ### Deploy via Portainer (Stack aus Repository)
 
-Die `docker-compose.yml` referenziert **kein** `.env`-File — alle
-Konfigurations-Werte kommen aus den Defaults in `app/config.py` (Pi-Live-Werte)
-bzw. aus den `${VAR:-…}`-Interpolationen. So deployt man den Stack:
+Die `docker-compose.yml` referenziert **kein** `.env`-File — alle 72
+Konfigurations-Keys aus `app/config.py` liegen als `${VAR:-…}`-Interpolationen
+in der `environment`-Liste, default mit den Pi-Live-Werten. So deployt man den
+Stack:
 
 1. Portainer → **Stacks → Add stack → Web editor** → Repository-URL
    `https://<user>:<token>@github.com/wakkomon/voice-satellite.git`
    (Private-Repo: GitHub-Personal-Access-Token mit `repo`-Scope).
-2. In der Stack-Ansicht unter **Variables** die Secrets für das Gerät setzen:
-   `OPENHAB_TOKEN`, `TTS_TOKEN`, `LLM_TOKEN`, `RTSP_USER`, `RTSP_PASS`
-   (leer = Feature deaktiviert; Portainer füllt die `${…:-}`-Placeholders).
-   Weitere Variablen wie `TTS_URL`, `TTS_MODEL`, `STT_URL`, `LLM_URL` etc.
-   lassen sich dort genauso überschreiben — ausfallen lassen, wenn die
-   Defaults in `app/config.py` passen.
+2. In der Stack-Ansicht unter **Variables** die Werte für das Gerät setzen:
+   Pflicht sind die Secrets `OPENHAB_TOKEN`, `TTS_TOKEN`, `LLM_TOKEN`,
+   `RTSP_USER`, `RTSP_PASS` — **default leer** (lokale APIs ohne Token),
+   leer lassen = Feature ohne Auth/deaktiviert. Jeder weitere Key
+   (`TTS_URL`, `TTS_MODEL`, `STT_URL`, `LLM_URL`, `WAKE_PPN`, …) lässt sich
+   dort genauso überschreiben, Defaults gelten sonst unverändert.
+   Beispiel Piper-TTS: `TTS_MODEL=piper`, `TTS_VOICE=kitt`,
+   `TTS_URL=http://192.168.1.33:5000/v1/audio/speech`, `TTS_LANGUAGE=de`.
 3. **Build and deploy** — Portainer baut das Image selbst (entspricht
    `deploy.sh` minus Health-Check-Output).
 
