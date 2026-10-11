@@ -236,6 +236,11 @@ class Handler(BaseHTTPRequestHandler):
                     since = int(param[6:])
                 except ValueError:
                     pass
+        # Erstes Snapshot sendet IMMER den kompletten Ring (letzte 60),
+        # egal ob since gesetzt ist: beim Web-UI-Reload baut der Client
+        # den Feed daraus neu auf (seedFeed) – sonst würde die gespeicherte
+        # maxSeq alle alten Einträge filtern und der Feed wäre leer.
+        first_snap = True
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
@@ -251,12 +256,15 @@ class Handler(BaseHTTPRequestHandler):
                         since = 0
                     # Snapshot laeuft IMMER (Zustand/Stats/Musik/Volumen
                     # braucht der Client jede Runde); since filtert nur die
-                    # Events-Liste (Client dedupliziert per maxSeq).
-                    if since:
+                    # Events-Liste der Folgerunden (Client dedupliziert per
+                    # maxSeq). Das ERSTE Snapshot bringt immer den vollen
+                    # Ring -> Reload baut den Feed komplet neu auf.
+                    if since and not first_snap:
                         evs = [e for e in p.events if e.get("seq", 0) > since]
                         evs = evs[-60:] if evs else []
                     else:
                         evs = p.events[-60:]
+                    first_snap = False
                     snap = {
                         "state": p.state,
                         "stats": p.stats,

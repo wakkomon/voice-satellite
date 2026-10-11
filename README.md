@@ -202,10 +202,15 @@ gruppiert:
 | `DEFAULT_IMAGE_URL` | `http://192.168.1.33/weather/snap.jpg` | Quell-URL für das Idle-Standardbild |
 
 > **Idle-Architektur:** Der Container lädt das Bild **nicht** selbst. Das
-> Host-Skript `render_idle.py` (Root-Cron) lädt `DEFAULT_IMAGE_URL`, rendert
-> es nach RGB565 (480×320) und legt das Frame als `.bin` in `IDLE_FRAME_DIR`
-> ab. Der Container blittet es per `_blit_weather()`. Beide lesen dieselbe
-> `.env` → eine einzige URL-Quelle.
+> Host-Skript `scripts/render_idle.py` (Root-Cron, auf dem Pi) lädt
+> `DEFAULT_IMAGE_URL`, rendert es nach RGB565 (480×320) und legt das Frame
+> als `.bin` in `IDLE_FRAME_DIR` ab. Der Container blittet es per
+> `_blit_weather()`. Beide lesen dieselbe `.env` → eine einzige URL-Quelle.
+>
+> ⚠️ Der Skript-Pfad `OUT_DIR` muss auf das **aktive Docker-Volume** zeigen:
+> `voice-satellite-data` (Bindestrich – wie in `docker-compose.yml`),
+> **nicht** `voice-satellite_data` (altes, unterstrichenes Volumen).
+> Cron-Eintrag: `* * * * * /usr/bin/python3 /home/pi/render_idle.py >/dev/null 2>&1`
 
 ### Pi-Bridge (RTSP)
 
