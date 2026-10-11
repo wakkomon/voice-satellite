@@ -224,7 +224,7 @@ def ask_llm(text, channel="voice"):
 
 def remove_emojis(text):
     # Markdown-Signale entfernen (27B formatiert trotz Anweisung): **fett**, *kursiv*,
-    # Listenstriche, Tabellen – sonst liest Piper Sternchen aus.
+    # Listenstriche, Tabellen – sonst liest der TTS Sternchen aus.
     text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
     text = re.sub(r"(?<!\w)\*(?!\s)(.+?)(?<!\s)\*(?!\w)", r"\1", text)
     text = re.sub(r"(?m)^\s*[-*+]\s+", "", text)

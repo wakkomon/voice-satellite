@@ -36,7 +36,7 @@ def _env(key, default, fallback_empty=False):
 
 # ── Audio ──────────────────────────────────────────────────────
 MIC_DEVICE      = _env("MIC_DEVICE", "plughw:2,0")     # USB PCM2902; plughw konvertiert 44.1k->16k (virt_mic_16k rate-Plugin ist in ALSA 1.2.14 kaputt)
-SPEAKER_DEVICE  = _env("SPEAKER_DEVICE", "plughw:1,0") # bcm2835 Headphones; plughw fuer Piper-22050-WAV
+SPEAKER_DEVICE  = _env("SPEAKER_DEVICE", "plughw:1,0") # bcm2835 Headphones; plughw als Fallback
 SAMPLE_RATE     = 16000
 FRAME_SAMPLES   = 512          # = porcupine frame_length (32 ms)
 
@@ -66,7 +66,7 @@ STT_LANGUAGE    = _env("STT_LANGUAGE", "de")   # fest Deutsch vorgeben, sonst r�
 STT_TIMEOUT     = float(_env("STT_TIMEOUT", "30"))
 
 # ── openHAB Rules ─────────────────────────────────────────────
-OPENHAB_URL     = _env("OPENHAB_URL", "http://openhab.example.net:8080/rest/items")
+OPENHAB_URL     = _env("OPENHAB_URL", "http://192.168.1.33:8080/rest/items")
 OPENHAB_TOKEN   = _env("OPENHAB_TOKEN", "")
 RULES_FILE      = _env("RULES_FILE", "/data/rules.yaml")
 CACHE_TTL       = float(_env("OPENHAB_CACHE_TTL", "300"))  # Item-Liste cachen (s)
@@ -156,13 +156,13 @@ MEMORY_EXTRACT_PROMPT = (
     "Gespräch:\nNutzer: {user}\nDu: {assistant}"
 )
 
-# ── TTS (Piper auf .33:5000) ───────────────────────────────
-TTS_URL         = _env("TTS_URL", "http://192.168.1.33:5000/v1/audio/speech", fallback_empty=True)
+# ── TTS (Qwen3-TTS auf .31:7811) ──────────────────────────────
+TTS_URL         = _env("TTS_URL", "http://192.168.1.31:7811/v1/audio/speech", fallback_empty=True)
 TTS_TOKEN       = _env("TTS_TOKEN", "")
-TTS_MODEL       = _env("TTS_MODEL", "piper")
-TTS_VOICE       = _env("TTS_VOICE", "kitt")
+TTS_MODEL       = _env("TTS_MODEL", "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice")
+TTS_VOICE       = _env("TTS_VOICE", "Uncle_fu")
 # Sprache der Synthese (API-Feld "language"); leer = Server-Default.
-TTS_LANGUAGE    = _env("TTS_LANGUAGE", "de")
+TTS_LANGUAGE    = _env("TTS_LANGUAGE", "German")
 TTS_TIMEOUT     = float(_env("TTS_TIMEOUT", "60"))
 
 # ── Feedback-Töne ──────────────────────────────────────────────

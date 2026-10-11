@@ -2,7 +2,7 @@
 
 Erweiterter Pi 3 B+ Satellite (Rhasspy-2.0-Image, Python 3.11) für:
 
-- **TTS-Piper via REST API** (`tts-piper` Container, Port 5000)
+- **TTS (Qwen3-TTS) via REST API** (tts-Container, Port 7811)
 - **Whisper STT via REST API** (faster-whisper, Port 9000)
 - **LLM via REST API** (Ollama / vLLM / LiteLLM, Chat-Completions)
 - **openHAB-REST** (Kontext fürs LLM + Smart-Home-Intent)
@@ -56,8 +56,8 @@ genau eine Stufe** (`VOLUME_STEP`, Default 10 %) — kein Absolutwert.
 
 ```
 Satellite: 192.168.1.32 (Container voice-satellite, hostnet)
-  ├─ openHAB      http://openhab.example.net:8080/rest
-  ├─ TTS Piper    http://192.168.1.33:5000/v1/audio/speech
+  ├─ openHAB      http://192.168.1.33:8080/rest
+  ├─ TTS Qwen3    http://192.168.1.31:7811/v1/audio/speech
   ├─ STT Whisper  http://192.168.1.31:9000/v1/audio/transcriptions
   ├─ LLM (Hermes-Gateway) http://192.168.1.33:8642/v1/chat/completions
   └─ Pi-Bridge    http://192.168.1.32:8790
@@ -75,7 +75,7 @@ gruppiert:
 | Variable | Default | Bedeutung |
 |---|---|---|
 | `MIC_DEVICE` | `plughw:2,0` | ALSA-Mikrofon (`plughw` konvertiert 44.1k→16k) |
-| `SPEAKER_DEVICE` | `plughw:1,0` | ALSA-Lautsprecher (Piper-WAV 22050 Hz) |
+| `SPEAKER_DEVICE` | `plughw:1,0` | ALSA-Lautsprecher (TTS-WAV) |
 
 ### Wake-Word & VAD
 
@@ -106,7 +106,7 @@ gruppiert:
 
 | Variable | Default | Bedeutung |
 |---|---|---|
-| `OPENHAB_URL` | `http://openhab.example.net:8080/rest/items` | REST-API-Basis |
+| `OPENHAB_URL` | `http://192.168.1.33:8080/rest/items` | REST-API-Basis |
 | `OPENHAB_TOKEN` | *(leer)* | Bearer-Token (Secret) |
 | `OPENHAB_CACHE_TTL` | `300` | Item-Liste cachen (s) |
 | `RULES_FILE` | `/data/rules.yaml` | Pfad zur lokalen Regelungsdatei |
@@ -131,15 +131,15 @@ gruppiert:
 | `MAX_HISTORY` | `20` | Nachrichten im Kurzzeitgedächtnis |
 | `MAX_FACTS` | `100` | max. Facts im Langzeitgedächtnis |
 
-### TTS (Piper)
+### TTS (Qwen3-TTS)
 
 | Variable | Default | Bedeutung |
 |---|---|---|
-| `TTS_URL` | `http://192.168.1.33:5000/v1/audio/speech` | Piper-Speech-Endpunkt |
-| `TTS_TOKEN` | *(leer)* | Zugriffstoken des Piper-Servers (Secret) |
-| `TTS_MODEL` | `piper` | Piper-Modell |
-| `TTS_VOICE` | `kitt` | Stimme |
-| `TTS_LANGUAGE` | `de` | Sprache; leer = Server-Default |
+| `TTS_URL` | `http://192.168.1.31:7811/v1/audio/speech` | Speech-Endpunkt (OpenAI-kompatibel) |
+| `TTS_TOKEN` | *(leer)* | Zugriffstoken des TTS-Servers (Secret) |
+| `TTS_MODEL` | `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` | TTS-Modell |
+| `TTS_VOICE` | `Uncle_fu` | Stimme |
+| `TTS_LANGUAGE` | `German` | Sprache; leer = Server-Default |
 | `TTS_TIMEOUT` | `60` | Timeout in s |
 
 ### Töne / Alarm
