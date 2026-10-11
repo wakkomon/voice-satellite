@@ -235,21 +235,12 @@ TTS_LANGUAGE=de
 | Variable | Default | Bedeutung |
 |---|---|---|
 | `IDLE_TICK_SEC` | `30` | s zwischen Idle-Display-Updates |
-| `IDLE_FRAME_DIR` | `/data/idle` | Shared-Volume-Verzeichnis mit `.bin`-Frames |
+| `IDLE_FRAME_DIR` | `/data/idle` | Verzeichnis für gespeicherte `.bin`-Frames (Offline-Fallback) |
 | `IDLE_TIMEOUT` | `5` | s ohne neues Frame → dunkel |
 | `IDLE_SHOW_MUSIC` | `1` | 1 = Musik-Info im Idle zeigen |
 | `DEFAULT_IMAGE_URL` | `http://192.168.1.33/weather/snap.jpg` | Quell-URL für das Idle-Standardbild |
 
-> **Idle-Architektur:** Der Container lädt das Bild **nicht** selbst. Das
-> Host-Skript `scripts/render_idle.py` (Root-Cron, auf dem Pi) lädt
-> `DEFAULT_IMAGE_URL`, rendert es nach RGB565 (480×320) und legt das Frame
-> als `.bin` in `IDLE_FRAME_DIR` ab. Der Container blittet es per
-> `_blit_weather()`. Beide lesen dieselbe `.env` → eine einzige URL-Quelle.
->
-> ⚠️ Der Skript-Pfad `OUT_DIR` muss auf das **aktive Docker-Volume** zeigen:
-> `voice-satellite-data` (Bindestrich – wie in `docker-compose.yml`),
-> **nicht** `voice-satellite_data` (altes, unterstrichenes Volumen).
-> Cron-Eintrag: `* * * * * /usr/bin/python3 /home/pi/render_idle.py >/dev/null 2>&1`
+> **Idle-Architektur:** Der Container lädt `DEFAULT_IMAGE_URL` selbst, decodiert es mit Pillow (JPEG → RGB565, 480×320, 3:2-cropped) und blittet es direkt. Eine lokale `.bin`-Datei in `IDLE_FRAME_DIR` wird als Offline-Fallback genutzt und nach erfolgreichem URL-Download automatisch aktualisiert. Kein Host-Script, kein Cron nötig.
 
 ### Pi-Bridge (RTSP)
 

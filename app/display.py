@@ -378,31 +378,96 @@ class Display:
                     shown_at = now
 
     def _blit_weather(self):
-        """Weather-Frame (RGB565 raw) aus /data/idle/weather.bin lesen und auf fb1 blitten."""
-        import glob
-        path = None
-        # Neueste .bin-Datei in /data/idle/ finden
-        files = glob.glob(os.path.join(config.IDLE_FRAME_DIR, "*.bin"))
-        if files:
-            files.sort(key=os.path.getmtime, reverse=True)
-            path = files[0]
-        if path is None or not os.path.exists(path):
-            return  # Kein Weather-Frame vorhanden
+        """Weather-Frame laden und auf fb1 blitten.
+
+        Priorität: (1) Lokale .bin-Datei (offline) → (2) URL-Download
+        (DEFAULT_IMAGE_URL, Pillow-decodiert) → (3) Nichts (Frame bleibt).
+        """
+        expected = self._w * self._h * 2  # 307200
+
+        # ── (1) Lokale .bin-Datei (Offline-Fallback) ──────────────
+        raw = None
         try:
-            with open(path, "rb") as f:
-                raw = f.read()
-            expected = self._w * self._h * 2
-            if len(raw) != expected:
-                return  # Falsche Dateigröße (z.B. 1024x600 statt 480x320)
-            with self._lock:
-                self._buf[:] = raw[:expected]
+            import glob
+            files = glob.glob(os.path.join(config.IDLE_FRAME_DIR, "*.bin"))
+            if files:
+                files.sort(key=os.path.getmtime, reverse=True)
+                with open(files[0], "rb") as f:
+                    raw = f.read()
+                if len(raw) == expected and self._buf is not None and self._mm is not None:
+                    with self._lock:
+                        self._buf[:] = raw[:expected]
+                    try:
+                        self._mm.seek(0)
+                        self._mm.write(raw[:expected])
+                    except (ValueError, OSError):
+                        pass
+                    return
+        except Exception:
+            pass  # Datei fehlt/ungültig → URL versuchen
+
+        # ── (2) Direkt von URL laden + Pillow decodieren ──────────
+        try:
+            from PIL import Image
+            import urllib.request as _urllib
+
+            req = _urllib.Request(
+                config.DEFAULT_IMAGE_URL,
+                headers={"User-Agent": "voice-satellite/1.0"},
+            )
+            with _urllib.urlopen(req, timeout=15) as resp:
+                data = resp.read()
+
+            if len(data) < 1000:
+                log.warning("_blit_weather: zu kleines Bild (%d bytes)", len(data))
+                return
+
+            from io import BytesIO
+            img = Image.open(BytesIO(data)).convert("RGB")
+
+            # Crop auf 3:2 (480:320), dann resize
+            sw, sh = img.size
+            target_ratio = self._w / self._h
+            if sw / sh > target_ratio:
+                nw = int(sh * target_ratio)
+                x0 = (sw - nw) // 2
+                img = img.crop((x0, 0, x0 + nw, sh))
+            else:
+                nh = int(sw / target_ratio)
+                y0 = (sh - nh) // 2
+                img = img.crop((0, y0, sw, y0 + nh))
+
+            img = img.resize((self._w, self._h), Image.Resampling.LANCZOS)
+
+            # RGB565 (little-endian 16-bit)
             try:
-                self._mm.seek(0)
-                self._mm.write(self._buf[:expected])
-            except (ValueError, OSError):
-                pass
-        except (OSError, IOError):
-            pass
+                raw = img.convert("RGB565").tobytes()
+            except (ValueError, AttributeError):
+                # Sehr alte PIL-Versionen ohne native RGB565
+                log.warning("_blit_weather: PIL-Version unterstützt kein RGB565, ignoriere Bild")
+                return
+
+            if len(raw) == expected and self._buf is not None and self._mm is not None:
+                with self._lock:
+                    self._buf[:] = raw[:expected]
+                try:
+                    self._mm.seek(0)
+                    self._mm.write(raw[:expected])
+                except (ValueError, OSError):
+                    pass
+
+            # .bin für Offline speichern
+            try:
+                os.makedirs(config.IDLE_FRAME_DIR, exist_ok=True)
+                tmp = os.path.join(config.IDLE_FRAME_DIR, "weather.bin.tmp")
+                with open(tmp, "wb") as f:
+                    f.write(raw)
+                os.replace(tmp, os.path.join(config.IDLE_FRAME_DIR, "weather.bin"))
+            except Exception:
+                pass  # Speichern ist optional
+
+        except Exception as e:
+            log.warning("_blit_weather: URL-Fehler (%s)", e)
 
     def _layout(self, heading: str, body: str):
         heading = _sanitize(heading or "").replace("\n", " ")
