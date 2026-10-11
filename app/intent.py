@@ -61,7 +61,7 @@ def _fuzzy_match(query: str, candidates: list[str],
 
 def _find_m3u_in_root(name: str, root: str) -> str | None:
     """Search root (and subdirs) for M3U/M3U8 file matching *name*."""
-    patterns = [f"*{name}*.m3u", f"*{name}*.m3u8"]
+    patterns = [f"**/*{name}*.m3u", f"**/*{name}*.m3u8"]
     for pat in patterns:
         for f in glob.glob(os.path.join(root, pat), recursive=True):
             if os.path.isfile(f):

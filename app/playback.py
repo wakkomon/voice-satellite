@@ -148,13 +148,13 @@ class MusicPlayer:
         return was
 
     def pause(self):
-        """Geraet fuer Sprachausgabe freigeben. Zaehlt mit, wenn mehrere
-        Halter (Session + Web-TTS) ueberlappen; die Position wird gemerkt
-        (Datei: Sekunden -> -k Frames; Radio: Live-Neustart)."""
+        """Geraet fuer Sprachausgabe freigeben. Nur hold-Zaehler erhoeht und
+        SIGTERM gesendet (non-blocking, wartet NICHT auf Process-Exit).
+        Damit kommt der 'wake'-Ton sofort."""
         with self._lock:
             self._hold += 1
             self._paused_elapsed = self._elapsed_now() if self._procs else 0.0
-        self._kill_procs()
+        self._kill_procs_nonblocking()
 
     def resume(self):
         """Gegenteil von pause(): bei hold==0 setzt der Worker das aktuelle
@@ -256,6 +256,29 @@ class MusicPlayer:
         if not self._item_t0:
             return self._item_offset
         return self._item_offset + (time.monotonic() - self._item_t0)
+
+    def _kill_procs_nonblocking(self, procs=None):
+        """Non-blocking Variante von _kill_procs: sendet SIGKILL sofort,
+        keine Wartezeit. Nur zum schnellen Freigeben des Devices.
+        Der eigentliche Process-Cleanup passiert asynchron."""
+        if procs is None:
+            with self._lock:
+                procs, self._procs = self._procs, []
+        for p in procs:
+            if p.poll() is None:
+                try:
+                    os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+                except OSError:
+                    try:
+                        p.kill()
+                    except OSError:
+                        pass
+        # kurz warten, aber nicht blockieren (max. 100ms)
+        for p in procs:
+            try:
+                p.wait(timeout=0.1)
+            except Exception:
+                pass
 
     def _kill_procs(self, procs=None):
         """Prozessbaum(en) endgueltig beenden. Ohne Argument: die
