@@ -30,6 +30,27 @@ angefasst. `scripts/make_env.py` ergänzt bei Provision **nur fehlende** Keys
 Alternativ via `docker-compose up -d --build` (ersetzt den Container,
 gleiche Mounts/Volumes wie `deploy.sh`).
 
+### Deploy via Portainer (Stack aus Repository)
+
+1. Portainer → **Stacks → Add stack → Web editor** → Repository-URL
+   `https://<user>:<token>@github.com/wakkomon/voice-satellite.git`
+   (Private-Repo: GitHub-Personal-Access-Token mit `repo`-Scope).
+2. **Vor dem Deploy** im Web-Editor unter „Add a file" eine Datei `.env`
+   anlegen und den Inhalt einfügen. Die `docker-compose.yml` referenziert
+   `env_file: .env` **relativ** zum Compose-Verzeichnis — in Portainer ist
+   das `/data/compose/<id>/`, wo eine frische Klon kein `.env` enthält
+   (Secrets gehören ins `.env`, nicht ins Repo). Ohne Datei schlägt der
+   Deploy mit `env file /data/compose/<id>/.env not found` fehl.
+3. `.env`-Inhalt: von einem bestehenden Pi übernehmen, oder lokal
+   `python3 scripts/make_env.py` laufen lassen und die erzeugte `.env`
+   kopieren; Secrets (`OPENHAB_TOKEN`, `TTS_TOKEN`, `LLM_TOKEN`, `RTSP_*`)
+   pro Gerät eintragen.
+4. **Build and deploy** — Portainer baut das Image selbst (entspricht
+   `deploy.sh` minus Health-Check-Output).
+
+> Hinweis: Portainer-Stacks liegen unter `/data/compose/<id>/`; bei Updates
+> „Force redeploy" nutzen, damit `git pull`/Rebuild greift.
+
 > ⚠️ `.env` enthält Secrets → `chmod 600 .env`, **niemals** ins Git.
 >
 > Voraussetzungen Host: `docker` + `docker buildx` nicht benötigt (klassisches Build),
