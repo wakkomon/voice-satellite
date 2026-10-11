@@ -245,16 +245,24 @@ class Handler(BaseHTTPRequestHandler):
             while True:
                 p = _pipeline
                 if p:
-                    # Nur Events senden, die neu sind
-                    if p.seq <= since:
-                        time.sleep(2)
-                        continue
+                    # Container-Neustart? Event-Seq ist neu gestartet ->
+                    # since zuruecksetzen, sonst wuerfe der Client alles weg.
+                    if p.seq < since:
+                        since = 0
+                    # Snapshot laeuft IMMER (Zustand/Stats/Musik/Volumen
+                    # braucht der Client jede Runde); since filtert nur die
+                    # Events-Liste (Client dedupliziert per maxSeq).
+                    if since:
+                        evs = [e for e in p.events if e.get("seq", 0) > since]
+                        evs = evs[-60:] if evs else []
+                    else:
+                        evs = p.events[-60:]
                     snap = {
                         "state": p.state,
                         "stats": p.stats,
                         "uptime_s": round(time.time() - p.stats["started"]),
                         "version": __version__,
-                        "events": p.events[-20:],
+                        "events": evs,
                         "music": playback.player.status(),
                         "volume": _vol_snap(),
                     }

@@ -156,8 +156,20 @@ function fmtUp(s) {
 function setStat(id, v) { $(id).textContent = v; }
 
 // maxSeq persistent speichern (localStorage) damit beim Reload
-// keine Events aus dem SSE-Snapshot übersprungen werden.
+// keine Events übersprungen werden; das erste Snapshot baut den Feed
+// komplett neu auf (seed) – die Logeinträge überleben so ein Neuladen.
 let maxSeq = parseInt(localStorage.getItem("maxSeq") || "0", 10);
+let seeded = false;
+
+function makeLi(e) {
+  const li = document.createElement("li");
+  const t = document.createElement("time");
+  t.textContent = e.ts;
+  const m = document.createElement("span");
+  m.textContent = e.msg;
+  li.append(t, m);
+  return li;
+}
 
 function addEvent(e) {
   if ((e.seq || 0) <= maxSeq) return;
@@ -165,15 +177,24 @@ function addEvent(e) {
   try { localStorage.setItem("maxSeq", String(maxSeq)); } catch(_) {}
   const empty = $("feed-empty");
   if (empty) empty.remove();
-  const li = document.createElement("li");
-  const t = document.createElement("time");
-  t.textContent = e.ts;
-  const m = document.createElement("span");
-  m.textContent = e.msg;
-  li.append(t, m);
   const f = $("feed");
-  f.prepend(li);
+  f.prepend(makeLi(e));
   while (f.children.length > 200) f.lastChild.remove();
+}
+
+// Erstes Snapshot: Feed aus dem Server-Ring neu aufbauen (neueste oben).
+function seedFeed(evts) {
+  const f = $("feed");
+  f.innerHTML = "";
+  const empty = $("feed-empty");
+  if (empty) empty.remove();
+  let top = maxSeq;
+  evts.slice().reverse().forEach(e => {
+    f.prepend(makeLi(e));
+    if ((e.seq || 0) > top) top = e.seq;
+  });
+  maxSeq = top;
+  try { localStorage.setItem("maxSeq", String(maxSeq)); } catch(_) {}
 }
 
 function render(d) {
@@ -191,7 +212,16 @@ function render(d) {
   setStat("st-errors", s.errors ?? 0);
   renderMusic(d.music || {});
   renderVolume(d.volume);
-  (d.events || []).forEach(addEvent);
+  const evts = d.events || [];
+  const topEv = evts.length ? (evts[evts.length - 1].seq || 0) : 0;
+  // Container-Neustart: Server-Seq ist zurueckgesprungen -> Dedupe neu starten
+  if (seeded && topEv > 0 && topEv < maxSeq) maxSeq = 0;
+  if (!seeded) {
+    seeded = true;
+    seedFeed(evts);   // Reload/Erstladung: Feed aus dem Server-Ring aufbauen
+    return;
+  }
+  evts.forEach(addEvent);
 }
 
 function renderMusic(m) {
@@ -222,7 +252,8 @@ function renderVolume(v) {
 }
 
 function connect() {
-  const es = new EventSource("/events");
+  const url = "/events" + (maxSeq ? "?since=" + encodeURIComponent(maxSeq) : "");
+  const es = new EventSource(url);
   es.onopen = () => { $("conn").className = "dot on"; };
   es.onmessage = m => { try { render(JSON.parse(m.data)); } catch (e) {} };
   es.onerror = () => { $("conn").className = "dot off"; };
