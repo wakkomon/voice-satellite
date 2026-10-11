@@ -220,7 +220,22 @@ class Handler(BaseHTTPRequestHandler):
     def _sse(self):
         """Server-Sent Events: komplettes Snapshot alle 2 s (Zustand + Statistik
         + Events-Ring) – Client dedupliziert per seq. Reconnect: neu laden,
-        der Ring bringt die letzten 60 Events von selbst."""
+        der Ring bringt die letzten 60 Events von selbst.
+
+        URL-Parameter `since=` gibt die letzte bekannte seq-ID an; der Server
+        sendet nur Events mit seq > since (verhindert Lücken nach Reload).
+        """
+        # URL-Parameter parsen: /events?since=42
+        qs = ""
+        if "?" in self.path:
+            qs = self.path.split("?", 1)[1]
+        since = 0
+        for param in qs.split("&"):
+            if param.startswith("since="):
+                try:
+                    since = int(param[6:])
+                except ValueError:
+                    pass
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
@@ -230,6 +245,10 @@ class Handler(BaseHTTPRequestHandler):
             while True:
                 p = _pipeline
                 if p:
+                    # Nur Events senden, die neu sind
+                    if p.seq <= since:
+                        time.sleep(2)
+                        continue
                     snap = {
                         "state": p.state,
                         "stats": p.stats,

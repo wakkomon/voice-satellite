@@ -155,11 +155,14 @@ function fmtUp(s) {
 }
 function setStat(id, v) { $(id).textContent = v; }
 
-let maxSeq = 0;
+// maxSeq persistent speichern (localStorage) damit beim Reload
+// keine Events aus dem SSE-Snapshot übersprungen werden.
+let maxSeq = parseInt(localStorage.getItem("maxSeq") || "0", 10);
 
 function addEvent(e) {
   if ((e.seq || 0) <= maxSeq) return;
   maxSeq = e.seq || 0;
+  try { localStorage.setItem("maxSeq", String(maxSeq)); } catch(_) {}
   const empty = $("feed-empty");
   if (empty) empty.remove();
   const li = document.createElement("li");
