@@ -1,4 +1,4 @@
-"""TTS: Text -> Audio über die Piper-API (.33:5000), direkt nach aplay gestreamt."""
+"""TTS: Text -> Audio über die TTS-API (.31:7811), direkt nach aplay gestreamt."""
 import logging
 
 from . import config, http
@@ -7,10 +7,10 @@ log = logging.getLogger("tts")
 
 
 def synthesize(text, retries: int = 2) -> bytes:
-    """Piper/OpenAI-kompatibler /v1/audio/speech; sammelt Streaming-WAV.
+    """TTS/OpenAI-kompatibler /v1/audio/speech; sammelt Streaming-WAV.
 
     Bei leerer oder fehlgeschlagener Ausgabe bis zu `retries`-mal neu
-    versuchen (Default 2 -> 3 Gesamtversuche): Piper fällt gelegentlich
+    versuchen (Default 2 -> 3 Gesamtversuche): TTS fällt gelegentlich
     durch (leeres Stream, Reset) und liefert sonst Stille."""
     payload = {
         "model": config.TTS_MODEL,

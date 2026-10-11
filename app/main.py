@@ -1,7 +1,7 @@
 """Voice-Satellite-Hauptloop.
 
 Wake('Computer') -> Aufnahme+VAD -> Whisper-STT -> Router (openHAB | LLM) ->
-Piper-TTS -> aplay. Ein Thread, ein arecord-Leser (wake und Recorder lesen
+Qwen3-TTS -> aplay. Ein Thread, ein arecord-Leser (wake und Recorder lesen
 dieselben Frames nacheinander, nie parallel). Ersetzt Rhasspy + Supervisor +
 MQTT-Bus als Prozessrahmen.
 
