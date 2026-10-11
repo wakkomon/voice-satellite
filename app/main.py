@@ -12,7 +12,6 @@ Zwei Erweiterungen laufen hier zusammen:
 * Framebuffer-Display – Frage und Antwort erscheinen als Text auf /dev/fb1
   (app/display.py); ohne Device bleibt alles ein No-Op.
 """
-import asyncio
 import contextlib
 import logging
 import os
@@ -425,7 +424,7 @@ def main():
     router.warm_async()             # LLM-Modell im Hintergrund vorwärmen
     # M3U-Index im Hintergrund aufbauen (vermeidet langsame CIFS-Scans pro Befehl)
     from . import intent as _intent
-    asyncio.ensure_future(_intent._start_m3u_indexer(config.MUSIC_ROOT, interval=300))
+    _intent.start_m3u_indexer(config.MUSIC_ROOT, interval=300)
     p.run()
 
 
