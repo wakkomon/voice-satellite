@@ -34,24 +34,28 @@ fi
 # No-Overwrite-Guard: Prüft kritische Keys gegen App-Defaults.
 # Nur KEYS mit abweichendem Wert (aber in .env gesetzt) werden angezeigt.
 # Abweichende Werte bleiben UNBERÜHRT – Deploy nimmt sie 1:1 mit.
+# (Default-Extraktion per Python, nicht grep -oP: BusyBox/Alpine-Hosts
+#  haben keine PCRE, und `set -e` würde den Deploy sonst hier abbrechen.)
 echo "[0/6] No-Overwrite-Prüfung: .env-Keys gegen App-Defaults..."
 DRIFT_FOUND=0
-# App-Defaults aus app/config.py extrahieren (Zeilen wie: KEY = _env("KEY", "default"))
-while IFS= read -r line; do
-  key=$(echo "$line" | grep -oP '_env\s*\(\s*"\K[A-Z0-9_]+')
-  default=$(echo "$line" | grep -oP '_env\s*\([^,]+,\s*"\K[^"]+')
-  if [ -n "$key" ] && [ -n "$default" ]; then
-    env_val=$(grep "^${key}=" .env 2>/dev/null | cut -d= -f2- | sed 's/^"//;s/"$//')
-    # Nur anzeigen, wenn Key in .env gesetzt UND Wert != Default
-    if [ -n "$env_val" ] && [ "$env_val" != "$default" ]; then
-      if [ "$DRIFT_FOUND" -eq 0 ]; then
-        echo "  ⚠ Abweichende Werte (werden NICHT überschrieben):"
-        DRIFT_FOUND=1
-      fi
-      echo "    $key: LIVE=$env_val  vs  DEFAULT=$default"
+while IFS=$'\t' read -r key default; do
+  [ -z "$key" ] && continue
+  env_val=$(grep "^${key}=" .env 2>/dev/null | cut -d= -f2- | sed 's/^"//;s/\"$//')
+  # Nur anzeigen, wenn Key in .env gesetzt UND Wert != Default
+  if [ -n "$env_val" ] && [ "$env_val" != "$default" ]; then
+    if [ "$DRIFT_FOUND" -eq 0 ]; then
+      echo "  ⚠ Abweichende Werte (werden NICHT überschrieben):"
+      DRIFT_FOUND=1
     fi
+    echo "    $key: LIVE=$env_val  vs  DEFAULT=$default"
   fi
-done < <(grep '_env(' app/config.py 2>/dev/null)
+done < <(python3 -c "
+import re, sys
+text = open('app/config.py', encoding='utf-8').read()
+for m in re.finditer(r'^([A-Z][A-Z0-9_]*)\s*=\s*(?:float\(|int\()?\s*_env\(\s*[\"\x27]([A-Z0-9_]+)[\"\x27]\s*,\s*[\"\x27]([^\"\x27]*)[\"\x27]', text, re.M):
+    if m.group(1) == m.group(2):
+        sys.stdout.write(m.group(1) + '\t' + m.group(3) + '\n')
+")
 if [ "$DRIFT_FOUND" -eq 1 ]; then
   echo "  ✅ Bestehende .env-Werte bleiben UNVERÄNDERT."
 else
