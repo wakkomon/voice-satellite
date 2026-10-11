@@ -193,6 +193,53 @@ def try_play_radio(text: str) -> tuple[bool, str | None]:
 # 3. MP3 / Musik
 # ---------------------------------------------------------------------------
 
+def try_play_music(text: str) -> tuple[bool, str | None]:
+    """Allgemeine Musik-Befehle: „Musik an/abspielen", „Spiele Musik",
+    „Mach Musik an", „Musik aus", „Kannst du Musik machen?" etc.
+
+    Returns (True, response) oder (False, None).
+    """
+    t = text.lower().strip()
+
+    # --- Stopp ---
+    if re.search(r"\bmusik\b", t) and re.search(r"\b(aus|stopp|stop|stoppe)\b", t):
+        stopped = playback.player.stop()
+        if stopped:
+            return True, "Musik gestoppt."
+        return True, "Es lief gerade keine Musik."
+
+    # --- Start (allgemein, ohne spezifischen Titel) ---
+    # Muster: "Musik an", "Musik abspielen", "Spiele Musik", "Mach Musik an",
+    # "Kannst du Musik machen?", "Mach mal Musik", "Spiele bitte Musik"
+    if re.search(r"\bmusik\b", t):
+        if re.search(r"\b(aus|stumm|stopp|stop|stoppe)\b", t):
+            return False, None  # wurde oben schon abgefangen
+        if re.search(r"\b(an|abspielen|spiele|Mach|mach|starte|kannst du|magst du|könntest du|würdest du|bitte)\b", t):
+            # Suche nach M3U-Playlists im mp3-Verzeichnis
+            mp3_dir = os.path.join(config.MUSIC_ROOT, "mp3")
+            if not os.path.isdir(mp3_dir):
+                return True, "MP3-Ordner nicht erreichbar."
+            playlists = []
+            for root_dir, _dirs, files in os.walk(mp3_dir):
+                for f in files:
+                    if f.lower().endswith((".m3u", ".m3u8")):
+                        playlists.append(
+                            os.path.relpath(os.path.join(root_dir, f), config.MUSIC_ROOT)
+                        )
+            if playlists:
+                import random as _rand
+                selected = _rand.choice(playlists)
+                err = playback.player.play_path(selected)
+                if err:
+                    return True, err
+                title = os.path.splitext(os.path.basename(selected))[0]
+                return True, f"Musik wird abgespielt ({title})."
+            return True, "Keine Musik gefunden."
+        return False, None
+
+    return False, None
+
+
 def try_play_mp3(text: str) -> tuple[bool, str | None]:
     """Match „spiel[e] <name>“ – try mp3 dir.
     
@@ -318,12 +365,22 @@ def try_set_volume(text: str) -> tuple[bool, str | None]:
 # ---------------------------------------------------------------------------
 
 def try_show_camera(text: str) -> tuple[bool, str | None]:
-    """Match „zeige Kamera|camera <name>“.
-    
+    """Match Kamera-Befehle: „zeige Kamera X", "show camera X",
+    „Was ist in Kamera X los?", „Kamera X zeigen", „Zeig mir Kamera X" etc.
+
     Returns (True, „Kamera X wird angezeigt") or (False, None).
     """
     t = text.lower().strip()
-    m = re.match(r"^(?:zeige|show)\s+(?:kamera|camera)\s+(.+)", t)
+
+    # Erweiterte Patterns für natürliche Formulierungen
+    # 1. "Zeige/Zeig Kamera X" / "show camera X"
+    m = re.match(r"^(?:zeige|zeig|show)\s+(?:die\s+)?(?:kamera|camera)\s+(.+)", t)
+    if not m:
+        # 2. "Was ist in Kamera X los?" / "Was läuft bei Kamera X?" / "Kamera X Status"
+        m = re.search(r"\b(?:was\s+ist|was\s+läuft|was\s+gibt's|was\s+gibts)\s+(?:in|an|bei|auf)\s+(?:die\s+)?(?:kamera|camera)\s+(\w+)", t)
+    if not m:
+        # 3. "Kamera X" + Status-Keywords
+        m = re.search(r"\b(?:kamera|camera)\s+(\w+)\s*(?:los|status|bild|anzeige|zeigen|check|schau|an)\b", t)
     if not m:
         return False, None
 

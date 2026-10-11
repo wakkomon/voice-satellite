@@ -356,6 +356,7 @@ def handle(text, channel="voice"):
         ("playlist", intent.try_play_playlist),
         ("radio", intent.try_play_radio),
         ("mp3", intent.try_play_mp3),
+        ("musik", intent.try_play_music),  # allgemein: "Musik an/aus", "Spiele Musik"
         ("kamera", intent.try_show_camera),
     ]:
         handled, resp = fn(text)
