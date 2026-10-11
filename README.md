@@ -9,20 +9,34 @@ Erweiterter Pi 3 B+ Satellite (Rhasspy-2.0-Image, Python 3.11) für:
 - **Framebuffer-Display** (LLM-Antworten als Text direkt auf `/dev/fb1`)
 - **Pi-Bridge** (RTSP-Relay + Kamera-Snapshot, Port 8790)
 
-## Installation
+## Installation (frisches Gerät)
 
 ```bash
-cp .env.example .env && nano .env    # IPs + Tokens eintragen
-./redeploy.sh                          # Container-Name bleibt voice-satellite
+git clone https://github.com/wakkomon/voice-satellite.git
+cd voice-satellite
+python3 scripts/make_env.py   # erzeugt .env mit Defaults (nur fehlende Keys)
+nano .env                     # Secrets/Tokens eintragen: OPENHAB_TOKEN, TTS_TOKEN, LLM_TOKEN, RTSP_*
+./deploy.sh
 ```
 
-Die `redeploy_*.sh`-Skripte **backen `.env` nur up** (`cp .env .env.bak.$TS`)
-und ziehen den bestehenden Stand per `--env-file .env` weiter – sie setzen
-**keine** Werte zurück. `scripts/make_env.py` ergänzt bei Provision **nur
-fehlende** Keys (Merge) und überschreibt eine laufende `.env` **nicht**.
+**Update:** `git pull && ./deploy.sh`
+
+`deploy.sh` ist idempotent: Es baut das Image neu (`--no-cache`), entfernt den
+alten Container (Name bleibt `voice-satellite`) und startet ihn mit `--env-file .env`.
+Das Daten-Volume (`voice-satellite-data`) und die `.env` werden **niemals**
+angefasst. `scripts/make_env.py` ergänzt bei Provision **nur fehlende** Keys
+(Merge) und überschreibt eine laufende `.env **nicht**.
+
+Alternativ via `docker-compose up -d --build` (ersetzt den Container,
+gleiche Mounts/Volumes wie `deploy.sh`).
 
 > ⚠️ `.env` enthält Secrets → `chmod 600 .env`, **niemals** ins Git.
-> Das `Dockerfile`-Build (baken/…) bleibt unverändert.
+>
+> Voraussetzungen Host: `docker` + `docker buildx` nicht benötigt (klassisches Build),
+> `python3` für `make_env.py`, Audio-/Framebuffer-Geräte `/dev/snd` + `/dev/fb1`,
+> optional `/media/private` als SMB-Bind-Mount für Musik-/Radio-/Kamera-M3U
+> (fehlt es, läuft der Satellite, aber Playlists/Kamera sind leer – `deploy.sh`
+> warnt dann).
 
 ## API
 
