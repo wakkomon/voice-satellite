@@ -342,6 +342,7 @@ class Display:
         # bereitsteht – dann wird es im Haupt-Thread nur noch geblittet.
         self._weather_thread: threading.Thread | None = None
         self._weather_pending: bool = False
+        self._weather_loaded: bool = False   # True, sobald self._buf ein Wetter-Frame enthält
         self._weather_lock = threading.Lock()
 
         while not self._stop.is_set():
@@ -366,9 +367,10 @@ class Display:
                 # Jetzt den fertig geladenen Frame (self._buf) auf /dev/fb1
                 # blitten – ohne diesen Aufruf taucht das Bild nur im
                 # Web-UI-Snapshot auf, aber nicht auf dem physischen Display.
-                # _blit_weather() wartet max. 2 s, bis der Load fertig ist;
-                # läuft der Download noch länger, blittet der nächste Idle-Tick
-                # (IDLE_TICK_SEC) das fertige Bild nach (selbstheilend).
+                # _blit_weather() blittet, sobald ein Frame da ist:
+                #  - ist schon eines geladen -> sofort (kein Schwarzbild,
+                #    auch wenn ein Reload im Hintergrund läuft)
+                #  - sonst (allererster Load) max. 5 s warten
                 self._blit_weather()
                 self._live = True
                 shown_at = now
@@ -477,20 +479,31 @@ class Display:
         with self._weather_lock:
             if self._buf is not None:
                 self._buf[:] = raw[:expected]
+                self._weather_loaded = True
             self._weather_pending = False
 
     def _blit_weather(self):
         # Wetter-Frame aus dem vorberechneten Buffer (Hintergrund-Thread)
-        # auf den fb1 blitten. Falls noch kein fertiger Buffer da ist,
-        # wird kurz gewartet (max. 2 s), dann übersprungen.
+        # auf /dev/fb1 blitten.
+        #
+        # Wichtig: Sobald JEINMAL ein Wetter-Frame in self._buf liegt
+        # (_weather_loaded), wird er IMMER sofort geblittet – auch wenn
+        # gerade ein frischer Reload läuft. Sonst bleibt das physische
+        # Display schwarz, während die Web-UI (die self._buf liest) das
+        # Bild zeigt. Nur beim allerersten Frame wird kurz (max. 5 s)
+        # auf den Load gewartet.
         raw = None
-        wait_start = time.monotonic()
-        while self._weather_pending and time.monotonic() - wait_start < 2:
-            time.sleep(0.05)
-
         with self._weather_lock:
-            if self._buf is not None and not self._weather_pending:
+            if self._weather_loaded and self._buf is not None:
+                # Bild liegt schon da – sofort blitten, kein Warten.
                 raw = bytes(self._buf)
+            elif self._weather_pending:
+                # Noch der allererste Load: kurz warten, bis er fertig ist.
+                wait_start = time.monotonic()
+                while self._weather_pending and time.monotonic() - wait_start < 5:
+                    time.sleep(0.05)
+                if not self._weather_pending and self._buf is not None:
+                    raw = bytes(self._buf)
 
         if raw is None:
             return
