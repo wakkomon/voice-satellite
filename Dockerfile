@@ -10,14 +10,22 @@ ENV TZ=Europe/Berlin
 # build-essential + libjpeg-dev + zlib1g-dev: Pillow liefert KEINE armv7l-
 # Wheels (nur manylinux x86_64/aarch64), der Pi-Build muss es vom Quellbaum
 # kompilieren (Wetter-Idle: JPEG -> RGB565).
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update -qq && \
+    # Retry-Schleife: apt-get install bricht auf langsamen Verbindungen gerne ab;
+    # bis zu 3 Versuche mit je 15 s Pause zwischen den Versuchen.
+    for i in 1 2 3; do \
+      apt-get install -y --no-install-recommends \
         alsa-utils \
         mpg123 \
         curl \
         build-essential \
         libjpeg-dev \
         zlib1g-dev \
-        && rm -rf /var/lib/apt/lists/*
+        && break; \
+      echo "apt-get install attempt $i failed, retrying in 15s..."; \
+      sleep 15; \
+    done && \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
