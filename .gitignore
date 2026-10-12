@@ -10,3 +10,6 @@ data/
 # Deploy-Staging (sshx-upgeladen, kein Repo-Content)
 .incoming-patch/
 .incoming-v15/
+
+# Deploy-Lock (flock-Sperre gegen parallele Doppel-Runs)
+.deploy.lock

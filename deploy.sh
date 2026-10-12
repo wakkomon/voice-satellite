@@ -22,6 +22,21 @@ else
   DOCKER="sudo docker"
 fi
 
+# 0a. Deploy-Sperre (flock): parallele Doppel-Läufe (z.B. versehentlich zwei
+#     Terminals/SSH-Sessions) würden sonst denselben Container-Namen beantragen
+#     -> Namens-Konflikt beim docker run nach dem zweiten Build.
+#     Zweiter Lauf wartet, bis der erste fertig ist, und bricht dann
+#     spurlos ab ('deploy laeuft bereits') – der erste liefert das Ergebnis.
+LOCK_FILE="$(pwd)/.deploy.lock"
+if [ "${DEPLOY_GUARD:-0}" != "1" ]; then
+  exec 9>"$LOCK_FILE"
+  if ! flock -n 9; then
+    echo "Deploy läuft bereits (Sperre: $LOCK_FILE) – zweiter Lauf abgebrochen."
+    echo "Der laufende Deploy läuft weiter; Ergebnis dort abwarten."
+    exit 0
+  fi
+fi
+
 echo "=== Voice-Satellite Deploy ==="
 
 # 0. .env vorhanden? No-Overwrite-Prüfung
