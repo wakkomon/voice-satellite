@@ -103,6 +103,10 @@ services:
       # ── Web / Logs ──
       - WEB_PORT=${WEB_PORT:-8770}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      # ── MCP (Remote-Steuerung) ──
+      - MCP_ENABLED=${MCP_ENABLED:-1}
+      - MCP_HOST=${MCP_HOST:-0.0.0.0}
+      - MCP_PORT=${MCP_PORT:-8780}
     volumes:
       - voice-satellite-data:/data   # gleichnamiges Volume wie docker run
       - /media/private:/m:ro        # Musik-/Radio-/Kamera-M3U (SMB-Bind-Mount, Host muss es haben)

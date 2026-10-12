@@ -258,6 +258,43 @@ TTS_LANGUAGE=de
 | `LOG_LEVEL` | `INFO` | Log-Level |
 | `WEB_PORT` | `8770` | HTTP-Interface (Debug-UI, `/speak`, `/tone`, `/intent`) |
 
+### MCP (Remote-Steuerung)
+
+Der Satellite stellt einen MCP-Server (Model Context Protocol,
+JSON-RPC-over-HTTP) bereit, über den ein AI-Agent Töne abspielen und
+Bilder auf dem Display anzeigen kann. Läuft ohne externes `mcp`-Paket
+(eigener `http.server`, nur Python-Standardlib).
+
+| Variable | Default | Bedeutung |
+|---|---|---|
+| `MCP_ENABLED` | `1` | `0` = MCP-Server deaktiviert |
+| `MCP_HOST` | `0.0.0.0` | Bind-Adresse des MCP-HTTP-Servers |
+| `MCP_PORT` | `8780` | HTTP-Port des MCP-Endpunkts |
+
+**Endpunkte:**
+
+- `GET  /mcp/tools` — Tool-Discovery (Schema + Liste aller Tools)
+- `POST /mcp` — Tool-Aufruf, JSON-RPC 2.0:
+
+```bash
+# Ton abspielen
+curl -X POST http://192.168.1.32:8780/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"play_tone","params":{"name":"boot"}}'
+
+# Text auf dem Display
+curl -X POST http://192.168.1.32:8780/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"show_text","params":{"heading":"Hallo","body":"Welt"}}'
+```
+
+**Verfügbare Tools:** `play_tone` (boot/wake/end/error/alarm/blip),
+`show_text`, `show_weather`, `show_music_info`, `set_alarm` (Minuten +
+optionaler Label-Text), `get_tones`.
+
+> ⚠️ Port-Kollision: `MCP_PORT` darf sich nicht mit `WEB_PORT` (8770) oder
+> `BRIDGE_PORT` (8790) überschneiden — der Satellite läuft mit `hostnet`.
+
 ### STT-Logging
 
 Das erkannte STT-Text liegt in der Konsole/Log als **Volltext** (`STT: …`)
