@@ -31,6 +31,13 @@ if [ ! -f .env ]; then
   exit 1
 fi
 
+# 0b. portainer_agent stoppen: Er blockiert das Docker-Build-Netzwerk,
+#      indem es ein veth-Interface erzeugt, über das dhcpcd eine
+#      Default-Route mit Metrik 0 setzt (überschreibt wlan0, Metrik 100).
+#      Nach dem Build wird er wieder gestartet.
+echo "[0b] portainer_agent temporär stoppen (Build-Netzwerk-Fix)..."
+$DOCKER stop portainer_agent >/dev/null 2>&1 || true
+
 # No-Overwrite-Guard: Prüft kritische Keys gegen App-Defaults.
 # Nur KEYS mit abweichendem Wert (aber in .env gesetzt) werden angezeigt.
 # Abweichende Werte bleiben UNBERÜHRT – Deploy nimmt sie 1:1 mit.
@@ -130,3 +137,7 @@ echo ""
 echo "=== Deploy abgeschlossen ==="
 echo "Version (Container): $($DOCKER exec voice-satellite python3 -c 'from app import __version__; print(__version__)' 2>/dev/null || echo 'n/a')"
 echo "Web-UI: http://<pi-ip>:8770  ·  Logs: docker logs -f voice-satellite"
+
+# 0c. portainer_agent wieder starten (war vor Build gestoppt)
+echo "[0c] portainer_agent wieder starten..."
+$DOCKER start portainer_agent >/dev/null 2>&1 || true
