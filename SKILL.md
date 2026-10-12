@@ -22,8 +22,9 @@ ssh hermes@192.168.1.32 "docker compose logs -f --tail=200"
 
 ## MCP-Schnittstelle (Remote-Steuerung)
 
-Voice-Satellite startet einen MCP-Server (stdio), der folgende Tools
-bietet:
+Voice-Satellite startet einen MCP-Server (JSON-RPC-over-HTTP, eigener
+`http.server` aus der Python-Standardlib — **kein externes `mcp`-Paket**
+nötig), der folgende Tools bietet:
 
 ### play_tone(name: str)
 Einen vordefinierten Klingelton abspielen.
@@ -47,9 +48,24 @@ Einen Wecker setzen, der nach n Minuten mit Alarmton abstimmt.
 Alle verfügbaren Töne mit Beschreibung auflisten.
 
 ### Konfiguration
-Der MCP-Server wird von main.py aus automatisch gestartet (stdio-Modus).
-Wenn das `mcp`-Paket nicht installiert ist, startet der Server nicht
-(crashfrei mit Warnung).
+Der MCP-Server wird von main.py aus automatisch gestartet, wenn
+`MCP_ENABLED` nicht `0` ist. Port-Kollision mit `WEB_PORT` (8770) /
+`BRIDGE_PORT` (8790) vermeiden (hostnet):
+
+| ENV | Default | Bedeutung |
+|---|---|---|
+| `MCP_ENABLED` | `1` | `0` = deaktiviert |
+| `MCP_HOST` | `0.0.0.0` | Bind-Adresse |
+| `MCP_PORT` | `8780` | HTTP-Port |
+
+Aufruf (JSON-RPC 2.0):
+
+```bash
+curl -X POST http://192.168.1.32:8780/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"play_tone","params":{"name":"boot"}}'
+# Tool-Discovery: GET http://192.168.1.32:8780/mcp/tools
+```
 
 ## Display-Modus (`DISPLAY_MODE` in .env)
 - `WEATHER` (Standard): Wetter-Bild mit Text-Overlay
