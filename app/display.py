@@ -337,6 +337,13 @@ class Display:
     def _run(self):
         pages, idx, head = [], 0, ""
         shown_at = 0.0
+        # Wetter-Blitting in Hintergrund-Thread (blockiert nicht den UI-Thread).
+        # Der Flag _weather_done signalisiert, wann das letzte Wetter-Frame
+        # bereitsteht – dann wird es im Haupt-Thread nur noch geblittet.
+        self._weather_thread: threading.Thread | None = None
+        self._weather_pending: bool = False
+        self._weather_lock = threading.Lock()
+
         while not self._stop.is_set():
             frame = None
             with self._cv:
@@ -347,8 +354,18 @@ class Display:
                     self._cv.wait(timeout=0.25)
             now = time.time()
             if frame is not None and frame[0] == "__weather__":
-                # Weather-Frame (hostseitig gerendert, RGB565 raw)
-                self._blit_weather()
+                # Wetter-Frame asynchron laden und konvertieren.
+                # Das eigentliche Blitten passiert im Haupt-Thread (unter Lock).
+                if not self._weather_pending:
+                    self._weather_pending = True
+                    t = threading.Thread(
+                        target=self._load_weather, daemon=True, name="weather-load"
+                    )
+                    t.start()
+                    self._weather_thread = t
+                # Sofort ein kurzes "Wetter ..." als Platzhalter,
+                # damit die UI nicht blockiert.
+                self._live = True
                 shown_at = now
             elif frame is not None and self._playing:
                 # Musik-Info: Text als Overlay ueber Weather-Hintergrund
@@ -377,55 +394,29 @@ class Display:
                     self._paint(pages, idx, head)
                     shown_at = now
 
-    def _blit_weather(self):
-        """Weather-Frame laden und auf fb1 blitten.
+    def _load_weather(self):
+        # Hintergrund-Thread: Wetter-Bild laden, RGB565 konvertieren,
+        # im shared buffer speichern. Das eigentliche Blitten passiert
+        # im Haupt-Thread (unter Lock).
+        import PIL.Image as _Image
+        import urllib.request as _urllib
+        from io import BytesIO
 
-        Priorität: (1) Lokale .bin-Datei (offline) → (2) URL-Download
-        (DEFAULT_IMAGE_URL, Pillow-decodiert) → (3) Nichts (Frame bleibt).
-        """
-        expected = self._w * self._h * 2  # 307200
-
-        # ── (1) Lokale .bin-Datei (Offline-Fallback) ──────────────
+        expected = self._w * self._h * 2
         raw = None
         try:
-            import glob
-            files = glob.glob(os.path.join(config.IDLE_FRAME_DIR, "*.bin"))
-            if files:
-                files.sort(key=os.path.getmtime, reverse=True)
-                with open(files[0], "rb") as f:
-                    raw = f.read()
-                if len(raw) == expected and self._buf is not None and self._mm is not None:
-                    with self._lock:
-                        self._buf[:] = raw[:expected]
-                    try:
-                        self._mm.seek(0)
-                        self._mm.write(raw[:expected])
-                    except (ValueError, OSError):
-                        pass
-                    return
-        except Exception:
-            pass  # Datei fehlt/ungültig → URL versuchen
-
-        # ── (2) Direkt von URL laden + Pillow decodieren ──────────
-        try:
-            from PIL import Image
-            import urllib.request as _urllib
-
             req = _urllib.Request(
                 config.DEFAULT_IMAGE_URL,
                 headers={"User-Agent": "voice-satellite/1.0"},
             )
             with _urllib.urlopen(req, timeout=15) as resp:
                 data = resp.read()
-
             if len(data) < 1000:
-                log.warning("_blit_weather: zu kleines Bild (%d bytes)", len(data))
+                log.warning("_load_weather: zu kleines Bild (%d bytes)", len(data))
+                with self._weather_lock:
+                    self._weather_pending = False
                 return
-
-            from io import BytesIO
-            img = Image.open(BytesIO(data)).convert("RGB")
-
-            # Crop auf 3:2 (480:320), dann resize
+            img = _Image.open(BytesIO(data)).convert("RGB")
             sw, sh = img.size
             target_ratio = self._w / self._h
             if sw / sh > target_ratio:
@@ -436,38 +427,55 @@ class Display:
                 nh = int(sw / target_ratio)
                 y0 = (sh - nh) // 2
                 img = img.crop((0, y0, sw, y0 + nh))
-
-            img = img.resize((self._w, self._h), Image.Resampling.LANCZOS)
-
-            # RGB565 (little-endian 16-bit)
+            img = img.resize((self._w, self._h), _Image.Resampling.LANCZOS)
             try:
                 raw = img.convert("RGB565").tobytes()
             except (ValueError, AttributeError):
-                # Sehr alte PIL-Versionen ohne native RGB565
-                log.warning("_blit_weather: PIL-Version unterstützt kein RGB565, ignoriere Bild")
+                log.warning("_load_weather: kein RGB565, ignoriere Bild")
+                with self._weather_lock:
+                    self._weather_pending = False
                 return
-
-            if len(raw) == expected and self._buf is not None and self._mm is not None:
-                with self._lock:
-                    self._buf[:] = raw[:expected]
-                try:
-                    self._mm.seek(0)
-                    self._mm.write(raw[:expected])
-                except (ValueError, OSError):
-                    pass
-
-            # .bin für Offline speichern
-            try:
-                os.makedirs(config.IDLE_FRAME_DIR, exist_ok=True)
-                tmp = os.path.join(config.IDLE_FRAME_DIR, "weather.bin.tmp")
-                with open(tmp, "wb") as f:
-                    f.write(raw)
-                os.replace(tmp, os.path.join(config.IDLE_FRAME_DIR, "weather.bin"))
-            except Exception:
-                pass  # Speichern ist optional
-
         except Exception as e:
-            log.warning("_blit_weather: URL-Fehler (%s)", e)
+            log.warning("_load_weather: Fehler (%s)", e)
+            with self._weather_lock:
+                self._weather_pending = False
+            return
+
+        if len(raw) != expected or self._buf is None or self._mm is None:
+            with self._weather_lock:
+                self._weather_pending = False
+            return
+
+        # Buffer-Kopie unter Lock (kein Blitten, nur Speichern)
+        with self._weather_lock:
+            if self._buf is not None:
+                self._buf[:] = raw[:expected]
+            self._weather_pending = False
+
+    def _blit_weather(self):
+        # Wetter-Frame aus dem vorberechneten Buffer (Hintergrund-Thread)
+        # auf den fb1 blitten. Falls noch kein fertiger Buffer da ist,
+        # wird kurz gewartet (max. 2 s), dann übersprungen.
+        raw = None
+        wait_start = time.monotonic()
+        while self._weather_pending and time.monotonic() - wait_start < 2:
+            time.sleep(0.05)
+
+        with self._weather_lock:
+            if self._buf is not None and not self._weather_pending:
+                raw = bytes(self._buf)
+
+        if raw is None:
+            return
+
+        if self._mm is None:
+            return
+
+        try:
+            self._mm.seek(0)
+            self._mm.write(raw)
+        except (ValueError, OSError):
+            pass
 
     def _layout(self, heading: str, body: str):
         heading = _sanitize(heading or "").replace("\n", " ")

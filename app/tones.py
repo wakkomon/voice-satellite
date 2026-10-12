@@ -58,6 +58,8 @@ def get(kind):
             pcm = _sine(config.TONE_ERROR_HZ, config.TONE_SEC, config.SAMPLE_RATE, config.TONE_GAIN)
         elif kind == "wake":
             pcm = _sine(config.TONE_WAKE_HZ, config.TONE_SEC, config.SAMPLE_RATE, config.TONE_GAIN)
+        elif kind == "end":
+            pcm = _sine(config.TONE_END_HZ, config.TONE_SEC, config.SAMPLE_RATE, config.TONE_GAIN)
         elif kind == "alarm":
             # Sirenen-Wechselton: hoch (880) und tief (440) im Wechsel,
             # ALARM_REPEATS Halbzyklen – lautes, eindeutig anderes Signal.
