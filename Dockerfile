@@ -33,7 +33,12 @@ COPY requirements.txt .
 # --no-deps: pvporcupine deklariert numpy+enum34, benutzt sie aber nicht
 # (nur ctypes/enum aus der stdlib). numpy laesst sich auf armv7l/cp311 nicht
 # bauen und wuerde den Build sprengen.
-RUN pip install --no-cache-dir --no-deps -r requirements.txt
+# Retry: langsames Netzwerk auf Pi 3 → pip read timeout → bis zu 3 Versuche.
+RUN pip install --no-cache-dir --no-deps -r requirements.txt \
+    || (echo "pip attempt 1 failed, retrying..."; sleep 15 \
+    && pip install --no-cache-dir --no-deps -r requirements.txt \
+    || (echo "pip attempt 2 failed, final retry..."; sleep 15 \
+    && pip install --no-cache-dir --no-deps -r requirements.txt))
 
 # Build-Tools nur fuer den Pillow-Quellbau – danach wieder aus dem Image
 RUN apt-get purge -y build-essential libjpeg-dev zlib1g-dev \
