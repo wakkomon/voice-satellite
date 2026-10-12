@@ -415,12 +415,22 @@ def _setup_logging():
     )
 
 
+def _start_mcp_server():
+    """MCP-Server starten (optional, crasht nicht wenn mcp-Paket fehlt)."""
+    try:
+        from .mcp import start_mcp
+        start_mcp()
+    except Exception as e:
+        log.warning("MCP-Server-Start fehlgeschlagen: %s", e)
+
+
 def main():
     _setup_logging()
     os.makedirs(os.path.dirname(config.MEMORY_DB) or ".", exist_ok=True)
     signal.signal(signal.SIGTERM, lambda *a: sys.exit(0))
     p = Pipeline()
     web.start(p)                    # Debug-/Health-HTTP im Hintergrundthread
+    _start_mcp_server()              # MCP-Remote-Steuerung
     router.warm_async()             # LLM-Modell im Hintergrund vorwärmen
     # M3U-Index im Hintergrund aufbauen (vermeidet langsame CIFS-Scans pro Befehl)
     from . import intent as _intent

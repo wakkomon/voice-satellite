@@ -195,15 +195,18 @@ class Handler(BaseHTTPRequestHandler):
         """Aktuelles Display-Bild als PNG (Framebuffer-Snapshot).
         Cache: 1 s – das Bild ändert sich nur bei neuen Inhalten,
         und das Encoding auf armv7l soll nicht unnötig die CPU belegen."""
-        body = display.snapshot_png()
-        if body is None:
-            return self._send(404, {"error": "Display nicht aktiv"})
-        self.send_response(200)
-        self.send_header("Content-Type", "image/png")
-        self.send_header("Cache-Control", "max-age=1")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            body = display.snapshot_png()
+            if body is None:
+                return self._send(404, {"error": "Display nicht aktiv"})
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Cache-Control", "max-age=1")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return
 
     def _send_html(self):
         try:
@@ -215,7 +218,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return
 
     def _sse(self):
         """Server-Sent Events: komplettes Snapshot alle 2 s (Zustand + Statistik

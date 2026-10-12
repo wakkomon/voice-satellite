@@ -16,6 +16,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 COPY requirements.txt .
+# mcp-Paket mit allen Dependencies installieren (ist armv7l-kompatibel)
+RUN pip install --no-cache-dir mcp>=1.0.0
 # --no-deps: pvporcupine deklariert numpy+enum34, benutzt sie aber nicht
 # (nur ctypes/enum aus der stdlib). numpy laesst sich auf armv7l/cp311 nicht
 # bauen und wuerde den Build sprengen.
