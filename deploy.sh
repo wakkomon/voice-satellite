@@ -109,8 +109,21 @@ fi
 
 # 4. Image neu bauen (--no-cache: Source-Änderungen landen garantiert im Image,
 #    kein stehengebliebener Build-Cache mit altem Code)
-echo "[3/6] Docker-Image neu bauen (ohne Cache)..."
-$DOCKER build --no-cache -t voice-satellite:latest .
+#    Offline-Modus: VS_IMAGE_TAR=<tar.gz> → docker load statt build
+#    (für Geräte, deren Build-Netzwerk während langer apt/pip-Steps abbricht;
+#    z.B. Pi 2 display02: dhcpcd-Default-Route über veth bricht Docker-Build-Net
+#    nach ein paar Minuten weg. Image von display01 bauen + save/load übertragen.)
+if [ -n "${VS_IMAGE_TAR:-}" ]; then
+  if [ ! -f "$VS_IMAGE_TAR" ]; then
+    echo "Fehler: VS_IMAGE_TAR=$VS_IMAGE_TAR existiert nicht."
+    exit 1
+  fi
+  echo "[3/6] Docker-Image laden aus $VS_IMAGE_TAR (offline)..."
+  $DOCKER load -i "$VS_IMAGE_TAR"
+else
+  echo "[3/6] Docker-Image neu bauen (ohne Cache)..."
+  $DOCKER build --no-cache -t voice-satellite:latest .
+fi
 
 # 5. Container starten (Name bleibt voice-satellite)
 echo "[4/6] Container starten..."
