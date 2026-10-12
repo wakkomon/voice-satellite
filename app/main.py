@@ -416,10 +416,13 @@ def _setup_logging():
 
 
 def _start_mcp_server():
-    """MCP-Server starten (optional, crasht nicht wenn mcp-Paket fehlt)."""
+    """MCP-Server starten (optional, crasht nicht wenn deaktiviert/fehlend)."""
+    if not config.MCP_ENABLED:
+        log.info("MCP-Server deaktiviert (MCP_ENABLED=0)")
+        return
     try:
         from .mcp import start_mcp
-        start_mcp()
+        start_mcp(host=config.MCP_HOST, port=config.MCP_PORT)
     except Exception as e:
         log.warning("MCP-Server-Start fehlgeschlagen: %s", e)
 
