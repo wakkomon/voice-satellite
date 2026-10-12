@@ -428,10 +428,31 @@ class Display:
                 y0 = (sh - nh) // 2
                 img = img.crop((0, y0, sw, y0 + nh))
             img = img.resize((self._w, self._h), _Image.Resampling.LANCZOS)
+        except Exception as e:
+            log.warning("_load_weather: Fehler (%s)", e)
+            with self._weather_lock:
+                self._weather_pending = False
+            return
+        # RGB565 ohne PIL-Mode (Pillow >= 12: "image has wrong mode"):
+        # 5:6:5-Interleaving per Pixel via numpy-freiem Bytearray-Bau.
+        def _rgb565_to_bytes(rgb, w, h):
+            px = list(rgb.getdata())
+            out = bytearray(h * w * 2)
+            i = 0
+            for (r, g, b) in px:
+                hi = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
+                out[i] = hi >> 8
+                out[i + 1] = hi & 0xFF
+                i += 2
+            return bytes(out)
+
+        try:
+            raw = img.convert("RGB565").tobytes()
+        except (ValueError, AttributeError):
             try:
-                raw = img.convert("RGB565").tobytes()
-            except (ValueError, AttributeError):
-                log.warning("_load_weather: kein RGB565, ignoriere Bild")
+                raw = _rgb565_to_bytes(img, self._w, self._h)
+            except Exception as e2:
+                log.warning("_load_weather: kein RGB565 (%s), ignoriere Bild", e2)
                 with self._weather_lock:
                     self._weather_pending = False
                 return

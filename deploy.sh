@@ -86,6 +86,20 @@ else
   MUSIC_MOUNT=""
 fi
 
+# MCP-Port aus .env lesen (Default: 1 / 8780 – entspricht App-Defaults in app/config.py).
+# MCP_ENABLED=0 -> kein Port-Mapping.
+MCP_ENABLED_VAL=$(grep "^MCP_ENABLED=" .env 2>/dev/null | cut -d= -f2- | sed 's/^"//;s/"$//' || true)
+MCP_PORT_VAL=$(grep "^MCP_PORT=" .env 2>/dev/null | cut -d= -f2- | sed 's/^"//;s/"$//' || true)
+MCP_ENABLED_VAL=${MCP_ENABLED_VAL:-1}
+MCP_PORT_VAL=${MCP_PORT_VAL:-8780}
+if [ "$MCP_ENABLED_VAL" = "1" ]; then
+  MCP_PORT_FLAG="-p ${MCP_PORT_VAL}:${MCP_PORT_VAL}"
+  echo "[3b/6] MCP-Port ${MCP_PORT_VAL} wird gemappt"
+else
+  MCP_PORT_FLAG=""
+  echo "[3b/6] MCP deaktiviert (MCP_ENABLED=0) – kein Port-Mapping"
+fi
+
 # 4. Image neu bauen (--no-cache: Source-Änderungen landen garantiert im Image,
 #    kein stehengebliebener Build-Cache mit altem Code)
 echo "[3/6] Docker-Image neu bauen (ohne Cache)..."
@@ -99,6 +113,7 @@ $DOCKER run -d --name voice-satellite \
   --device /dev/fb1 \
   --group-add 29 --group-add 44 \
   -p 8770:8770 \
+  ${MCP_PORT_FLAG} \
   -v voice-satellite-data:/data \
   ${MUSIC_MOUNT:+-v "$MUSIC_MOUNT"} \
   --env-file "$(pwd)/.env" \
