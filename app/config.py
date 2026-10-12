@@ -241,4 +241,10 @@ RTSP_PASS       = _env("RTSP_PASS", "", fallback_empty=True)
 
 # ── Web ────────────────────────────────────────────────────────
 WEB_PORT        = int(_env("WEB_PORT", "8770"))
+
+# ── MCP (HTTP-Remote-Steuerung) ──────────────────────────────
+MCP_ENABLED     = _env("MCP_ENABLED", "1") in ("1", "true", "yes", "on")
+MCP_HOST        = _env("MCP_HOST", "0.0.0.0")
+MCP_PORT        = int(_env("MCP_PORT", "8780"))
+
 LOG_LEVEL       = _env("LOG_LEVEL", "INFO")
