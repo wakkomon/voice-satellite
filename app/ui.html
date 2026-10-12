@@ -215,7 +215,7 @@ function render(d) {
   const evts = d.events || [];
   const topEv = evts.length ? (evts[evts.length - 1].seq || 0) : 0;
   // Container-Neustart: Server-Seq ist zurueckgesprungen -> Dedupe neu starten
-  if (seeded && topEv > 0 && topEv < maxSeq) maxSeq = 0;
+  if (seeded && topEv > 0 && topEv < maxSeq) { maxSeq = 0; seeded = false; }
   if (!seeded) {
     seeded = true;
     seedFeed(evts);   // Reload/Erstladung: Feed aus dem Server-Ring aufbauen
