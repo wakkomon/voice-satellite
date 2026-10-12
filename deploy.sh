@@ -81,7 +81,8 @@ else
 fi
 
 # 2. Alten Container entfernen (Volume bleibt erhalten)
-echo "[2/6] Alten Container entfernen..."
+echo "[2/6] Alten Container entfernen...";
+$DOCKER stop voice-satellite >/dev/null 2>&1 || true
 $DOCKER rm -f voice-satellite 2>/dev/null || true
 
 # 3. Musik-Bind-Mount vorhanden? (Playlists, Radio, Kamera-M3U)
