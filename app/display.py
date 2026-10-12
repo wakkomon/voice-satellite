@@ -441,8 +441,9 @@ class Display:
             i = 0
             for (r, g, b) in px:
                 hi = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
-                out[i] = hi >> 8
-                out[i + 1] = hi & 0xFF
+                # fbdev erwartet Little-Endian (Byte-Swap): erst low-byte, dann high-byte
+                out[i] = hi & 0xFF
+                out[i + 1] = hi >> 8
                 i += 2
             return bytes(out)
 
