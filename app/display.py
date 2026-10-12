@@ -363,8 +363,13 @@ class Display:
                     )
                     t.start()
                     self._weather_thread = t
-                # Sofort ein kurzes "Wetter ..." als Platzhalter,
-                # damit die UI nicht blockiert.
+                # Jetzt den fertig geladenen Frame (self._buf) auf /dev/fb1
+                # blitten – ohne diesen Aufruf taucht das Bild nur im
+                # Web-UI-Snapshot auf, aber nicht auf dem physischen Display.
+                # _blit_weather() wartet max. 2 s, bis der Load fertig ist;
+                # läuft der Download noch länger, blittet der nächste Idle-Tick
+                # (IDLE_TICK_SEC) das fertige Bild nach (selbstheilend).
+                self._blit_weather()
                 self._live = True
                 shown_at = now
             elif frame is not None and self._playing:
