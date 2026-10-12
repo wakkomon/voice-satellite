@@ -7,10 +7,16 @@ ENV TZ=Europe/Berlin
 # arecord/aplay + ALSA-Libs (USB-Mic & Headphone-Jack).
 # alsa-utils zieht libasound2 (trixie: libasound2t64) automatisch nach.
 # mpg123 dekodiert MP3 (Mediathek + Radio-Streams) fuer den Musik-Player.
+# build-essential + libjpeg-dev + zlib1g-dev: Pillow liefert KEINE armv7l-
+# Wheels (nur manylinux x86_64/aarch64), der Pi-Build muss es vom Quellbaum
+# kompilieren (Wetter-Idle: JPEG -> RGB565).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         alsa-utils \
         mpg123 \
         curl \
+        build-essential \
+        libjpeg-dev \
+        zlib1g-dev \
         && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -20,6 +26,10 @@ COPY requirements.txt .
 # (nur ctypes/enum aus der stdlib). numpy laesst sich auf armv7l/cp311 nicht
 # bauen und wuerde den Build sprengen.
 RUN pip install --no-cache-dir --no-deps -r requirements.txt
+
+# Build-Tools nur fuer den Pillow-Quellbau – danach wieder aus dem Image
+RUN apt-get purge -y build-essential libjpeg-dev zlib1g-dev \
+        && rm -rf /var/lib/apt/lists/*
 
 COPY app/ ./app/
 COPY wake/ ./wake/
