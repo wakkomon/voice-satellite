@@ -91,7 +91,7 @@ Satellite: 192.168.1.32 (Container voice-satellite, hostnet)
 
 Jede Variable wird in `app/config.py` gelesen; hier der Wert, der greift, wenn
 die Variable in `.env` **nicht** gesetzt ist. `.env.example` ist die
-maschinenlesbare Vorlage mit den gleichen Defaults. Alle 72 Variablen,
+maschinenlesbare Vorlage mit den gleichen Defaults. Alle Variablen,
 gruppiert:
 
 ### Audio (ALSA)
