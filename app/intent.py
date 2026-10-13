@@ -68,15 +68,29 @@ def _fuzzy_match(query: str, candidates: list[str],
 _m3u_index: dict[str, list[str]] | None = None  # name.lower() -> [relpaths (rel. MUSIC_ROOT)]
 _m3u_all: list[str] | None = None               # alle Playlists (rel. MUSIC_ROOT)
 _mp3_index: dict[str, list[str]] | None = None  # name.lower() -> [relpaths] für .mp3/.flac/...
+_dir_index: dict[str, list[str]] | None = None  # Ordnernamen.lower() -> [relpaths] (z.B. Interpret-Ordner)
 _indexer_started = False
 
+# Kurze Füllwörter (deutsche Grammatik): tauchen in fast jedem zweiten
+# Dateinamen/Befehl auf und machen eine Substring-Suche unsinnig
+# ("von" in "musik von falco" → False-Positiv auf "Ritter Von Roßbach").
+_IGNORE_TOKENS = frozenset({
+    "von", "der", "die", "das", "den", "dem", "des", "ein", "eine",
+    "einer", "eines", "am", "im", "um", "zu", "mit", "auf", "an",
+    "in", "für", "fuer", "und", "oder", "ist", "sind", "war",
+    "bei", "nach", "aus", "vor", "über", "ueber", "unter",
+    "bis", "doch", "ich", "du", "er", "sie", "es", "mal",
+})
 
-def _build_media_index(root: str, max_depth: int = 2, budget: float = 120.0
+
+def _build_media_index(root: str, max_depth: int = 3, budget: float = 120.0
                        ) -> tuple[dict[str, list[str]], list[str],
-                                  dict[str, list[str]], list[str]]:
+                                  dict[str, list[str]], list[str],
+                                  dict[str, list[str]]]:
     """Scan root/mp3 (max_depth Ebenen) in EINEM Walk und baut:
       1. M3U-Index:  name.lower() -> [relpaths]  (Playlists .m3u/.m3u8)
       2. MP3-Index:  name.lower() -> [relpaths]  (Audiodateien .mp3/.flac/...)
+      3. Dir-Index:  Ordnernamen.lower() -> [relpaths] (Interpret-Ordner etc.)
 
     Begrenzung: nur mp3-Unterverzeichnis, nur max_depth Ebenen, harte
     Zeitgrenze (budget s) — der Baum liegt auf CIFS/SMB, jeder Roundtrip
@@ -87,22 +101,12 @@ def _build_media_index(root: str, max_depth: int = 2, budget: float = 120.0
     m3u_all: list[str] = []
     mp3_idx: dict[str, list[str]] = {}
     mp3_all: list[str] = []
+    dir_idx: dict[str, list[str]] = {}
     scan_root = os.path.join(root, "mp3")
     if not os.path.isdir(scan_root):
-        return m3u_idx, m3u_all, mp3_idx, mp3_all
+        return m3u_idx, m3u_all, mp3_idx, mp3_all, dir_idx
     t0 = time.time()
     AUDIO_EXTS = (".mp3", ".flac", ".ogg", ".wav", ".m4a", ".opus")
-
-    # Kurze Füllwörter, die in jedem zweiten Dateinamen vorkommen.
-    # Werden vom Index ausgeschlossen, um False-Positives bei
-    # Substring-Suche zu vermeiden (z.B. "von" in "musik von foo").
-    _IGNORE_TOKENS = frozenset({
-        "von", "der", "die", "das", "den", "dem", "des", "ein", "eine",
-        "einer", "eines", "am", "im", "um", "zu", "mit", "auf", "an",
-        "in", "für", "fuer", "und", "oder", "ist", "sind", "war",
-        "bei", "nach", "aus", "vor", "über", "ueber", "unter",
-        "bis", "doch", "ich", "du", "er", "sie", "es", "ich",
-    })
 
     def add(idx: dict, paths: list, path: str) -> None:
         rel = os.path.relpath(path, root)
@@ -124,6 +128,26 @@ def _build_media_index(root: str, max_depth: int = 2, budget: float = 120.0
         except OSError:
             return []
 
+    def _index_dir(p: str) -> bool:
+        """Ordner *p* in dir_idx eintragen (Schlüssel: Ordnernamen.lower()).
+        Gibt True zurück, wenn der Ordner selbst Audio-Dateien enthält."""
+        rel = os.path.relpath(p, root)
+        nm = os.path.basename(p.rstrip(os.sep)).lower()
+        has_audio = False
+        for e2 in listdir_sorted(p):
+            e2p = os.path.join(p, e2)
+            if e2.lower().endswith(AUDIO_EXTS):
+                try:
+                    if os.path.isfile(e2p):
+                        has_audio = True
+                except OSError:
+                    pass
+            elif has_audio:
+                break
+        if nm and len(nm) > 1 and nm not in _IGNORE_TOKENS:
+            dir_idx.setdefault(nm, []).append(rel)
+        return has_audio
+
     def rec(d: str, depth: int) -> None:
         for e in listdir_sorted(d):
             if time.time() - t0 > budget:
@@ -136,6 +160,10 @@ def _build_media_index(root: str, max_depth: int = 2, budget: float = 120.0
                     elif e.lower().endswith(AUDIO_EXTS):
                         add(mp3_idx, mp3_all, p)
                 elif depth < max_depth and os.path.isdir(p):
+                    # Ordnernamen indexieren (Interpreten wie „Falco",
+                    # „Beatles", …), auch wenn der Audio-Scan budget-mäßig
+                    # abbricht — Namen holen ist ein listdir, kein walk.
+                    _index_dir(p)
                     rec(p, depth + 1)
             except OSError:
                 continue
@@ -159,7 +187,9 @@ def _build_media_index(root: str, max_depth: int = 2, budget: float = 120.0
     # De-duplizierung (Pass 1 + rec überlappen sich bei Level-1-Dateien)
     m3u_all = list(dict.fromkeys(m3u_all))
     mp3_all = list(dict.fromkeys(mp3_all))
-    return m3u_idx, m3u_all, mp3_idx, mp3_all
+    for k in dir_idx:
+        dir_idx[k] = list(dict.fromkeys(dir_idx[k]))
+    return m3u_idx, m3u_all, mp3_idx, mp3_all, dir_idx
 
 
 def start_m3u_indexer(root: str, interval: int = 300) -> None:
@@ -175,18 +205,19 @@ def start_m3u_indexer(root: str, interval: int = 300) -> None:
     _indexer_started = True
 
     def _worker():
-        global _m3u_index, _m3u_all, _mp3_index
+        global _m3u_index, _m3u_all, _mp3_index, _dir_index
         while True:
             try:
                 log.info("intent: Medien-Index wird gebaut …")
                 t0 = time.time()
-                m3u_idx, m3u_all, mp3_idx, mp3_all = _build_media_index(root)
+                m3u_idx, m3u_all, mp3_idx, mp3_all, dir_idx = _build_media_index(root)
                 with _lock:
                     _m3u_index = m3u_idx
                     _m3u_all = m3u_all
                     _mp3_index = mp3_idx
-                log.info("intent: Medien-Index bereit — %d Playlists, %d Audios, %.1f s",
-                         len(m3u_all), len(mp3_all), time.time() - t0)
+                    _dir_index = dir_idx
+                log.info("intent: Medien-Index bereit — %d Playlists, %d Audios, %d Interpreten, %.1f s",
+                         len(m3u_all), len(mp3_all), len(dir_idx), time.time() - t0)
             except Exception:
                 log.exception("intent: Medien-Index-Refresh fehlgeschlagen")
             time.sleep(interval)
@@ -195,23 +226,26 @@ def start_m3u_indexer(root: str, interval: int = 300) -> None:
 
 
 def _find_in_index(idx: dict[str, list[str]] | None, name: str, root: str,
-                   exts: tuple[str, ...]) -> str | None:
-    """Suche in einem In-Memory-Index (mit Substring-/Fallback-Suche).
-    Gibt relativen Pfad zurück oder None (dann ruft der Caller Glob/OS auf)."""
+                   exts: tuple[str, ...], min_score: int = 1) -> str | None:
+    """Suche in einem In-Memory-Index. Gibt relativen Pfad zurück oder None.
+
+    Scoring statt First-Match: ein Treffer ist (a) exakter Schlüssel-Abgleich
+    oder (b) jeder Such-Token, der in einem Schlüssel vorkommt. Der Schlüssel
+    mit den meisten Treffern gewinnt; bei < min_score wird nichts zurückgeben
+    (verhindert, dass ein einzelnes Wort wie „falco" auf „falcos" oder
+    „filmmusik" landet)."""
     if idx:
-        n = name.lower()
+        n = name.lower().strip()
         matches = idx.get(n)
         if matches:
             return matches[0]
-        # Substring-Fallback: zähle wie viele Such-Token in jedem Index-Schlüssel
-        # vorkommen. Datei mit den meisten Treffern gewinnt.
-        q_tokens = [t for t in n.split() if len(t) > 2]
+        # Token-Scoring: zählt pro Schlüssel, wie viele Such-Token enthalten sind.
+        q_tokens = [t for t in n.replace("_", " ").split() if len(t) > 2]
+        if not q_tokens:
+            return None
         best_score = 0
         best_paths: list[str] | None = None
         for k, paths in idx.items():
-            if n in k:
-                # Exakter Substring → sofortiger Gewinn
-                return paths[0]
             score = 0
             for qt in q_tokens:
                 if qt in k:
@@ -219,7 +253,7 @@ def _find_in_index(idx: dict[str, list[str]] | None, name: str, root: str,
             if score > best_score:
                 best_score = score
                 best_paths = paths
-        if best_paths:
+        if best_paths and best_score >= max(1, min_score):
             return best_paths[0]
     # Fallback: direct file check (instant, no walk)
     full = os.path.join(root, name)
@@ -531,13 +565,19 @@ def try_play_mp3(text: str) -> tuple[bool, str | None]:
     if not name:
         return True, "Was soll ich abspielen?"
 
+    # „musik von X" / „die musik von X" → nur der Interpret X ist der Suchbegriff
+    artist_match = re.search(r"musik\s+(?:von|by)\s+(.+)", name)
+    if artist_match:
+        name = artist_match.group(1).strip()
+    if not name:
+        return True, "Welchen Interpreten suchst du?"
+
     root = config.MUSIC_ROOT
     mp3_dir = os.path.join(root, "mp3")
     if not os.path.isdir(mp3_dir):
         return True, f"MP3-Ordner nicht erreichbar: {mp3_dir}"
 
-    # Strategy: try name in mp3 dir and subdirs
-    # 1. Exact file match
+    # 1. Exakte Datei direkt in mp3/
     for ext in (".m3u", ".m3u8", ".mp3"):
         fp = os.path.join(mp3_dir, name + ext)
         if os.path.isfile(fp):
@@ -547,24 +587,27 @@ def try_play_mp3(text: str) -> tuple[bool, str | None]:
                 return True, err
             return True, f"'{name}{ext}' wird abgespielt"
 
-    # 2. Playlist match via M3U-Index (substrings, ohne CIFS-Traversal)
-    rel = _find_m3u_in_root(name, root)
-    if rel:
-        err = playback.player.play_path(rel)
-        if err:
-            return True, err
-        return True, f"Playlist '{os.path.splitext(os.path.basename(rel))[0]}' wird abgespielt"
-    # 2b. Index noch nicht fertig (Startphase) → einmaliger, begrenzter Glob
-    for pat in (f"*{name}*.m3u", f"*{name}*.m3u8"):
-        for f in glob.glob(os.path.join(mp3_dir, pat), recursive=False):
-            if os.path.isfile(f):
-                rel = os.path.relpath(f, root)
-                err = playback.player.play_path(rel)
-                if err:
-                    return True, err
-                return True, f"Playlist '{os.path.basename(f)}' wird abgespielt"
-
-    # 3. Directory match
+    # 2. Ordner-Match über den In-Memory-Dir-Index (z.B. „Falco" → Interpreten/E/Falco).
+    #    Scoring: Ordner mit den meisten Such-Token-Treffern gewinnt; bei Gleichstand
+    #    der längste Name (spezifischste Ebene, z.B. „falco" statt „music").
+    with _lock:
+        d_idx = dict(_dir_index) if _dir_index else {}
+    if d_idx:
+        q = [t for t in name.lower().split() if len(t) > 2]
+        best: tuple[int, int, str] | None = None  # (score, keylen, path)
+        for k, paths in d_idx.items():
+            score = sum(1 for qt in q if qt in k) + (1 if k in name.lower() else 0)
+            if score <= 0:
+                continue
+            cand = (score, len(k), paths[0])
+            if best is None or (cand[0], cand[1]) > (best[0], best[1]):
+                best = cand
+        if best is not None:
+            err = playback.player.play_path(best[2])
+            if err:
+                return True, err
+            return True, f"Ordner '{os.path.basename(best[2])}' wird abgespielt"
+    # 2b. Direkt: mp3_dir/name ist ein Ordner (exakter Name, ohne Unterordner)
     dir_path = os.path.join(mp3_dir, name)
     if os.path.isdir(dir_path):
         rel = os.path.relpath(dir_path, root)
@@ -573,7 +616,7 @@ def try_play_mp3(text: str) -> tuple[bool, str | None]:
             return True, err
         return True, f"Ordner '{name}' wird abgespielt"
 
-    # 4. Audiodatei (MP3/FLAC/...) über den In-Memory-Index —
+    # 3. Audiodatei (MP3/FLAC/...) über den In-Memory-Index —
     #    O(1) statt langsamem os.walk über CIFS bei jedem Request.
     rel = _find_mp3_in_root(name, root)
     if rel:
@@ -581,6 +624,15 @@ def try_play_mp3(text: str) -> tuple[bool, str | None]:
         if err:
             return True, err
         return True, f"'{os.path.basename(rel)}' wird abgespielt"
+
+    # 4. Playlist match via M3U-Index — zuletzt, damit „musik von X"
+    #    (Interpret-Suche) nicht auf Playlists wie „Filmmusik" landet.
+    rel = _find_m3u_in_root(name, root)
+    if rel:
+        err = playback.player.play_path(rel)
+        if err:
+            return True, err
+        return True, f"Playlist '{os.path.splitext(os.path.basename(rel))[0]}' wird abgespielt"
 
     # 5. Index noch nicht fertig (Startphase) → einmaliger, begrenzter Glob
     for pat in (f"*{name}*.mp3", f"*{name}*.flac", f"*{name}*.m4a", f"*{name}*.ogg"):
