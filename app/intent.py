@@ -67,30 +67,37 @@ def _fuzzy_match(query: str, candidates: list[str],
 
 _m3u_index: dict[str, list[str]] | None = None  # name.lower() -> [relpaths (rel. MUSIC_ROOT)]
 _m3u_all: list[str] | None = None               # alle Playlists (rel. MUSIC_ROOT)
-_m3u_indexer_started = False
+_mp3_index: dict[str, list[str]] | None = None  # name.lower() -> [relpaths] für .mp3/.flac/...
+_indexer_started = False
 
 
-def _build_m3u_index(root: str, max_depth: int = 2, budget: float = 90.0
-                     ) -> tuple[dict[str, list[str]], list[str]]:
-    """Scan root/mp3 (max_depth Ebenen) und bauen (name->relpath, all-relpaths).
+def _build_media_index(root: str, max_depth: int = 2, budget: float = 120.0
+                       ) -> tuple[dict[str, list[str]], list[str],
+                                  dict[str, list[str]], list[str]]:
+    """Scan root/mp3 (max_depth Ebenen) in EINEM Walk und baut:
+      1. M3U-Index:  name.lower() -> [relpaths]  (Playlists .m3u/.m3u8)
+      2. MP3-Index:  name.lower() -> [relpaths]  (Audiodateien .mp3/.flac/...)
 
     Begrenzung: nur mp3-Unterverzeichnis, nur max_depth Ebenen, harte
     Zeitgrenze (budget s) — der Baum liegt auf CIFS/SMB, jeder Roundtrip
-    kostet ~0,2 s; ein Voll-Walk würde Minuten dauern. Playlists liegen
-    praktisch immer oben (Ebene 1) oder in einer Sammlungs-Unterstufe.
+    kostet ~0,2 s; ein Voll-Walk würde Minuten dauern. Ein gemeinsamer
+    Walk indexiert Playlists UND Audiodateien ohne zweiten Scan.
     """
-    idx: dict[str, list[str]] = {}
-    all_paths: list[str] = []
+    m3u_idx: dict[str, list[str]] = {}
+    m3u_all: list[str] = []
+    mp3_idx: dict[str, list[str]] = {}
+    mp3_all: list[str] = []
     scan_root = os.path.join(root, "mp3")
     if not os.path.isdir(scan_root):
-        return idx, all_paths
+        return m3u_idx, m3u_all, mp3_idx, mp3_all
     t0 = time.time()
+    AUDIO_EXTS = (".mp3", ".flac", ".ogg", ".wav", ".m4a", ".opus")
 
-    def add(path: str) -> None:
+    def add(idx: dict, paths: list, path: str) -> None:
         rel = os.path.relpath(path, root)
-        if rel in all_paths:
+        if rel in paths:
             return
-        all_paths.append(rel)
+        paths.append(rel)
         base = os.path.basename(path).rsplit(".", 1)[0]
         tokens = [t.lower() for t in base.replace("_", " ").split() if t] or [base.lower()]
         for token in sorted(set(tokens)):
@@ -112,77 +119,100 @@ def _build_m3u_index(root: str, max_depth: int = 2, budget: float = 90.0
             try:
                 if os.path.isfile(p):
                     if e.lower().endswith((".m3u", ".m3u8")):
-                        add(p)
+                        add(m3u_idx, m3u_all, p)
+                    elif e.lower().endswith(AUDIO_EXTS):
+                        add(mp3_idx, mp3_all, p)
                 elif depth < max_depth and os.path.isdir(p):
                     rec(p, depth + 1)
             except OSError:
                 continue
 
     entries = listdir_sorted(scan_root)
-    # Pass 1: alle Level-1-Playlists (schnell, garantiert)
+    # Pass 1: alle Level-1-Dateien (schnell, garantiert)
     for e in entries:
         p = os.path.join(scan_root, e)
         try:
-            if os.path.isfile(p) and e.lower().endswith((".m3u", ".m3u8")):
-                add(p)
+            if os.path.isfile(p):
+                if e.lower().endswith((".m3u", ".m3u8")):
+                    add(m3u_idx, m3u_all, p)
+                elif e.lower().endswith(AUDIO_EXTS):
+                    add(mp3_idx, mp3_all, p)
         except OSError:
             continue
     # Pass 2: Unterverzeichnisse bis max_depth, mit Time-Budget
     rec(scan_root, 0)
-    if time.time() - t0 >= budget and len(idx) > 0:
-        log.warning("intent: M3U-Scan: Zeitbudget (%.0f s) erreicht — Index ggfl. unvollständig", budget)
+    if time.time() - t0 >= budget and (len(m3u_idx) or len(mp3_idx)):
+        log.warning("intent: Media-Scan: Zeitbudget (%.0f s) erreicht — Index ggfl. unvollständig", budget)
     # De-duplizierung (Pass 1 + rec überlappen sich bei Level-1-Dateien)
-    all_paths = list(dict.fromkeys(all_paths))
-    return idx, all_paths
+    m3u_all = list(dict.fromkeys(m3u_all))
+    mp3_all = list(dict.fromkeys(mp3_all))
+    return m3u_idx, m3u_all, mp3_idx, mp3_all
 
 
 def start_m3u_indexer(root: str, interval: int = 300) -> None:
-    """Start background thread: build M3U index, refresh every `interval` s.
+    """Start background thread: build media index, refresh every `interval` s.
 
+    Indexiert Playlists (.m3u) UND Audiodateien im Hintergrund, damit
+    'spiel <name>' ohne CIFS-Traversal in O(1) auflösbar ist.
     Threaded (not asyncio) — die App läuft ohne Event-Loop.
     """
-    global _m3u_indexer_started
-    if _m3u_indexer_started:
+    global _indexer_started
+    if _indexer_started:
         return
-    _m3u_indexer_started = True
+    _indexer_started = True
 
     def _worker():
-        global _m3u_index, _m3u_all
+        global _m3u_index, _m3u_all, _mp3_index
         while True:
             try:
-                log.info("intent: M3U-Index wird gebaut …")
+                log.info("intent: Medien-Index wird gebaut …")
                 t0 = time.time()
-                idx, all_paths = _build_m3u_index(root)
+                m3u_idx, m3u_all, mp3_idx, mp3_all = _build_media_index(root)
                 with _lock:
-                    _m3u_index = idx
-                    _m3u_all = all_paths
-                log.info("intent: M3U-Index bereit — %d Namen, %d Playlists, %.1f s",
-                         len(idx), len(all_paths), time.time() - t0)
+                    _m3u_index = m3u_idx
+                    _m3u_all = m3u_all
+                    _mp3_index = mp3_idx
+                log.info("intent: Medien-Index bereit — %d Playlists, %d Audios, %.1f s",
+                         len(m3u_all), len(mp3_all), time.time() - t0)
             except Exception:
-                log.exception("intent: M3U-Index-Refresh fehlgeschlagen")
+                log.exception("intent: Medien-Index-Refresh fehlgeschlagen")
             time.sleep(interval)
 
-    threading.Thread(target=_worker, name="m3u-indexer", daemon=True).start()
+    threading.Thread(target=_worker, name="media-indexer", daemon=True).start()
 
 
-def _find_m3u_in_root(name: str, root: str) -> str | None:
-    """Search root (and subdirs) for M3U/M3U8 file matching *name*."""
-    # Use index if available (avoids slow CIFS scan on every call)
-    if _m3u_index is not None:
+def _find_in_index(idx: dict[str, list[str]] | None, name: str, root: str,
+                   exts: tuple[str, ...]) -> str | None:
+    """Suche in einem In-Memory-Index (mit Substring-/Fallback-Suche).
+    Gibt relativen Pfad zurück oder None (dann ruft der Caller Glob/OS auf)."""
+    if idx:
         n = name.lower()
-        matches = _m3u_index.get(n)
+        matches = idx.get(n)
         if matches:
             return matches[0]
         # Substring-Fallback im In-Memory-Index (gleichzeitig wie Glob *name*)
-        for k, paths in _m3u_index.items():
+        for k, paths in idx.items():
             if n in k or k in n:
                 return paths[0]
     # Fallback: direct file check (instant, no walk)
     full = os.path.join(root, name)
-    for ext in (".m3u", ".m3u8"):
+    for ext in exts:
         if os.path.isfile(full + ext):
             return os.path.relpath(full + ext, root)
     return None
+
+
+def _find_m3u_in_root(name: str, root: str) -> str | None:
+    """Search root (and subdirs) for M3U/M3U8 file matching *name*."""
+    return _find_in_index(_m3u_index, name, root, (".m3u", ".m3u8"))
+
+
+def _find_mp3_in_root(name: str, root: str) -> str | None:
+    """Suche Audiodatei *name* im mp3-Baum über den In-Memory-Index.
+    Vermeidet den langsamen os.walk über CIFS bei jedem Request."""
+    mp3_dir = os.path.join(root, "mp3")
+    return _find_in_index(_mp3_index, name, mp3_dir,
+                          (".mp3", ".flac", ".ogg", ".wav", ".m4a", ".opus"))
 
 
 # ---------------------------------------------------------------------------
@@ -516,12 +546,20 @@ def try_play_mp3(text: str) -> tuple[bool, str | None]:
             return True, err
         return True, f"Ordner '{name}' wird abgespielt"
 
-    # 4. Search in subdirectories for mp3 files
-    for root_dir, _dirs, files in os.walk(mp3_dir):
-        for f in files:
-            if name.lower() in f.lower() and f.lower().endswith((".mp3", ".m3u", ".m3u8")):
-                full = os.path.join(root_dir, f)
-                rel = os.path.relpath(full, root)
+    # 4. Audiodatei (MP3/FLAC/...) über den In-Memory-Index —
+    #    O(1) statt langsamem os.walk über CIFS bei jedem Request.
+    rel = _find_mp3_in_root(name, root)
+    if rel:
+        err = playback.player.play_path(rel)
+        if err:
+            return True, err
+        return True, f"'{os.path.basename(rel)}' wird abgespielt"
+
+    # 5. Index noch nicht fertig (Startphase) → einmaliger, begrenzter Glob
+    for pat in (f"*{name}*.mp3", f"*{name}*.flac", f"*{name}*.m4a", f"*{name}*.ogg"):
+        for f in glob.glob(os.path.join(mp3_dir, pat), recursive=False):
+            if os.path.isfile(f):
+                rel = os.path.relpath(f, root)
                 err = playback.player.play_path(rel)
                 if err:
                     return True, err
