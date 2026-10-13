@@ -182,6 +182,27 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/resume":
             playback.player.resume_web()
             return self._send(200, {"ok": True, **playback.player.status()})
+        if self.path == "/next":
+            msg = playback.player.next_track()
+            self._ev(f"Web: Naechster Titel -> {msg}")
+            return self._send(200, {"ok": True, "message": msg,
+                                    **playback.player.status()})
+        if self.path == "/prev":
+            msg = playback.player.prev_track()
+            self._ev(f"Web: Vorheriger Titel -> {msg}")
+            return self._send(200, {"ok": True, "message": msg,
+                                    **playback.player.status()})
+        if self.path == "/shuffle":
+            # {"enable": true|false} – Zufallswiedergabe an/aus
+            enable = bool(data.get("enable", True))
+            if enable:
+                playback.player.enable_shuffle()
+                self._ev("Web: Zufallswiedergabe an")
+            else:
+                playback.player.disable_shuffle()
+                self._ev("Web: Zufallswiedergabe aus")
+            return self._send(200, {"ok": True, "shuffle": enable,
+                                    **playback.player.status()})
         self._send(404, {"error": "unknown path"})
 
     def _ev(self, msg):

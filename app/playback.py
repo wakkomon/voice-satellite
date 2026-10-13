@@ -56,6 +56,10 @@ class MusicPlayer:
         self._paused_elapsed = 0.0       # gemerkt bei pause()
         self._hold = 0                   # >0: Geraet gehoert TTS/Pipeline
         self._web_hold = 0               # >0: Web-UI haelt die Wiedergabe an
+        # Shuffle- und Radio-Fallback-Zustand
+        self._shuffle_on = False         # True = Zufallswiedergabe aktiv
+        self._last_playlist = None       # (items, source, title) der letzten Playlist
+        self._current_item = None        # absoluter Pfad des aktuellen Stuecks
 
     # ── Status ─────────────────────────────────────────────────
     def is_playing(self):
@@ -185,6 +189,135 @@ class MusicPlayer:
         if free and job and not self._worker_alive():
             self._start_worker()
 
+    # ── Shuffle & Next/Prev ────────────────────────────────────
+    def enable_shuffle(self):
+        """Zufallswiedergabe aktivieren."""
+        with self._lock:
+            self._shuffle_on = True
+            items, source, title = self._job or ([], "file", "")
+            if items and source != "radio":
+                import random
+                self._shuffled_order = list(range(len(items)))
+                random.shuffle(self._shuffled_order)
+                self._shuffled_idx = 0
+
+    def disable_shuffle(self):
+        """Zufallswiedergabe deaktivieren."""
+        with self._lock:
+            self._shuffle_on = False
+
+    def is_shuffle_on(self):
+        with self._lock:
+            return self._shuffle_on
+
+    def _next_shuffled_index(self):
+        """Naechsten zufaelligen Index zurueckgeben (ohne Wiederholung bis alle)."""
+        with self._lock:
+            if not self._shuffle_on:
+                return None
+            items = self._job[0] if self._job else []
+            if not items:
+                return None
+            order = self._shuffled_order
+            if not order:
+                return None
+            idx = order[self._shuffled_idx % len(order)]
+            self._shuffled_idx += 1
+            # Neu mischen wenn alle durch
+            if self._shuffled_idx > len(order):
+                random.shuffle(order)
+                self._shuffled_idx = 0
+            return idx
+
+    def next_track(self):
+        """Zum naechsten Titel springen. Gibt Titelname zurueck."""
+        with self._lock:
+            job = self._job
+            if job is None:
+                return "Keine Wiedergabe aktiv"
+            items, source, title = job
+            if not items:
+                return "Leere Playlist"
+            self._last_playlist = (items[:], source, title)
+            if self._shuffle_on and source != "radio":
+                new_idx = self._next_shuffled_index()
+                if new_idx is not None:
+                    self._idx = new_idx
+                else:
+                    self._idx = (self._idx + 1) % len(items)
+            else:
+                if len(items) <= 1:
+                    return "Nur ein Titel in Wiedergabe"
+                self._idx = (self._idx + 1) % len(items)
+            new_idx = self._idx
+        self._restart_at(new_idx)
+        name = os.path.splitext(os.path.basename(items[new_idx]))[0]
+        self._ev(f"Naechster Titel: {name}")
+        return f"Nächster Titel: {name}" if source != "radio" else f"Titel {new_idx + 1}"
+
+    def prev_track(self):
+        """Zum vorherigen Titel springen. Gibt Titelname zurueck."""
+        with self._lock:
+            job = self._job
+            if job is None:
+                return "Keine Wiedergabe aktiv"
+            items, source, title = job
+            if not items:
+                return "Leere Playlist"
+            self._last_playlist = (items[:], source, title)
+            if self._shuffle_on and source != "radio":
+                order = self._shuffled_order
+                if order and self._shuffled_idx > 0:
+                    self._shuffled_idx -= 1
+                    self._idx = order[self._shuffled_idx % len(order)]
+                else:
+                    self._idx = max(0, self._idx - 1)
+            else:
+                if len(items) <= 1:
+                    return "Nur ein Titel in Wiedergabe"
+                self._idx = (self._idx - 1) % len(items)
+            new_idx = self._idx
+        self._restart_at(new_idx)
+        name = os.path.splitext(os.path.basename(items[new_idx]))[0]
+        self._ev(f"Vorheriger Titel: {name}")
+        return f"Vorheriger Titel: {name}" if source != "radio" else f"Titel {new_idx + 1}"
+
+    def get_last_playlist(self):
+        """(items, source, title) der zuletzt gestarteten Playlist, sonst None."""
+        with self._lock:
+            lp = self._last_playlist
+            return (list(lp[0]), lp[1], lp[2]) if lp is not None else None
+
+    def resume_last_playlist(self):
+        """Letzte Playlist fortsetzen (ohne LLM-Abfrage)."""
+        with self._lock:
+            playlist = self._last_playlist
+            if playlist is None:
+                return "Keine vorherige Wiedergabe gefunden"
+            items, source, title = playlist
+            if not items:
+                return "Leere Playlist"
+            # Letzten Index aus laufendem/letztem Job übernehmen
+            if self._job is not None and self._job[0] == items:
+                idx = self._idx
+            else:
+                idx = 0
+            idx = max(0, min(idx, len(items) - 1))
+        self._stop_evt.set()
+        self._kill_procs()
+        with self._lock:
+            self._job = (items[:], source, title)
+            self._idx = idx
+            self._item_t0 = 0.0
+            self._item_offset = 0.0
+            self._paused_elapsed = 0.0
+            self._title = title
+            self._source = source
+            self._stop_evt.clear()
+            self._start_worker()
+        self._ev(f"Fortsetzen: {title} (Titel {idx + 1}/{len(items)})")
+        return f"Fortsetzen: {title}"
+
     # ── Playlist-Parser ────────────────────────────────────────
     def _safe_join(self, root, rel):
         p = os.path.abspath(os.path.join(
@@ -249,6 +382,27 @@ class MusicPlayer:
         ihn ersetzt) – veraltete Worker verlassen sich ohne zu spielen."""
         with self._lock:
             return self._worker is threading.current_thread()
+
+    def _restart_at(self, idx):
+        """Worker atomisch ersetzen und bei Index idx (neu) starten.
+        Der alte Worker wird via stop_evt (unter Lock gesetzt) unschaedlich,
+        BEVOR er weitzaehlen kann; dann getoetet und neu gestartet."""
+        old_worker = None
+        with self._lock:
+            old_worker = self._worker
+            self._idx = idx
+            self._item_t0 = 0.0
+            self._item_offset = 0.0
+            self._paused_elapsed = 0.0
+            self._stop_evt.set()
+        # Spielprozesse des alten Workers toeten (ohne Blockade)
+        self._kill_procs_nonblocking()
+        # alten Worker abwarten, bis er sich verabschiedet hat
+        if old_worker is not None and old_worker is not threading.current_thread():
+            old_worker.join(timeout=3)
+        with self._lock:
+            self._stop_evt.clear()
+            self._start_worker()
 
     def _elapsed_now(self):
         """Aktuelle Position im laufenden Stueck (Sekunden), inkl. der

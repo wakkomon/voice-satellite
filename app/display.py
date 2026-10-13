@@ -257,6 +257,28 @@ class Display:
             self._pending = ("__weather__", "")  # Marker für Worker
             self._cv.notify_all()
 
+    def show_thinking(self, heading: str = "Denke", body: str = "noch nach …") -> None:
+        """LLM-Verarbeitung: 'Denke noch nach' PERSISTENT anzeigen.
+        
+        Im Gegensatz zu show_text() gibt es hier kein FB_TIMEOUT-Blackout
+        und kein Auto-Blättern. Der Zustand bleibt bis end_thinking()
+        oder ein naechster Frame die Anzeige ersetzt.
+        """
+        if self._mm is None or self._stop.is_set():
+            return
+        with self._cv:
+            self._pending = ("__thinking__", heading + " " + body)
+            self._cv.notify_all()
+
+    def end_thinking(self) -> None:
+        """Thinking-Zustand aufheben. Naechster show_text()/show()
+        ersetzt den 'Denke noch nach'-Frame wieder."""
+        if self._mm is None or self._stop.is_set():
+            return
+        with self._cv:
+            pass  # nur Notify, damit Worker auf naechsten Frame horcht
+            self._cv.notify_all()
+
     def is_playing(self) -> bool:
         """Prüfe ob Musik-Info aktiv ist."""
         with self._cv:
@@ -382,6 +404,15 @@ class Display:
                 if self._buf is not None:
                     with self._lock:
                         self._paint_overlay(pages, idx, head)
+                self._live = True
+                shown_at = now
+            elif frame is not None and frame[0] == "__thinking__":
+                # LLM-Verarbeitung: 'Denke noch nach' PERSISTENT halten –
+                # kein FB_TIMEOUT-Blackout, kein Blättern. Ende kommt als
+                # naechster Frame (Antwort) oder explizit per end_thinking().
+                pages, head = self._layout(*frame)
+                idx = 0
+                self._paint(pages, idx, head)
                 self._live = True
                 shown_at = now
             elif frame is not None:
@@ -690,6 +721,18 @@ def show_camera(camera_name: str) -> None:
     """Modul-Fassade: Kamera-Snapshot vom Pi holen und auf Display blitten."""
     if _instance is not None:
         _instance.show_camera(camera_name)
+
+
+def show_thinking(heading: str = "Denke", body: str = "noch nach …") -> None:
+    """Modul-Fassade: 'Denke noch nach' persistent auf Display zeigen."""
+    if _instance is not None:
+        _instance.show_thinking(heading, body)
+
+
+def end_thinking() -> None:
+    """Modul-Fassade: Thinking-Zustand aufheben."""
+    if _instance is not None:
+        _instance.end_thinking()
 
 
 # ── Ende ──────────────────────────────────────────────────────

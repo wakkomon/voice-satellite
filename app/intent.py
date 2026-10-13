@@ -356,6 +356,102 @@ def try_play_music(text: str) -> tuple[bool, str | None]:
     return False, None
 
 
+# ---------------------------------------------------------------------------
+# 5. Next / Prev Track (vorwärts / rückwärts)
+# ---------------------------------------------------------------------------
+
+def try_next_prev(text: str) -> tuple[bool, str | None]:
+    """Match „vorwärts“, „rückwärts“, „nächster“, „vorheriger“ Titel.
+
+    Returns (True, „Titel XYZ wird abgespielt“) or (False, None).
+    """
+    t = text.lower().strip()
+    if t in ("vorwärts", "vorwarts", "naechster", "nächster", "weiter", "skip"):
+        result = playback.player.next_track()
+        return True, result
+    if t in ("rückwärts", "rückwerts", "zurück", "zurueck", "vorheriger", "voreheriger", "back"):
+        result = playback.player.prev_track()
+        return True, result
+    return False, None
+
+
+# ---------------------------------------------------------------------------
+# 6. Shuffle Mode (zufallswiedergabe)
+# ---------------------------------------------------------------------------
+
+def try_shuffle(text: str) -> tuple[bool, str | None]:
+    """Match „zufallswiedergabe playlist xyz" oder „shuffle playlist xyz".
+
+    Startet Playlist in der Zufallswiedergabe.
+    Returns (True, „Playlist XYZ wird im Zufallsmodus abgespielt") or (False, None).
+    """
+    t = text.lower().strip()
+
+    # Pattern: "zufallswiedergabe playlist xyz" oder "zufallswiedergabe xyz"
+    m = re.match(r"^zufalls?wiedergabe\s+(?:playlist\s+)?(.+)", t)
+    if not m:
+        return False, None
+
+    playlist_name = m.group(1).strip()
+    if not playlist_name:
+        return True, "Welche Playlist soll im Zufallsmodus abgespielt werden?"
+
+    root = config.MUSIC_ROOT
+    mp3_dir = os.path.join(root, "mp3")
+    if not os.path.isdir(mp3_dir):
+        mp3_dir = root  # Fallback
+
+    # Suche die Playlist
+    rel = _find_m3u_in_root(playlist_name, root)
+    if not rel:
+        for pat in (f"*{playlist_name}*.m3u", f"*{playlist_name}*.m3u8"):
+            for f in glob.glob(os.path.join(mp3_dir, pat), recursive=False):
+                if os.path.isfile(f):
+                    rel = os.path.relpath(f, root)
+                    break
+            if rel:
+                break
+
+    if not rel:
+        return True, f"Playlist '{playlist_name}' nicht gefunden"
+
+    # Playlist öffnen, Shuffle aktivieren, abspielen
+    err = playback.player.play_path(rel)
+    if err:
+        return True, err
+    playback.player.enable_shuffle()
+    title = os.path.splitext(os.path.basename(rel))[0]
+    return True, f"Playlist '{title}' wird im Zufallsmodus abgespielt"
+
+
+# ---------------------------------------------------------------------------
+# 7. Resume last playlist (weiter) - LOCAL, no LLM
+# ---------------------------------------------------------------------------
+
+def try_resume(text: str) -> tuple[bool, str | None]:
+    """Match „weiter", „fortsetzen", „fortsetzung", „letztes".
+
+    Setzt die letzte Playlist fort - OHNE LLM-Abfrage.
+    Returns (True, „Playlist XYZ wird fortgesetzt") or (False, None).
+    """
+    t = text.lower().strip()
+    if t not in ("weiter", "fortsetzen", "fortsetzung", "letztes", "resume", "next", "more"):
+        return False, None
+
+    # Versuche zuerst die gemerkte Playlist
+    last = playback.player.get_last_playlist()
+    if last:
+        result = playback.player.resume_last_playlist()
+        return True, result
+
+    # Fallback: versuche über den Status, ob eine Playlist pausiert ist
+    status = playback.player.status()
+    if status.get("paused") or status.get("playing"):
+        return True, f"Aktuelle Wiedergabe: {status.get('title', 'Unbekannt')}"
+
+    return True, "Keine vorherige Wiedergabe gefunden"
+
+
 def try_play_mp3(text: str) -> tuple[bool, str | None]:
     """Match „spiel[e] <name>“ – try mp3 dir.
     

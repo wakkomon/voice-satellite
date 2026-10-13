@@ -353,6 +353,9 @@ def handle(text, channel="voice"):
 
     # Playlist / Radio / MP3 / Kamera — nur wenn nichts von openHAB gematched
     for name, fn in [
+        ("shuffle", intent.try_shuffle),
+        ("next_prev", intent.try_next_prev),
+        ("resume", intent.try_resume),
         ("playlist", intent.try_play_playlist),
         ("radio", intent.try_play_radio),
         ("mp3", intent.try_play_mp3),
