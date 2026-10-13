@@ -261,6 +261,11 @@ function renderVolume(v) {
   p.className = "vol-pct" + (v.muted ? " muted" : "");
 }
 
+function renderIndex(ix) {
+  $("st-index-files").textContent = (ix.files ?? "–");
+  $("st-index-m3u").textContent = (ix.playlists ?? "–");
+}
+
 function connect() {
   const url = "/events" + (maxSeq ? "?since=" + encodeURIComponent(maxSeq) : "");
   const es = new EventSource(url);
