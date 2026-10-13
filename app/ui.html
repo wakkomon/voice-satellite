@@ -64,14 +64,16 @@ button:disabled { opacity:.5; cursor:default; }
                 overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .music .tag { font-size:11px; color:#8b93a1; text-transform:uppercase;
               letter-spacing:.5px; }
-.pp { width:52px; height:52px; flex:none; border-radius:50%; border:0;
+.b-music { width:52px; height:52px; flex:none; border-radius:50%; border:0;
       background:#2563eb; color:#fff; cursor:pointer; padding:0;
       display:flex; align-items:center; justify-content:center;
-      box-shadow:0 0 14px rgba(37,99,235,.45); transition:transform .1s; }
-.pp:hover { background:#1d4ed8; transform:scale(1.06); }
-.pp svg { width:22px; height:22px; fill:#fff; }
-#b-music-stop { background:#b3372f; }
-#b-music-stop:hover { background:#8f2b24; }
+      box-shadow:0 0 14px rgba(37,99,235,.45); transition:transform .1s;
+      font-size:13px; }
+.b-music:hover { background:#1d4ed8; transform:scale(1.06); }
+.b-music svg { width:22px; height:22px; fill:#fff; }
+.b-music.stop-btn { background:#b3372f; box-shadow:0 0 14px rgba(179,55,47,.35); }
+.b-music.stop-btn:hover { background:#8f2b24; }
+.b-action { flex:1; min-width:120px; font-size:13px; }
 .vol-row { margin-top:10px; }
 input[type=range] { width:auto; flex:1; padding:0; margin:0;
                     accent-color:#2563eb; }
@@ -94,6 +96,8 @@ input[type=range] { width:auto; flex:1; padding:0; margin:0;
   <div class="card"><div class="v" id="st-commands">0</div><div class="l">Befehle</div></div>
   <div class="card"><div class="v" id="st-llm">0</div><div class="l">LLM</div></div>
   <div class="card"><div class="v" id="st-errors">0</div><div class="l">Fehler</div></div>
+  <div class="card"><div class="v" id="st-index-files">–</div><div class="l">MP3/Dateien</div></div>
+  <div class="card"><div class="v" id="st-index-m3u">–</div><div class="l">Playlists</div></div>
 </div>
 <main>
   <div class="display">
@@ -108,15 +112,15 @@ input[type=range] { width:auto; flex:1; padding:0; margin:0;
     <div class="row">
       <span class="tag" id="m-state">Musik</span>
       <span class="title" id="m-title">Nichts abspielt</span>
-      <button id="b-music-toggle" class="pp" title="Pause" style="display:none">
+      <button id="b-music-toggle" class="b-music" title="Pause" style="display:none">
         <svg viewBox="0 0 24 24"><path id="pp-icon" d="M7 4h3.5v16H7zM13.5 4H17v16h-3.5z"/></svg>
       </button>
-      <button id="b-music-stop" class="stop">Stopp</button>
+      <button id="b-music-stop" class="b-music stop-btn" title="Musik stoppen">⏹</button>
     </div>
     <div class="row">
-      <button id="b-music-prev" class="action-btn" title="Vorheriger Titel">⏮ Zurück</button>
-      <button id="b-music-next" class="action-btn" title="Nächster Titel">⏭ Weiter</button>
-      <button id="b-music-shuffle" class="action-btn" title="Zufallswiedergabe">🔀 Shuffle</button>
+      <button id="b-music-prev" class="b-action" title="Vorheriger Titel">⏮ Zurück</button>
+      <button id="b-music-next" class="b-action" title="Nächster Titel">⏭ Weiter</button>
+      <button id="b-music-shuffle" class="b-action" title="Zufallswiedergabe">🔀 Shuffle</button>
     </div>
     <div class="row vol-row">
       <span class="tag">Lautstärke</span>
@@ -216,6 +220,7 @@ function render(d) {
   setStat("st-llm", s.llm ?? 0);
   setStat("st-errors", s.errors ?? 0);
   renderMusic(d.music || {});
+  renderIndex(d.index || {});
   renderVolume(d.volume);
   const evts = d.events || [];
   const topEv = evts.length ? (evts[evts.length - 1].seq || 0) : 0;
@@ -238,13 +243,13 @@ function renderMusic(m) {
   $("m-title").textContent = title || (paused || playing ? "–" : "Nichts abspielt");
   const active = playing || paused || m.pending;
   const toggle = $("b-music-toggle");
-  toggle.style.display = active ? "" : "none";
+  toggle.style.display = "";  // immer anzeigen
   const showPause = playing && !paused;
   toggle.title = showPause ? "Pause" : "Weiterspielen";
   $("pp-icon").setAttribute("d", showPause
     ? "M7 4h3.5v16H7zM13.5 4H17v16h-3.5z"   // Pause: zwei Balken
     : "M8 5v14l11-7z");                        // Play: Dreieck
-  $("b-music-stop").style.display = active ? "" : "none";
+  $("b-music-stop").style.display = "";  // immer anzeigen
 }
 
 function renderVolume(v) {

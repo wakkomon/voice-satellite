@@ -267,6 +267,7 @@ class Display:
         if self._mm is None or self._stop.is_set():
             return
         with self._cv:
+            self._thinking_start = time.time()
             self._pending = ("__thinking__", heading + " " + body)
             self._cv.notify_all()
 
@@ -407,14 +408,16 @@ class Display:
                 self._live = True
                 shown_at = now
             elif frame is not None and frame[0] == "__thinking__":
-                # LLM-Verarbeitung: 'Denke noch nach' PERSISTENT halten –
-                # kein FB_TIMEOUT-Blackout, kein Blättern. Ende kommt als
-                # naechster Frame (Antwort) oder explizit per end_thinking().
-                pages, head = self._layout(*frame)
-                idx = 0
-                self._paint(pages, idx, head)
-                self._live = True
-                shown_at = now
+                # LLM-Verarbeitung: 'Denke noch nach' erst nach 20s zeigen.
+                # Davor letzten Frame belassen, damit vorherige Info lesbar
+                # bleibt und das Overlay nicht zu kurz blinzelt.
+                ts = getattr(self, "_thinking_start", 0) or 0
+                if now - ts > 20:
+                    pages, head = self._layout(*frame)
+                    idx = 0
+                    self._paint(pages, idx, head)
+                    self._live = True
+                    shown_at = now
             elif frame is not None:
                 pages, head = self._layout(*frame)
                 idx = 0

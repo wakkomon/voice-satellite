@@ -300,6 +300,7 @@ class Handler(BaseHTTPRequestHandler):
                         "events": evs,
                         "music": playback.player.status(),
                         "volume": _vol_snap(),
+                        "index": _index_snap(),
                     }
                     self.wfile.write(f"id: {p.seq}\n".encode("utf-8"))
                     self.wfile.write(("data: "
@@ -379,6 +380,25 @@ def _vol_snap():
         return None
     vol, muted = st
     return {"volume": vol, "muted": muted}
+
+
+def _index_snap():
+    """Musik-Index-Status: Anzahl indizierter Dateien und Playlists."""
+    from . import intent as _intent_mod
+    try:
+        mp3_idx = _intent_mod._mp3_index
+        m3u_idx = _intent_mod._m3u_index
+        if mp3_idx is None:
+            mp3_total = 0
+        else:
+            mp3_total = sum(len(f) for f in mp3_idx.values())
+        m3u_total = len(m3u_idx) if m3u_idx else 0
+        return {
+            "files": mp3_total,
+            "playlists": m3u_total,
+        }
+    except Exception:
+        return {"files": 0, "playlists": 0}
 
 
 def start(pipeline):
