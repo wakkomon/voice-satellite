@@ -113,6 +113,11 @@ input[type=range] { width:auto; flex:1; padding:0; margin:0;
       </button>
       <button id="b-music-stop" class="stop">Stopp</button>
     </div>
+    <div class="row">
+      <button id="b-music-prev" class="action-btn" title="Vorheriger Titel">⏮ Zurück</button>
+      <button id="b-music-next" class="action-btn" title="Nächster Titel">⏭ Weiter</button>
+      <button id="b-music-shuffle" class="action-btn" title="Zufallswiedergabe">🔀 Shuffle</button>
+    </div>
     <div class="row vol-row">
       <span class="tag">Lautstärke</span>
       <input type="range" id="vol-slider" min="0" max="100" step="1" value="100">
@@ -330,6 +335,9 @@ $("b-music-toggle").addEventListener("click", ev => {
   // Pause-Symbol sichtbar -> Pause, Play-Symbol -> Weiter
   musicBtn(ev.target.closest("button").title === "Pause" ? "/pause" : "/resume");
 });
+$("b-music-prev").addEventListener("click", () => musicBtn("/prev"));
+$("b-music-next").addEventListener("click", () => musicBtn("/next"));
+$("b-music-shuffle").addEventListener("click", () => musicBtn("/shuffle"));
 
 // Zuhören-Button: startet manuelle Aufnahme
 $("b-listen").addEventListener("click", async () => {

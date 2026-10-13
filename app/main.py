@@ -280,8 +280,10 @@ class Pipeline:
         self._release_device()   # no-op – ist vor dem STT schon gelöst
         self.state = "processing"
         display.show_text("Frage", text)
+        display.show_thinking()
         t0 = time.time()
         answer, kind, llm_ok = router.handle(text)
+        display.end_thinking()
         self.stats["commands" if kind == "smarthome" else "llm"] += 1
         dt = time.time() - t0
         log.info("Antwort (%s, %.1fs): %s", kind, dt, answer[:160])
