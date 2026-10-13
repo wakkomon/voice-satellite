@@ -93,6 +93,17 @@ def _build_media_index(root: str, max_depth: int = 2, budget: float = 120.0
     t0 = time.time()
     AUDIO_EXTS = (".mp3", ".flac", ".ogg", ".wav", ".m4a", ".opus")
 
+    # Kurze Füllwörter, die in jedem zweiten Dateinamen vorkommen.
+    # Werden vom Index ausgeschlossen, um False-Positives bei
+    # Substring-Suche zu vermeiden (z.B. "von" in "musik von foo").
+    _IGNORE_TOKENS = frozenset({
+        "von", "der", "die", "das", "den", "dem", "des", "ein", "eine",
+        "einer", "eines", "am", "im", "um", "zu", "mit", "auf", "an",
+        "in", "für", "fuer", "und", "oder", "ist", "sind", "war",
+        "bei", "nach", "aus", "vor", "über", "ueber", "unter",
+        "bis", "doch", "ich", "du", "er", "sie", "es", "ich",
+    })
+
     def add(idx: dict, paths: list, path: str) -> None:
         rel = os.path.relpath(path, root)
         if rel in paths:
@@ -100,9 +111,11 @@ def _build_media_index(root: str, max_depth: int = 2, budget: float = 120.0
         paths.append(rel)
         base = os.path.basename(path).rsplit(".", 1)[0]
         tokens = [t.lower() for t in base.replace("_", " ").split() if t] or [base.lower()]
-        for token in sorted(set(tokens)):
+        # Kurze/unspezifische Token ausschließen
+        meaningful = [t for t in tokens if t not in _IGNORE_TOKENS and len(t) > 2]
+        for token in sorted(set(meaningful)):
             idx.setdefault(token, []).append(rel)
-        if base.lower() not in tokens:
+        if base.lower() not in meaningful and base.lower() not in _IGNORE_TOKENS:
             idx.setdefault(base.lower(), []).append(rel)
 
     def listdir_sorted(d: str) -> list[str]:
@@ -190,10 +203,24 @@ def _find_in_index(idx: dict[str, list[str]] | None, name: str, root: str,
         matches = idx.get(n)
         if matches:
             return matches[0]
-        # Substring-Fallback im In-Memory-Index (gleichzeitig wie Glob *name*)
+        # Substring-Fallback: zähle wie viele Such-Token in jedem Index-Schlüssel
+        # vorkommen. Datei mit den meisten Treffern gewinnt.
+        q_tokens = [t for t in n.split() if len(t) > 2]
+        best_score = 0
+        best_paths: list[str] | None = None
         for k, paths in idx.items():
-            if n in k or k in n:
+            if n in k:
+                # Exakter Substring → sofortiger Gewinn
                 return paths[0]
+            score = 0
+            for qt in q_tokens:
+                if qt in k:
+                    score += 1
+            if score > best_score:
+                best_score = score
+                best_paths = paths
+        if best_paths:
+            return best_paths[0]
     # Fallback: direct file check (instant, no walk)
     full = os.path.join(root, name)
     for ext in exts:
