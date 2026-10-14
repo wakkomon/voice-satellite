@@ -61,6 +61,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(500, {"error": "Lautstärke nicht ermittelbar"})
             vol, muted = st
             return self._send(200, {"volume": vol, "muted": muted})
+        elif path == "/index":
+            # Index-Status für die Web-UI: Dateien/Playlists + Build-Status.
+            self._send(200, _index_snap())
         elif path == "/status":
             p = _pipeline
             if not p:
@@ -160,6 +163,15 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/stop":
             playback.player.stop()
             return self._send(200, {"ok": True})
+        if self.path == "/index/rebuild":
+            # Manueller Reindex (Web-UI-Button „Neu indizieren"): Indexer-Thread
+            # wird sofort geweckt – asynchron, Antwort kommt direkt zurück.
+            from . import intent as _intent_mod
+            threading.Thread(
+                target=lambda: _intent_mod.reindex_now(),
+                daemon=True).start()
+            self._ev("Web: Index neu indiziert (angefordert)")
+            return self._send(200, {"ok": True, "index": _index_snap()})
         if self.path == "/stop_agent":
             # STOP für die Pipeline (LLM/TTS unterbrechen, zurück zu wake)
             if not _pipeline:
@@ -383,8 +395,12 @@ def _vol_snap():
 
 
 def _index_snap():
-    """Musik-Index-Status: Anzahl indizierter Dateien und Playlists."""
+    """Musik-Index-Status: Anzahl indizierter Dateien/Playlists + Alter +
+    ob gerade ein (Re-)Build läuft. Kommt jede SSE-Runde (Reload zeigt damit
+    den aktuellen Index-Zustand mit)."""
     from . import intent as _intent_mod
+    building = bool(getattr(_intent_mod, "_index_build_evt") and
+                    _intent_mod._index_build_evt.is_set())
     try:
         mp3_idx = _intent_mod._mp3_index
         m3u_idx = _intent_mod._m3u_index
@@ -396,9 +412,11 @@ def _index_snap():
         return {
             "files": mp3_total,
             "playlists": m3u_total,
+            "building": building,
+            "interval_s": getattr(_intent_mod, "_INDEX_REBUILD_INTERVAL", 3600),
         }
     except Exception:
-        return {"files": 0, "playlists": 0}
+        return {"files": 0, "playlists": 0, "building": building}
 
 
 def start(pipeline):

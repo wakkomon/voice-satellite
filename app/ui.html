@@ -64,16 +64,13 @@ button:disabled { opacity:.5; cursor:default; }
                 overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .music .tag { font-size:11px; color:#8b93a1; text-transform:uppercase;
               letter-spacing:.5px; }
-.b-music { width:52px; height:52px; flex:none; border-radius:50%; border:0;
-      background:#2563eb; color:#fff; cursor:pointer; padding:0;
-      display:flex; align-items:center; justify-content:center;
-      box-shadow:0 0 14px rgba(37,99,235,.45); transition:transform .1s;
-      font-size:13px; }
-.b-music:hover { background:#1d4ed8; transform:scale(1.06); }
-.b-music svg { width:22px; height:22px; fill:#fff; }
-.b-music.stop-btn { background:#b3372f; box-shadow:0 0 14px rgba(179,55,47,.35); }
-.b-music.stop-btn:hover { background:#8f2b24; }
-.b-action { flex:1; min-width:120px; font-size:13px; }
+.b-action { flex:1; min-width:110px; font-size:13px; }
+.b-action.stop-btn { background:#b3372f; }
+.b-action.stop-btn:hover { background:#8f2b24; }
+.b-action.active { background:#1d4ed8; box-shadow:0 0 0 1px #2563eb inset; }
+.b-action.busy { opacity:.6; cursor:default; }
+.b-index { background:#334155; }
+.b-index:hover { background:#3b4a63; }
 .vol-row { margin-top:10px; }
 input[type=range] { width:auto; flex:1; padding:0; margin:0;
                     accent-color:#2563eb; }
@@ -112,15 +109,16 @@ input[type=range] { width:auto; flex:1; padding:0; margin:0;
     <div class="row">
       <span class="tag" id="m-state">Musik</span>
       <span class="title" id="m-title">Nichts abspielt</span>
-      <button id="b-music-toggle" class="b-music" title="Pause" style="display:none">
-        <svg viewBox="0 0 24 24"><path id="pp-icon" d="M7 4h3.5v16H7zM13.5 4H17v16h-3.5z"/></svg>
-      </button>
-      <button id="b-music-stop" class="b-music stop-btn" title="Musik stoppen">⏹</button>
     </div>
     <div class="row">
+      <button id="b-music-toggle" class="b-action" title="Pause" style="display:none">⏸ Pause</button>
+      <button id="b-music-stop" class="b-action stop-btn" title="Musik stoppen">⏹ Stopp</button>
       <button id="b-music-prev" class="b-action" title="Vorheriger Titel">⏮ Zurück</button>
       <button id="b-music-next" class="b-action" title="Nächster Titel">⏭ Weiter</button>
       <button id="b-music-shuffle" class="b-action" title="Zufallswiedergabe">🔀 Shuffle</button>
+    </div>
+    <div class="row">
+      <button id="b-index-rebuild" class="b-action b-index" title="Medien-Index neu aufbauen (Sprachbefehl: „Neu indizieren")">🔄 Neu indizieren</button>
     </div>
     <div class="row vol-row">
       <span class="tag">Lautstärke</span>
@@ -243,13 +241,15 @@ function renderMusic(m) {
   $("m-title").textContent = title || (paused || playing ? "–" : "Nichts abspielt");
   const active = playing || paused || m.pending;
   const toggle = $("b-music-toggle");
-  toggle.style.display = "";  // immer anzeigen
   const showPause = playing && !paused;
+  toggle.style.display = active ? "" : "none";
+  toggle.textContent = showPause ? "⏸ Pause" : "▶ Weiterspielen";
   toggle.title = showPause ? "Pause" : "Weiterspielen";
-  $("pp-icon").setAttribute("d", showPause
-    ? "M7 4h3.5v16H7zM13.5 4H17v16h-3.5z"   // Pause: zwei Balken
-    : "M8 5v14l11-7z");                        // Play: Dreieck
-  $("b-music-stop").style.display = "";  // immer anzeigen
+  // Shuffle: aktiven Zustand visuell markieren (hell) bzw. deaktiviert (dunkel).
+  const sh = $("b-music-shuffle");
+  sh.classList.toggle("active", !!m.shuffle);
+  sh.textContent = m.shuffle ? "🔀 Shuffle an" : "🔀 Shuffle";
+  sh.title = m.shuffle ? "Zufallswiedergabe ausschalten" : "Zufallswiedergabe einschalten";
 }
 
 function renderVolume(v) {
@@ -331,12 +331,12 @@ $("f-intent").addEventListener("submit", ev => {
   if (t) post("/intent", t, $("res-intent"), $("b-intent"));
 });
 
-async function musicBtn(path) {
+async function musicBtn(path, body) {
   try {
     await fetch(path, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: "{}"
+      body: JSON.stringify(body || {})
     });
   } catch (e) { /* Zustand kommt per SSE von selbst */ }
 }
@@ -347,7 +347,34 @@ $("b-music-toggle").addEventListener("click", ev => {
 });
 $("b-music-prev").addEventListener("click", () => musicBtn("/prev"));
 $("b-music-next").addEventListener("click", () => musicBtn("/next"));
-$("b-music-shuffle").addEventListener("click", () => musicBtn("/shuffle"));
+$("b-music-shuffle").addEventListener("click", () => {
+  // Shuffle ist aktiv -> ausschalten, sonst einschalten.
+  const enable = !$("b-music-shuffle").classList.contains("active");
+  musicBtn("/shuffle", { enable });
+});
+
+// „Neu indizieren“-Button: Medien-Index sofort neu bauen (asynchron).
+$("b-index-rebuild").addEventListener("click", async () => {
+  const btn = $("b-index-rebuild");
+  btn.disabled = true;
+  btn.classList.add("busy");
+  btn.textContent = "⏳ Indiziere …";
+  try {
+    await fetch("/index/rebuild", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}"
+    });
+    btn.textContent = "✅ Index angefragt";
+  } catch (e) {
+    btn.textContent = "❌ Fehler";
+  }
+  setTimeout(() => {
+    btn.textContent = "🔄 Neu indizieren";
+    btn.classList.remove("busy");
+    btn.disabled = false;
+  }, 2500);
+});
 
 // Zuhören-Button: startet manuelle Aufnahme
 $("b-listen").addEventListener("click", async () => {

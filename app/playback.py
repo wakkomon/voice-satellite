@@ -72,10 +72,12 @@ class MusicPlayer:
     def status(self):
         with self._lock:
             paused = self._hold > 0 or self._web_hold > 0
+            shuffle = self._shuffle_on
         return {"playing": self.is_playing(),
                 "pending": self.has_pending() and not self.is_playing(),
                 "paused": paused,
-                "title": self._title, "source": self._source}
+                "title": self._title, "source": self._source,
+                "shuffle": shuffle}
 
     def set_on_event(self, cb):
         """Pipeline ev() als Callback – Events erscheinen im Webui-Feed."""
