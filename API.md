@@ -45,11 +45,34 @@ Live-Statusseite (HTML, SSE-Stream, zuletzt auch `followup` als Zustand).
 }
 ```
 
+### `GET /state` — Playback-Status (WebUI)
+Musik-Status inkl. Shuffle-Zustand für die Web-UI:
+```json
+{"ok": true, "music": {"playing": true, "title": "..." , "source": "..."},
+ "shuffle": true, "shuffle_enable": true, "title": "..."}
+```
+
 ### `GET /events` — SSE
 `text/event-stream`, Snapshot alle 2 s: `{state, stats, uptime_s, events}`.
 Client dedupliziert per `id:` (Sequenznummer).
 
+### `GET /index` — Medien-Index-Status
+```json
+{"files": 68765, "playlists": 8, "age_s": 245, "building": false,
+ "interval_s": 3600}
+```
+Der Index wird beim Start aus `/data/media_index.json` geladen (persistiert)
+und alle 3600 s automatisch neu gebaut.
+
 ## POST-Endpoints
+
+### `POST /index/rebuild` — Medien-Index sofort neu bauen
+Entspricht dem Sprachbefehl „Neu indizieren" bzw. dem Web-UI-Button.
+Startet den Re-Scan asynchron, die Antwort kommt sofort:
+```bash
+curl -X POST $PI/index/rebuild
+```
+Antwort: `{"ok": true, "index": {...}}` (Index-Status zum Startmoment).
 
 ### `POST /speak` — Text direkt vorlesen (TTS)
 ```bash
