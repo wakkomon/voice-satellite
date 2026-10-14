@@ -77,6 +77,15 @@ class Handler(BaseHTTPRequestHandler):
                 "music": playback.player.status(),
                 "volume": _vol_snap(),
             })
+        elif path == "/state":
+            # Musik-Status + Shuffle-State für die WebUI
+            try:
+                p = playback.player.status()
+                shuffle = playback.player.is_shuffle_on()
+                self._send(200, {"ok": True, "music": p, "shuffle": shuffle,
+                                  "title": p.get("title") or "", "shuffle_enable": shuffle})
+            except Exception:
+                self._send(200, {"ok": True, "music": {}, "shuffle": None, "shuffle_enable": None, "title": ""})
         else:
             self._send(404, {"error": "unknown path"})
 
