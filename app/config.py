@@ -230,6 +230,7 @@ DEFAULT_IMAGE_URL = _env("DEFAULT_IMAGE_URL", "http://192.168.1.33/weather/snap.
 # sich auf MUSIC_ROOT (/m). Ohne Mount (Desktop-Tests) → /play meldet
 # 'Musikordner nicht erreichbar'. Überschreibbar per MUSIC_ROOT=… in .env.
 MUSIC_ROOT      = _env("MUSIC_ROOT", "/m")
+DATA_DIR        = _env("DATA_DIR", "/data")   # persistente Daten (Index-Cache, …)
 
 # ── Pi-Bridge (RTSP-Relay + Kamera-Snapshot) ──────────────────
 # Bridge-Daemon auf Pi: RTSP→MP3-Relay + Kamera-Snapshot-HTTP

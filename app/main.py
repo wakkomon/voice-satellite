@@ -439,7 +439,7 @@ def main():
     router.warm_async()             # LLM-Modell im Hintergrund vorwärmen
     # M3U-Index im Hintergrund aufbauen (vermeidet langsame CIFS-Scans pro Befehl)
     from . import intent as _intent
-    _intent.start_m3u_indexer(config.MUSIC_ROOT, interval=300)
+    _intent.start_m3u_indexer(config.MUSIC_ROOT)
     p.run()
 
 

@@ -70,6 +70,8 @@ _m3u_all: list[str] | None = None               # alle Playlists (rel. MUSIC_ROO
 _mp3_index: dict[str, list[str]] | None = None  # name.lower() -> [relpaths] für .mp3/.flac/...
 _dir_index: dict[str, list[str]] | None = None  # Ordnernamen.lower() -> [relpaths] (z.B. Interpret-Ordner)
 _indexer_started = False
+_index_build_evt = threading.Event()   # manueller Reindex (WebUI-Button / „Neu indizieren")
+_INDEX_REBUILD_INTERVAL = 3600         # s: wie oft der Medien-Index automatisch neu gescannt wird
 
 # Kurze Füllwörter (deutsche Grammatik): tauchen in fast jedem zweiten
 # Dateinamen/Befehl auf und machen eine Substring-Suche unsinnig
@@ -192,25 +194,94 @@ def _build_media_index(root: str, max_depth: int = 3, budget: float = 120.0
     return m3u_idx, m3u_all, mp3_idx, mp3_all, dir_idx
 
 
-def start_m3u_indexer(root: str, interval: int = 300) -> None:
+def _index_cache_path() -> str:
+    d = config.DATA_DIR
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, "media_index.json")
+
+
+def _save_index(m3u_idx, m3u_all, mp3_idx, mp3_all, dir_idx) -> None:
+    """Index atomar auf der Platte persistieren, damit der Container-Start
+    mit einem warmen Index startet (kein CIFS-Scan) – atomic via rename."""
+    import json as _json
+    path = _index_cache_path()
+    payload = {"ts": time.time(),
+               "m3u_idx": m3u_idx, "m3u_all": m3u_all,
+               "mp3_idx": mp3_idx, "mp3_all": mp3_all,
+               "dir_idx": dir_idx}
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(payload, f, ensure_ascii=False)
+        os.replace(tmp, path)
+    except OSError as e:
+        log.warning("intent: Index-Persist fehlgeschlagen: %s", e)
+
+
+def _load_index_cache() -> bool:
+    """Persistierten Index laden. True, wenn ein Index geladen wurde und der
+    erste CIFS-Rebuild ein volles Intervall warten darf."""
+    import json as _json
+    global _m3u_index, _m3u_all, _mp3_index, _dir_index
+    path = _index_cache_path()
+    if not os.path.isfile(path):
+        return False
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            payload = _json.load(f)
+        mp3_count = len(payload.get("mp3_all") or [])
+        with _lock:
+            _m3u_index = payload.get("m3u_idx") or {}
+            _m3u_all = payload.get("m3u_all") or []
+            _mp3_index = payload.get("mp3_idx") or {}
+            _dir_index = payload.get("dir_idx") or {}
+        log.info("intent: Medien-Index aus Cache geladen — %d Playlists, %d Audios (Alter: %.0f min)",
+                 len(_m3u_all or []), mp3_count,
+                 (time.time() - payload.get("ts", time.time())) / 60.0)
+        return True
+    except (OSError, ValueError) as e:
+        log.warning("intent: Index-Cache nicht lesbar, wird neu gebaut: %s", e)
+        return False
+
+
+def reindex_now() -> None:
+    """Manueller Reindex (WebUI-Button / „Neu indizieren"): der Indexer
+    wachst aus der Intervall-Wartung auf und baut sofort um."""
+    _index_build_evt.set()
+
+
+def start_m3u_indexer(root: str, interval: int | None = None) -> None:
     """Start background thread: build media index, refresh every `interval` s.
 
     Indexiert Playlists (.m3u) UND Audiodateien im Hintergrund, damit
-    'spiel <name>' ohne CIFS-Traversal in O(1) auflösbar ist.
-    Threaded (not asyncio) — die App läuft ohne Event-Loop.
+    'spiel <name>' ohne CIFS-Traversal in O(1) auflösbar ist. Der fertige
+    Index wird unter DATA_DIR persistiert: beim Container-Start wird er
+    geladen (kein CIFS-Scan), ein neuer Scan läuft erst nach `interval`
+    Sekunden oder nach einem manuellen Reindex (reindex_now).
+    Threaded (not asyncio) – die App läuft ohne Event-Loop.
     """
     global _indexer_started
+    if interval is None:
+        interval = _INDEX_REBUILD_INTERVAL
     if _indexer_started:
         return
     _indexer_started = True
+    _load_index_cache()
 
     def _worker():
-        global _m3u_index, _m3u_all, _mp3_index, _dir_index
+        # Warm Cache? -> erst nach einem vollen Intervall neu scannen;
+        # sonst (erster Start ohne Cache) sofort bauen.
+        with _lock:
+            ready = _m3u_index is not None or _mp3_index is not None
         while True:
+            _index_build_evt.wait(interval if ready else 0)
+            _index_build_evt.clear()
+            ready = True
             try:
                 log.info("intent: Medien-Index wird gebaut …")
                 t0 = time.time()
                 m3u_idx, m3u_all, mp3_idx, mp3_all, dir_idx = _build_media_index(root)
+                _save_index(m3u_idx, m3u_all, mp3_idx, mp3_all, dir_idx)
                 with _lock:
                     _m3u_index = m3u_idx
                     _m3u_all = m3u_all
@@ -220,7 +291,6 @@ def start_m3u_indexer(root: str, interval: int = 300) -> None:
                          len(m3u_all), len(mp3_all), len(dir_idx), time.time() - t0)
             except Exception:
                 log.exception("intent: Medien-Index-Refresh fehlgeschlagen")
-            time.sleep(interval)
 
     threading.Thread(target=_worker, name="media-indexer", daemon=True).start()
 
@@ -319,42 +389,65 @@ def try_play_playlist(text: str) -> tuple[bool, str | None]:
 _radio_cache = {}
 _radio_lock = threading.Lock()
 
+# M3U-Dateien mit Radio-/TV-Streams. Der Player spielt über die Pi-Bridge
+# (RTSP→HTTP), alle drei Listen kommen in den Index. radio.m3u zuerst, da es
+# die Fritzbox-Standardsender (192.168.81.1, RTSP) enthält.
+_M3U_MOUNTS = ("radio.m3u", "world.m3u", "tv.m3u")
+
 
 def _load_radio_stations() -> list[dict]:
-    """Load radio.m3u and return list of {name, url}. Cached by mtime."""
-    path = os.path.join(config.MUSIC_ROOT, "TV", "radio.m3u")
-    try:
-        mt = os.path.getmtime(path)
-    except OSError:
-        return []
+    """Lädt alle drei M3U-Dateien aus /m/TV und gibt [{name, url}] zurück.
 
+    Radio- und TV-Streams (RTSP/HTTP) aus radio.m3u, world.m3u, tv.m3u
+    werden vereinigt. Bei gleicher Station (gleicher Name+URL) gewinnt die
+    erste Datei (radio.m3u vor world.m3u vor tv.m3u). Ge-Cached nach den
+    mtime-Werten aller Dateien.
+    """
+    tv_dir = os.path.join(config.MUSIC_ROOT, "TV")
+    mtimes = {}
+    for fname in _M3U_MOUNTS:
+        p = os.path.join(tv_dir, fname)
+        try:
+            mtimes[fname] = os.path.getmtime(p)
+        except OSError:
+            mtimes[fname] = None
+
+    cache_key = tuple(sorted(mtimes.items()))
     with _radio_lock:
-        if _radio_cache and _radio_cache.get("mtime") == mt:
+        if _radio_cache and _radio_cache.get("key") == cache_key:
             return _radio_cache["stations"]
 
-    try:
-        with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
-            raw = f.read()
-    except OSError:
-        return []
-
-    stations = []
-    current_name = None
-    for line in raw.splitlines():
-        line = line.strip()
-        if line.startswith("#EXTINF:"):
-            # Extract name after last comma
-            if "," in line:
-                current_name = line.split(",", 1)[1].strip()
-        elif line.startswith("rtsp://") or (line.startswith("http") and current_name):
-            if current_name:
-                stations.append({"name": current_name, "url": line})
-            current_name = None
+    stations: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for fname in _M3U_MOUNTS:
+        p = os.path.join(tv_dir, fname)
+        if mtimes.get(fname) is None:
+            continue
+        try:
+            with open(p, "r", encoding="utf-8-sig", errors="replace") as f:
+                raw = f.read()
+        except OSError:
+            continue
+        current_name = None
+        for line in raw.splitlines():
+            line = line.strip()
+            if line.startswith("#EXTINF:"):
+                if "," in line:
+                    current_name = line.split(",", 1)[1].strip()
+            elif line.startswith(("rtsp://", "http://", "https://")) and current_name:
+                key = (current_name, line)
+                if key not in seen:
+                    seen.add(key)
+                    stations.append({"name": current_name, "url": line,
+                                     "file": fname})
+                current_name = None
 
     with _radio_lock:
-        _radio_cache["mtime"] = mt
+        _radio_cache["key"] = cache_key
         _radio_cache["stations"] = stations
 
+    log.info("intent: Radio-Index: %d Sender aus %s",
+             len(stations), ", ".join(f for f in _M3U_MOUNTS))
     return stations
 
 
@@ -543,6 +636,28 @@ def try_resume(text: str) -> tuple[bool, str | None]:
     return True, "Keine vorherige Wiedergabe gefunden"
 
 
+# ---------------------------------------------------------------------------
+# 7b. Reindex (Neu indizieren) - LOCAL, no LLM
+# ---------------------------------------------------------------------------
+
+_REINDEX_RE = re.compile(
+    r"^(?:neu\s+indizieren|indizier\s*neu|reindex(?:\s+jetzt)?)\s*$")
+
+
+def try_reindex(text: str) -> tuple[bool, str | None]:
+    """Match „Neu indizieren" / „Reindex" – Medien-Index sofort neu bauen.
+
+    Lokal, OHNE LLM. Triggert den Indexer-Thread (reindex_now), der sofort
+    (nicht erst nach dem Intervall) den CIFS-Scan startet.
+    Returns (True, „Neu indizieren …") or (False, None).
+    """
+    t = text.lower().strip().rstrip("!")
+    if not _REINDEX_RE.match(t):
+        return False, None
+    reindex_now()
+    return True, "Neu indizieren – der Medien-Index wird jetzt aktualisiert."
+
+
 def try_play_mp3(text: str) -> tuple[bool, str | None]:
     """Match „spiel[e] <name>“ – try mp3 dir.
     
@@ -577,7 +692,9 @@ def try_play_mp3(text: str) -> tuple[bool, str | None]:
     if not os.path.isdir(mp3_dir):
         return True, f"MP3-Ordner nicht erreichbar: {mp3_dir}"
 
-    # 1. Exakte Datei direkt in mp3/
+    # 1. Exakte Datei direkt in mp3/ (case-insensitive: Dateinamen auf
+    #    CIFS/Windows-Sharen sind oft gemischt, „Falco - 191.mp3" soll auch
+    #    bei „falco - 191" gefunden werden).
     for ext in (".m3u", ".m3u8", ".mp3"):
         fp = os.path.join(mp3_dir, name + ext)
         if os.path.isfile(fp):
@@ -586,6 +703,48 @@ def try_play_mp3(text: str) -> tuple[bool, str | None]:
             if err:
                 return True, err
             return True, f"'{name}{ext}' wird abgespielt"
+
+    # 1b. Case-insensitive Direktfile-Check in mp3/ und mp3/*/ (eine Ebene
+    #     tiefer) — ein listdir statt eines langsamen Walk. Explizit
+    #     case-insensitive vergleichen (funktioniert auf ext4 UND CIFS;
+    #     glob ist auf ext4 case-sensitive, würde nur auf Windows-Sharen
+    #     durchgehen).
+    name_l = name.lower()
+    audio_exts = (".m3u", ".m3u8", ".mp3", ".flac", ".wav", ".ogg", ".m4a", ".aac")
+    def _ci_dir_match(d: str) -> tuple[str | None, str | None]:
+        """(pfad, base) des Datei mit base == name_l (case-insens) in d."""
+        try:
+            entries = os.listdir(d)
+        except OSError:
+            return None, None
+        for e in entries:
+            ext = os.path.splitext(e)[1].lower()
+            if ext not in audio_exts:
+                continue
+            if not os.path.isfile(os.path.join(d, e)):
+                continue
+            base = os.path.splitext(e)[0].lower()
+            if base == name_l:
+                return os.path.join(d, e), base
+        return None, None
+    for sub in ("", "/*"):
+        if sub == "/*":
+            # eine Ebene tiefer: Unterordner von mp3/
+            try:
+                subs = [os.path.join(mp3_dir, s) for s in os.listdir(mp3_dir)]
+            except OSError:
+                subs = []
+            subs = [s for s in subs if os.path.isdir(s)]
+        else:
+            subs = [mp3_dir]
+        for sd in subs:
+            found, _base = _ci_dir_match(sd)
+            if found:
+                rel = os.path.relpath(found, root)
+                err = playback.player.play_path(rel)
+                if err:
+                    return True, err
+                return True, f"'{os.path.splitext(os.path.basename(found))[0]}' wird abgespielt"
 
     # 2. Ordner-Match über den In-Memory-Dir-Index (z.B. „Falco" → Interpreten/E/Falco).
     #    Scoring: Ordner mit den meisten Such-Token-Treffern gewinnt; bei Gleichstand

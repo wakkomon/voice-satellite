@@ -9,6 +9,66 @@ Erweiterter Pi 3 B+ Satellite (Rhasspy-2.0-Image, Python 3.11) für:
 - **Framebuffer-Display** (LLM-Antworten als Text direkt auf `/dev/fb1`)
 - **Pi-Bridge** (RTSP-Relay + Kamera-Snapshot, Port 8790)
 
+## Features
+
+- **Deterministische Intents ohne LLM** – Musik, Radio, Lautstärke,
+  OpenHAB-Geräte, Kamera, Titel-Navigation und „Neu indizieren" werden lokal
+  per Regex gematcht und sofort ausgeführt (deterministisch, schnell, kein
+  LLM-Rundgang).
+- **LLM-Fallback mit Gedächtnis** – alles, was lokal nicht gematcht wird, geht
+  an das LLM (Hermes-Gateway) mit Kurz- + Langzeitgedächtnis.
+- **Persistenter Medien-Index** – M3U-/MP3-/Verzeichnis-Index liegt auf der SSD
+  (`DATA_DIR/media_index.json`, Default `/data`): **kein Neuscan beim
+  Container-Start**, automatischer Re-Scan nur **stündlich** (3600 s). Neue
+  Titel erscheinen spätestens nach einer Stunde – oder sofort per „Neu
+  indizieren" (Stimme) / „Neu indizieren"-Button in der WebUI.
+- **Case-insensitive Musiksuche** – „falco - 191" findet „Falco - 191.mp3"; der
+  Direktfile-Check in `mp3/` (und eine Ebene tiefer) vergleicht
+  case-insensitiv – funktioniert auf ext4 *und* CIFS-Shares.
+- **Radio-/TV-Streams aus drei M3U-Dateien** – `TV/{radio,world,tv}.m3u` unter
+  dem Fileserver werden indiziert (RTSP→HTTP über die Pi-Bridge); Dedup über
+  alle drei Listen.
+- **WebUI (Port 8770)** – Musik-Leiste (Play/Stop/Vorwärts/Rückwärts/Shuffle/
+  Weiter) in einer Reihe, der aktuell abspielende Titel bleibt nach Reload
+  erhalten, Shuffle-Zustand sichtbar, Index-Status (Dateien/Playlists + Alter)
+  mit „Neu indizieren"-Button.
+- **MCP-Server** (Port 8780) – JSON-RPC-Tools für externe Steuerung (Hermes).
+
+## Sprachbefehle
+
+Das Codewort „Computer" ist optional davor; die Tabelle unterscheidet, was
+**lokal (ohne LLM)** gematcht wird und was **an das LLM** weitergeht.
+
+### Lokal / ohne LLM (deterministisch)
+
+| Bereich | Beispiel | Anmerkung |
+|---|---|---|
+| Playlist | „Spiel Playlist Chill", „Spiele die Playlist Rock" | M3U-Index |
+| MP3 / Titel | „Spiel Falco", „Spiel 191", „Spiel die Musik von Falco" | Direktfile (case-insens.), Ordner- & Datei-Index |
+| Radio / TV | „Spiel Radio Eins", „Spiel Radio SDR" | 3× M3U (radio/world/tv), RTSP via Pi-Bridge |
+| Musik an/aus | „Musik an", „Spiele Musik", „Mach Musik an", „Musik aus" | Zufall-Playlist bzw. Stopp |
+| Vorwärts / Rückwärts | „Nächster", „Vorwärts", „Rückwärts", „Zurück" | Titel-Wechsel |
+| Weiter / Fortsetzen | „Weiter", „Fortsetzen", „Letztes" | letzte Playlist fortsetzen |
+| Shuffle | „Zufallswiedergabe Playlist Rock", „Shuffle Chill" | Playlist im Zufallsmodus |
+| Lautstärke (relativ) | „Lauter", „Leiser" | ±1 Stufe (`VOLUME_STEP`) |
+| Lautstärke (Stufen) | „Lautstärke 3" | 5 Stufen: 0=Mute, 1–5 = 20–100 % |
+| Lautstärke (Prozent) | „Lautstärke 60 Prozent" | 0–100 % |
+| Kamera | „Zeig Kamera Garten", „Was ist in Kamera Garten los?" | Snapshot via Pi-Bridge |
+| Neu indizieren | „Neu indizieren", „Reindex", „Reindex jetzt" | Index sofort neu bauen |
+| Stopp | „Stopp", „Stopp bitte" | laufende Wiedergabe stoppen |
+| OpenHAB / Smart Home | „Licht an", „Jalousie zu", … | Regeln aus `RULES_FILE` |
+
+### Mit LLM (Fallback)
+
+Jeder Befehl, der **nicht** lokal gematcht wird, geht an das LLM
+(Hermes-Gateway, `LLM_URL`) – z. B. Freitext-Fragen, komplexe Anweisungen oder
+Kontext-Befehle („Wie war das gerade wieder?" → Gedächtnis). Das LLM antwortet
+per TTS und optional mit Display-Text.
+
+> **Regel:** Musik-/Radio-/Lautstärke-/Kamera-/Stopp-/OpenHAB- und Reindex-
+> Befehle laufen **ohne LLM** (deterministisch). Erst wenn nichts davon passt,
+> greift das LLM.
+
 ## Installation (frisches Gerät)
 
 ```bash
@@ -71,6 +131,8 @@ Stack:
 - `POST /tone` `{type}` — Alarm-/Feedback-Töne (wake/end/boot/error/alarm)
 - `POST /intent` `{text}` — Deterministic-Intent: `smart` (openHAB) oder `volume`
 - `POST /volume` `{level}` — absoluter Lautstärke-Wert (0–100)
+- `GET  /index` — Index-Status: `{files, playlists, age_s, building, interval_s}`
+- `POST /index/rebuild` — Medien-Index sofort neu bauen („Neu indizieren")
 - `GET /healthz`, `/metrics` — Monitoring
 
 Lautstärke per Stimme: „lauter"/„leiser" ändern die Lautstärke **immer um
@@ -218,6 +280,16 @@ TTS_LANGUAGE=de
 | `DUCK_ENABLED` | `1` | Musik beim Codewort leiser statt stoppen |
 | `DUCK_VOLUME` | `30` | Ziel-Lautstärke in % während Duck |
 | `MUSIC_ROOT` | `/m` | Musik-Wurzelordner im Container (SMB-Bind-Mount) |
+
+### Daten (Index-Persistenz)
+
+| Variable | Default | Bedeutung |
+|---|---|---|
+| `DATA_DIR` | `/data` | Daten-Volume: Index-Cache (`media_index.json`), Memory-DB, Idle-Frames, Regeln |
+
+> Der Medien-Index wird bei Start aus `DATA_DIR/media_index.json` geladen
+> (kein CIFS-Neuscan beim Boot) und **stündlich** neu gebaut. „Neu indizieren"
+> (Stimme) oder `POST /index/rebuild` triggern einen sofortigen Re-Scan.
 
 ### Framebuffer-Display
 

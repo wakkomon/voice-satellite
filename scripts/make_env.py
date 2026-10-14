@@ -36,6 +36,7 @@ def grab(fname, var):
 # verantwortlich; beständige Werte aus der .env gewinnen immer (keine
 # Überschreibung, kein Entfernen, nichts geht verloren).
 seed = {
+    "DATA_DIR": "/data",
     "DEFAULT_IMAGE_URL": "http://192.168.1.33/weather/snap.jpg",
     "DUCK_ENABLED": "1",
     "DUCK_VOLUME": "30",

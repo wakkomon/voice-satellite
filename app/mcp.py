@@ -5,13 +5,20 @@ Startet einen eigenen HTTP-Server auf MCP_PORT und unterstützt MCP-over-JSON-RP
 
 Verwendet MCP-Standard-Transport (JSON-RPC over HTTP/POST).
 
-Tools:
+MCP-Tools (Remote-Steuerung, alle **ohne LLM**):
     - play_tone      : Ton abspielen (boot/wake/end/error/alarm/blip)
     - show_text      : Text auf PIDisplay anzeigen
     - show_weather   : Wetter-Bild auf Display
     - show_music_info: Musik-Info-Overlay auf Display
     - set_alarm      : Wecker setzen
     - get_tones      : Alle Töne auflisten
+
+Hinweis „mit/ohne LLM":
+    Die MCP-Tools sind reine Remote-Steuerung – sie greifen direkt auf
+    Töne/Display zu und brauchen **kein LLM**. Auch die Sprach-Intents des
+    Satellites (Musik, Radio, Lautstärke, Kamera, „Neu indizieren",
+    OpenHAB-Geräte) werden **lokal / ohne LLM** deterministisch gematcht;
+    erst alles, was nicht lokal passt, geht als Fallback ans LLM.
 """
 
 from __future__ import annotations
@@ -124,7 +131,12 @@ TOOL_HANDLERS = {
 
 TOOL_SCHEMA = {
     "name": "voice-satellite",
-    "description": "Remote-Steuerung des voice-satellite PIDisplay",
+    "description": (
+        "Remote-Steuerung des voice-satellite PIDisplay (Töne/Display, ohne "
+        "LLM). Der Satellite selbst bedient per Sprache Musik, Radio/TV, "
+        "Lautstärke, Kamera, Titel-Navigation und 'Neu indizieren' lokal und "
+        "ohne LLM; LLM ist nur Fallback für Freitext."
+    ),
     "tools": [
         {
             "name": "play_tone",
