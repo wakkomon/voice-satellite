@@ -269,6 +269,7 @@ def start_m3u_indexer(root: str, interval: int | None = None) -> None:
     _load_index_cache()
 
     def _worker():
+        global _m3u_index, _m3u_all, _mp3_index, _dir_index
         # Warm Cache? -> erst nach einem vollen Intervall neu scannen;
         # sonst (erster Start ohne Cache) sofort bauen.
         with _lock:
