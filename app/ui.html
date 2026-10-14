@@ -262,7 +262,9 @@ function renderVolume(v) {
 }
 
 function renderIndex(ix) {
-  $("st-index-files").textContent = (ix.files ?? "–");
+  // Während des (Re-)Builds zeigt `files` den Live-Zähler (files_seen).
+  $("st-index-files").textContent =
+    ix.building ? ((ix.files ?? 0) + " …") : (ix.files ?? "–");
   $("st-index-m3u").textContent = (ix.playlists ?? "–");
 }
 

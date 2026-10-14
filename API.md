@@ -58,11 +58,14 @@ Client dedupliziert per `id:` (Sequenznummer).
 
 ### `GET /index` — Medien-Index-Status
 ```json
-{"files": 68765, "playlists": 8, "age_s": 245, "building": false,
+{"files": 68765, "playlists": 8, "building": false, "files_seen": 68765,
  "interval_s": 3600}
 ```
 Der Index wird beim Start aus `/data/media_index.json` geladen (persistiert)
-und alle 3600 s automatisch neu gebaut.
+und alle 3600 s automatisch neu gebaut. Es gibt **kein Zeitbudget** — der
+Scan läuft immer vollständig. Während eines (Re-)Builds: `building: true`,
+`files_seen` zählt die laufend indizierten Dateien mit, und `files` spiegelt
+den Live-Stand des laufenden Builds (Endstand erscheint erst mit Abschluss).
 
 ## POST-Endpoints
 

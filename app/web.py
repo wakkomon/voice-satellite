@@ -404,12 +404,14 @@ def _vol_snap():
 
 
 def _index_snap():
-    """Musik-Index-Status: Anzahl indizierter Dateien/Playlists + Alter +
-    ob gerade ein (Re-)Build läuft. Kommt jede SSE-Runde (Reload zeigt damit
-    den aktuellen Index-Zustand mit)."""
+    """Musik-Index-Status: Anzahl indizierter Dateien/Playlists +
+    Build-Fortschritt. Kommt jede SSE-Runde (Reload zeigt damit den
+    aktuellen Index-Zustand mit): während eines (Re-)Builds zeigen
+    `building`/`files_seen` den Fortschritt in Echtzeit, `files` zählt
+    die Dateien des laufenden Builds."""
     from . import intent as _intent_mod
-    building = bool(getattr(_intent_mod, "_index_build_evt") and
-                    _intent_mod._index_build_evt.is_set())
+    building = bool(getattr(_intent_mod, "_index_building", False))
+    files_seen = int(getattr(_intent_mod, "_index_files_seen", 0) or 0)
     try:
         mp3_idx = _intent_mod._mp3_index
         m3u_idx = _intent_mod._m3u_index
@@ -418,14 +420,22 @@ def _index_snap():
         else:
             mp3_total = sum(len(f) for f in mp3_idx.values())
         m3u_total = len(m3u_idx) if m3u_idx else 0
+        if building:
+            # Build läuft: Live-Zähler statt Endstand (alte Werte tauschen
+            # nur aus, wenn der Build fertig ist).
+            files = files_seen
+        else:
+            files = mp3_total
         return {
-            "files": mp3_total,
+            "files": files,
             "playlists": m3u_total,
             "building": building,
+            "files_seen": files_seen,
             "interval_s": getattr(_intent_mod, "_INDEX_REBUILD_INTERVAL", 3600),
         }
     except Exception:
-        return {"files": 0, "playlists": 0, "building": building}
+        return {"files": files_seen if building else 0, "playlists": 0,
+                "building": building, "files_seen": files_seen}
 
 
 def start(pipeline):

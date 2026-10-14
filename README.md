@@ -131,7 +131,7 @@ Stack:
 - `POST /tone` `{type}` — Alarm-/Feedback-Töne (wake/end/boot/error/alarm)
 - `POST /intent` `{text}` — Deterministic-Intent: `smart` (openHAB) oder `volume`
 - `POST /volume` `{level}` — absoluter Lautstärke-Wert (0–100)
-- `GET  /index` — Index-Status: `{files, playlists, age_s, building, interval_s}`
+- `GET  /index` — Index-Status: `{files, playlists, building, files_seen, interval_s}` (Build läuft: `files` zählt live mit)
 - `POST /index/rebuild` — Medien-Index sofort neu bauen („Neu indizieren")
 - `GET /healthz`, `/metrics` — Monitoring
 
