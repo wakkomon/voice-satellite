@@ -72,6 +72,9 @@ _dir_index: dict[str, list[str]] | None = None  # Ordnernamen.lower() -> [relpat
 _indexer_started = False
 _index_build_evt = threading.Event()   # manueller Reindex (WebUI-Button / „Neu indizieren")
 _INDEX_REBUILD_INTERVAL = 3600         # s: wie oft der Medien-Index automatisch neu gescannt wird
+_index_building = False                # True, solange ein (Re-)Build läuft (Web-UI/SSE)
+_index_files_seen = 0                  # Laufzähler: Audios + Playlists im laufenden Build
+_index_last_build = None               # (ts, m3u_n, mp3_n) nach letztem fertigem Build
 
 # Kurze Füllwörter (deutsche Grammatik): tauchen in fast jedem zweiten
 # Dateinamen/Befehl auf und machen eine Substring-Suche unsinnig
@@ -85,7 +88,8 @@ _IGNORE_TOKENS = frozenset({
 })
 
 
-def _build_media_index(root: str, max_depth: int = 3, budget: float = 120.0
+def _build_media_index(root: str, max_depth: int = 3,
+                       on_progress=None
                        ) -> tuple[dict[str, list[str]], list[str],
                                   dict[str, list[str]], list[str],
                                   dict[str, list[str]]]:
@@ -94,10 +98,10 @@ def _build_media_index(root: str, max_depth: int = 3, budget: float = 120.0
       2. MP3-Index:  name.lower() -> [relpaths]  (Audiodateien .mp3/.flac/...)
       3. Dir-Index:  Ordnernamen.lower() -> [relpaths] (Interpret-Ordner etc.)
 
-    Begrenzung: nur mp3-Unterverzeichnis, nur max_depth Ebenen, harte
-    Zeitgrenze (budget s) — der Baum liegt auf CIFS/SMB, jeder Roundtrip
-    kostet ~0,2 s; ein Voll-Walk würde Minuten dauern. Ein gemeinsamer
-    Walk indexiert Playlists UND Audiodateien ohne zweiten Scan.
+    Begrenzung: nur mp3-Unterverzeichnis, nur max_depth Ebenen. Kein
+    Zeitbudget — der Baum liegt auf CIFS/SMB und ein abgeschnittener Scan
+    würde Songs dauerhaft aus dem Index lassen. on_progress(n_seen) wird
+    nach jeder Datei aufgerufen (Live-Zähler für Web-UI/SSE).
     """
     m3u_idx: dict[str, list[str]] = {}
     m3u_all: list[str] = []
@@ -107,14 +111,23 @@ def _build_media_index(root: str, max_depth: int = 3, budget: float = 120.0
     scan_root = os.path.join(root, "mp3")
     if not os.path.isdir(scan_root):
         return m3u_idx, m3u_all, mp3_idx, mp3_all, dir_idx
-    t0 = time.time()
     AUDIO_EXTS = (".mp3", ".flac", ".ogg", ".wav", ".m4a", ".opus")
+    seen = [0]  # Laufzähler für on_progress (Playlists + Audios)
+
+    def _tick() -> None:
+        if on_progress is not None:
+            try:
+                on_progress(seen[0])
+            except Exception:
+                pass
 
     def add(idx: dict, paths: list, path: str) -> None:
         rel = os.path.relpath(path, root)
         if rel in paths:
             return
         paths.append(rel)
+        seen[0] += 1
+        _tick()
         base = os.path.basename(path).rsplit(".", 1)[0]
         tokens = [t.lower() for t in base.replace("_", " ").split() if t] or [base.lower()]
         # Kurze/unspezifische Token ausschließen
@@ -152,8 +165,6 @@ def _build_media_index(root: str, max_depth: int = 3, budget: float = 120.0
 
     def rec(d: str, depth: int) -> None:
         for e in listdir_sorted(d):
-            if time.time() - t0 > budget:
-                return
             p = os.path.join(d, e)
             try:
                 if os.path.isfile(p):
@@ -163,8 +174,7 @@ def _build_media_index(root: str, max_depth: int = 3, budget: float = 120.0
                         add(mp3_idx, mp3_all, p)
                 elif depth < max_depth and os.path.isdir(p):
                     # Ordnernamen indexieren (Interpreten wie „Falco",
-                    # „Beatles", …), auch wenn der Audio-Scan budget-mäßig
-                    # abbricht — Namen holen ist ein listdir, kein walk.
+                    # „Beatles", …) — Namen holen ist ein listdir, kein walk.
                     _index_dir(p)
                     rec(p, depth + 1)
             except OSError:
@@ -182,10 +192,13 @@ def _build_media_index(root: str, max_depth: int = 3, budget: float = 120.0
                     add(mp3_idx, mp3_all, p)
         except OSError:
             continue
-    # Pass 2: Unterverzeichnisse bis max_depth, mit Time-Budget
+    # Pass 2: Unterverzeichnisse bis max_depth (komplett, kein Zeitbudget)
     rec(scan_root, 0)
-    if time.time() - t0 >= budget and (len(m3u_idx) or len(mp3_idx)):
-        log.warning("intent: Media-Scan: Zeitbudget (%.0f s) erreicht — Index ggfl. unvollständig", budget)
+    if on_progress is not None:
+        try:
+            on_progress(seen[0])
+        except Exception:
+            pass
     # De-duplizierung (Pass 1 + rec überlappen sich bei Level-1-Dateien)
     m3u_all = list(dict.fromkeys(m3u_all))
     mp3_all = list(dict.fromkeys(mp3_all))
@@ -268,8 +281,12 @@ def start_m3u_indexer(root: str, interval: int | None = None) -> None:
     _indexer_started = True
     _load_index_cache()
 
+    def _progress(n: int) -> None:
+        global _index_files_seen
+        _index_files_seen = n
+
     def _worker():
-        global _m3u_index, _m3u_all, _mp3_index, _dir_index
+        global _m3u_index, _m3u_all, _mp3_index, _dir_index, _index_building, _index_last_build
         # Warm Cache? -> erst nach einem vollen Intervall neu scannen;
         # sonst (erster Start ohne Cache) sofort bauen.
         with _lock:
@@ -279,19 +296,25 @@ def start_m3u_indexer(root: str, interval: int | None = None) -> None:
             _index_build_evt.clear()
             ready = True
             try:
+                _index_building = True
+                _index_files_seen = 0
                 log.info("intent: Medien-Index wird gebaut …")
                 t0 = time.time()
-                m3u_idx, m3u_all, mp3_idx, mp3_all, dir_idx = _build_media_index(root)
+                m3u_idx, m3u_all, mp3_idx, mp3_all, dir_idx = _build_media_index(
+                    root, on_progress=_progress)
                 _save_index(m3u_idx, m3u_all, mp3_idx, mp3_all, dir_idx)
                 with _lock:
                     _m3u_index = m3u_idx
                     _m3u_all = m3u_all
                     _mp3_index = mp3_idx
                     _dir_index = dir_idx
+                _index_last_build = (time.time(), len(m3u_all), len(mp3_all))
                 log.info("intent: Medien-Index bereit — %d Playlists, %d Audios, %d Interpreten, %.1f s",
                          len(m3u_all), len(mp3_all), len(dir_idx), time.time() - t0)
             except Exception:
                 log.exception("intent: Medien-Index-Refresh fehlgeschlagen")
+            finally:
+                _index_building = False
 
     threading.Thread(target=_worker, name="media-indexer", daemon=True).start()
 
