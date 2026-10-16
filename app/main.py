@@ -18,6 +18,7 @@ import os
 import re
 import signal
 import sys
+import threading
 import time
 
 from . import audio, config, display, duck, memory, playback, router, stt, tones, tts, wake, web
@@ -339,7 +340,12 @@ class Pipeline:
         Mic-ECHO wird erst NACH dem fertigen Sprechen verworfen –
         die Pipe waehrend der Wiedergabe fuellt sich mit der eigenen
         TTS-Stimme, und die Follow-up-Aufnahme lasst sie sofort als
-        neue Sprache erscheinen."""
+        neue Sprache erscheinen.
+
+        Playback laeuft im Hintergrund-Thread: Falls aplay haengt
+        (Pipe-Deadlock, Audio-Geraet antwortet nicht), blockiert das
+        nicht den Hauptprozess – cleanup (state=»wake« + duck_again)
+        erfolgt trotzdem."""
         self._acquire_device()
         wav = tts.synthesize(answer)
         if not wav:
@@ -348,15 +354,22 @@ class Pipeline:
             return
         self.state = "speaking"
         duck.restore_for_tts()       # TTS im Normalpegel (Pre-Duck)
-        try:
-            audio.play_wav(wav)
-        finally:
-            # Mic-ECHO verwerfen: Stream leeren, VAD zuruecksetzen.
-            self.mic.drain()
-            self.vad.reset()         # Geräuschuntergrenze neu lernen
-            self.state = "wake"
-            duck.duck_again()        # zurück auf Duck-Level
-            self._release_device()   # Gerät frei, Musik leise weiter
+
+        def _play_and_cleanup():
+            """Playback + Cleanup im Thread: garantiert auch bei
+            Pipe-Hang (z.B. aplat haengt, timeout=180 laeuft nie
+            ab)."""
+            try:
+                audio.play_wav(wav)
+            finally:
+                # Mic-ECHO verwerfen: Stream leeren, VAD zuruecksetzen.
+                self.mic.drain()
+                self.vad.reset()         # Geräuschuntergrenze neu lernen
+                self.state = "wake"
+                duck.duck_again()        # zurück auf Duck-Level
+                self._release_device()   # Gerät frei, Musik leise weiter
+
+        threading.Thread(target=_play_and_cleanup, daemon=True).start()
 
     # ── Hauptloop ─────────────────────────────────────────────
     def run(self):
