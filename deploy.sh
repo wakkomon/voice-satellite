@@ -46,14 +46,12 @@ if [ ! -f .env ]; then
   exit 1
 fi
 
-# 0b. portainer_agent stoppen: Er erzeugt veth-Interfaces, über die
-#      connman/dhcpcd eine Default-Route mit Metrik 0 setzt (überschreibt
-#      wlan0, Metrik 100) – das Docker-Build-Netzwerk bricht ab.
-#      Auf display02 zusätzlich: /etc/connman/main.conf
-#      NetworkInterfaceBlacklist = ...,veth (siehe docs/connman-docker.md).
-#      Nach dem Build wird er wieder gestartet.
-echo "[0b] portainer_agent temporär stoppen (Build-Netzwerk-Fix)..."
-$DOCKER stop portainer_agent >/dev/null 2>&1 || true
+# 0b. portainer_agent NICHT stoppen: Früher hat sein veth-Interface auf
+#      display02 eine Default-Route mit Metrik 0 gesetzt (connman/dhcpcd),
+#      die das Docker-Build-Netzwerk brach – dort ist Connman inzwischen
+#      mit NetworkInterfaceBlacklist = ...,veth gepatcht
+#      (siehe docs/connman-docker.md). Ein generisches Stoppen ist nicht
+#      nötig und war störend (Agent fällt bei jedem Deploy aus).
 
 # No-Overwrite-Guard: Prüft kritische Keys gegen App-Defaults.
 # Nur KEYS mit abweichendem Wert (aber in .env gesetzt) werden angezeigt.
@@ -168,7 +166,3 @@ echo ""
 echo "=== Deploy abgeschlossen ==="
 echo "Version (Container): $($DOCKER exec voice-satellite python3 -c 'from app import __version__; print(__version__)' 2>/dev/null || echo 'n/a')"
 echo "Web-UI: http://<pi-ip>:8770  ·  Logs: docker logs -f voice-satellite"
-
-# 0c. portainer_agent wieder starten (war vor Build gestoppt)
-echo "[0c] portainer_agent wieder starten..."
-$DOCKER start portainer_agent >/dev/null 2>&1 || true
