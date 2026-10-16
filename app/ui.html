@@ -22,6 +22,15 @@ h1 { font-size:16px; margin:0; font-weight:600; letter-spacing:.3px; }
 .dot { width:9px; height:9px; border-radius:50%; background:#e85555;
        margin-left:auto; flex:none; }
 .dot.on { background:#5fd068; }
+/* Header-Index-Button: klein, mit Dateizähler + Baupuls */
+.btn-idx { background:#1e293b; border:1px solid #334155; border-radius:6px;
+           color:#94a3b8; font-size:11px; padding:2px 8px; cursor:pointer;
+           line-height:1; white-space:nowrap; flex:none;
+           display:flex; align-items:center; gap:5px; }
+.btn-idx:hover { background:#334155; color:#e6e9ee; }
+.btn-idx .icon { font-size:14px; }
+.btn-idx .count { font-variant-numeric:tabular-nums; min-width:28px; text-align:right; }
+.btn-idx.busy { animation:pulse 1.2s infinite; }
 .stats { display:flex; gap:10px; padding:12px 18px; flex-wrap:wrap; }
 .card { background:#161b22; border:1px solid #232833; border-radius:10px;
         padding:10px 14px; min-width:96px; }
@@ -84,6 +93,9 @@ input[type=range] { width:auto; flex:1; padding:0; margin:0;
 <header>
   <h1>Voice Satellite</h1>
   <span id="state" class="badge wake">Bereit</span>
+  <button id="b-index-rebuild" class="btn-idx" title="Medien-Index neu aufbauen (Sprachbefehl: „Neu indizieren")">
+    <span class="icon">🔄</span><span class="count" id="idx-count">–</span>
+  </button>
   <span class="badge" id="ver" title="Software-Version">–</span>
   <span class="dot" id="conn" title="Live-Verbindung"></span>
 </header>
@@ -116,9 +128,6 @@ input[type=range] { width:auto; flex:1; padding:0; margin:0;
       <button id="b-music-prev" class="b-action" title="Vorheriger Titel">⏮ Zurück</button>
       <button id="b-music-next" class="b-action" title="Nächster Titel">⏭ Weiter</button>
       <button id="b-music-shuffle" class="b-action" title="Zufallswiedergabe">🔀 Shuffle</button>
-    </div>
-    <div class="row">
-      <button id="b-index-rebuild" class="b-action b-index" title="Medien-Index neu aufbauen (Sprachbefehl: „Neu indizieren")">🔄 Neu indizieren</button>
     </div>
     <div class="row vol-row">
       <span class="tag">Lautstärke</span>
@@ -262,7 +271,20 @@ function renderVolume(v) {
 }
 
 function renderIndex(ix) {
-  // Während des (Re-)Builds zeigt `files` den Live-Zähler (files_seen).
+  // Header-Button: Dateizähler + Baupuls
+  const btn = $("b-index-rebuild"), cnt = $("idx-count");
+  if (btn && cnt) {
+    if (ix.building) {
+      btn.classList.add("busy");
+      btn.title = "Indiziere… (" + (ix.files_seen ?? 0) + " Dateien)";
+      cnt.textContent = (ix.files ?? "?") + " …";
+    } else {
+      btn.classList.remove("busy");
+      btn.title = "Medien-Index neu aufbauen (Sprachbefehl: „Neu indizieren")";
+      cnt.textContent = (ix.files ?? "–");
+    }
+  }
+  // Stats-Karten: während des Builds Live-Zähler, ansonsten Endstand.
   $("st-index-files").textContent =
     ix.building ? ((ix.files ?? 0) + " …") : (ix.files ?? "–");
   $("st-index-m3u").textContent = (ix.playlists ?? "–");
@@ -359,22 +381,19 @@ $("b-music-shuffle").addEventListener("click", () => {
 $("b-index-rebuild").addEventListener("click", async () => {
   const btn = $("b-index-rebuild");
   btn.disabled = true;
-  btn.classList.add("busy");
-  btn.textContent = "⏳ Indiziere …";
   try {
     await fetch("/index/rebuild", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: "{}"
     });
-    btn.textContent = "✅ Index angefragt";
+    $("idx-count").textContent = "✅";
   } catch (e) {
-    btn.textContent = "❌ Fehler";
+    $("idx-count").textContent = "❌";
   }
   setTimeout(() => {
-    btn.textContent = "🔄 Neu indizieren";
-    btn.classList.remove("busy");
     btn.disabled = false;
+    // renderIndex wird per SSE zurücksetzen
   }, 2500);
 });
 
