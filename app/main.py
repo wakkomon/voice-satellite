@@ -369,7 +369,13 @@ class Pipeline:
                 duck.duck_again()        # zurück auf Duck-Level
                 self._release_device()   # Gerät frei, Musik leise weiter
 
-        threading.Thread(target=_play_and_cleanup, daemon=True).start()
+        play_thread = threading.Thread(target=_play_and_cleanup, daemon=True)
+        play_thread.start()
+        
+        # Auf Wiedergabe-Ende warten (Safety-Timeout verhindert Blockade
+        # bei aplay-Hang: max. 30 s, danach kehrt Main-Loop zurück – der
+        # Thread läuft weiter und macht Cleanup).
+        play_thread.join(timeout=30)
 
     # ── Hauptloop ─────────────────────────────────────────────
     def run(self):
