@@ -79,9 +79,13 @@ def get(kind):
     return _cache[kind]
 
 
-def play(kind):
-    """Ton über aplay abspielen; Fehler werden verschluckt."""
+def play(kind, blocking=False):
+    """Ton über aplay abspielen; Fehler werden verschluckt.
+
+    blocking=False (Standard für Feedback-Töne): aplay läuft im Hintergrund,
+    damit die Aufnahme-Pipeline nicht blockiert wird.
+    """
     try:
-        audio.play_wav(get(kind))
+        audio.play_wav(get(kind), blocking=blocking)
     except Exception:
         pass

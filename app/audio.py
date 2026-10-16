@@ -33,6 +33,19 @@ class MicStream:
             bufsize=self.frame_bytes * 8,
         )
 
+    def drain(self):
+        """Buffer leeren – ALLE Pufferdaten verwerfen, ohne arecord zu
+        restarten. 10-50ms statt 300-500ms beim restart()."""
+        if self._proc is None or self._proc.stdout is None:
+            return
+        while True:
+            try:
+                data = self._proc.stdout.read(self.frame_bytes * 16)
+                if not data:
+                    break
+            except Exception:
+                break
+
     def restart(self):
         """Prozess neu starten – verwirft alles, was sich im Pipe-Buffer angestaut hat."""
         self.stop()
@@ -225,15 +238,24 @@ def to_wav(pcm_bytes, rate=None):
     return buf.getvalue()
 
 
-def play_wav(wav_bytes, device=None):
-    """WAV -> aplay; blockiert bis fertig (im Pipeline-Thread okay)."""
+def play_wav(wav_bytes, device=None, blocking=True):
+    """WAV -> aplay.
+
+    Standard: blockiert bis fertig (Pipeline-Thread).
+    blocking=False: startet aplay im Hintergrund und gibt sofort zurück.
+    """
     device = device or config.SPEAKER_DEVICE
     p = subprocess.Popen(["aplay", "-q", "-D", device],
                          stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
     try:
         p.stdin.write(wav_bytes)
         p.stdin.close()
-        p.wait(timeout=180)
-    finally:
-        if p.poll() is None:
+        if blocking:
+            p.wait(timeout=180)
+        else:
+            p.poll()  # non-blocking status check
+    except Exception:
+        try:
             p.kill()
+        except Exception:
+            pass

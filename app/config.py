@@ -57,7 +57,7 @@ SILENCE_SEC     = float(_env("SILENCE_SEC", "1.3"))    # Ende der Sprache
 MIN_REC_SEC     = float(_env("MIN_REC_SEC", "0.4"))
 MAX_REC_SEC     = float(_env("MAX_REC_SEC", "27"))
 PREROLL_SEC     = float(_env("PREROLL_SEC", "0.3"))    # Vorlauf, damit der Satzanfang nicht fehlt
-WAKE_SKIP_SEC   = float(_env("WAKE_SKIP_SEC", "0.35")) # Rest des Codeworts verwerfen
+WAKE_SKIP_SEC   = float(_env("WAKE_SKIP_SEC", "0.15")) # Rest des Codeworts verwerfen (verkürzt für schnellere Reaktion)
 
 # ── STT (Whisper auf .31) ─────────────────────────────────────
 STT_URL         = _env("STT_URL", "http://192.168.1.31:9000/v1/audio/transcriptions")
