@@ -309,9 +309,8 @@ class Pipeline:
             self._acquire_device()   # Ton + Mic-Lesen: Gerät halten
             self.state = "followup"
             self.ev("Follow-up: lausche auf Folgefrage")
-            display.show_text("Hört zu", "")
             self._play_tone("wake")   # Signal: jetzt bitte weitersprechen
-            self.mic.restart()          # TON-ECHO aus dem Mic-Stream verwerfen
+            self.mic.drain()          # TON-ECHO aus dem Mic-Stream verwerfen (10ms statt 300-500ms)
             self.vad.reset()
             pcm = self.rec.capture_followup(config.FOLLOWUP_SEC)
             if pcm is None:
@@ -353,7 +352,7 @@ class Pipeline:
             audio.play_wav(wav)
         finally:
             # Mic-ECHO verwerfen: Stream leeren, VAD zuruecksetzen.
-            self.mic.restart()
+            self.mic.drain()
             self.vad.reset()         # Geräuschuntergrenze neu lernen
             self.state = "wake"
             duck.duck_again()        # zurück auf Duck-Level
@@ -375,11 +374,10 @@ class Pipeline:
                     continue
                 if self._mic_restart_requested:
                     # Vom Web-Audiothread gesetzt (drain_mic) NACH dessen
-                    # Wiedergabe: arecord neu starten und die Pipe leeren.
-                    # Der Restart passiert immer hier im Pipeline-Thread –
-                    # am arecord sitzt genau EIN Leser (Audio-Modul-Doku).
+                    # Wiedergabe: Mic-Puffer leeren. Kein full restart nötig,
+                    # der arecord-Prozess läuft noch.
                     self._mic_restart_requested = False
-                    self.mic.restart()
+                    self.mic.drain()
                     self.vad.reset()
                 frame = self.mic.read()
                 if frame is None:
@@ -398,12 +396,10 @@ class Pipeline:
                     self._last_wake = time.time()
                     log.info("WAKE – %s erkannt", config.WAKE_WORD)
                     self.ev("Codewort erkannt")
-                    display.show_text("Hört zu", "")
                     try:
                         self.conversation()
                     except Exception as e:
                         log.exception("Zyklus-Fehler")
-                        self._fail(f"Fehler: {e}")
                         self.state = "wake"
         finally:
             display.shutdown()
