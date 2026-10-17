@@ -288,6 +288,13 @@ def start_m3u_indexer(root: str, interval: int | None = None) -> None:
 
     def _worker():
         global _m3u_index, _m3u_all, _mp3_index, _dir_index, _index_building, _index_last_build
+        # Index-Build ist CPU-lastig und hoeld das GIL; als nickester Thread
+        # (nice 15) bekommt der SSE-/Web-Writer waehrenddessen faire CPU-Quote,
+        # sonst "friert" die Web-UI beim (Re-)Build ein (Pi 3, 2.5 h Build).
+        try:
+            os.nice(15)
+        except Exception:
+            pass
         # Warm Cache? -> erst nach einem vollen Intervall neu scannen;
         # sonst (erster Start ohne Cache) sofort bauen.
         with _lock:
