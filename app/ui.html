@@ -85,7 +85,46 @@ input[type=range] { width:auto; flex:1; padding:0; margin:0;
                     accent-color:#2563eb; }
 .vol-pct { font-size:13px; color:#e6e9ee; font-variant-numeric:tabular-nums;
            min-width:52px; text-align:right; }
-.vol-pct.muted { color:#e8b34b; }
+
+/* ── Media Browser ─────────────────────────────────────────────── */
+#media-browser { margin-top:14px; background:#11151b; border:1px solid #232833;
+                 border-radius:10px; padding:12px 14px; display:none; }
+#media-browser.visible { display:block; }
+#media-browser .head { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
+#media-browser .tag { font-size:11px; color:#8b93a1; text-transform:uppercase;
+                      letter-spacing:.5px; }
+#media-browser .title { font-size:14px; font-weight:600; }
+#media-browser .toolbar { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px; }
+#media-browser .toolbar .tab { padding:4px 12px; border-radius:6px; font-size:12px;
+                                background:#1e293b; color:#94a3b8; cursor:pointer;
+                                border:1px solid #334155; }
+#media-browser .toolbar .tab.active { background:#1d4ed8; color:#fff; border-color:#2563eb; }
+#media-browser .search-row { display:flex; gap:6px; margin-bottom:10px; }
+#media-browser .search-row input { flex:1; padding:6px 10px; border-radius:6px;
+                                    background:#1e293b; border:1px solid #334155;
+                                    color:#e6e9ee; font-size:13px; }
+#media-browser .search-row input:focus { outline:none; border-color:#2563eb; }
+#media-browser .search-row input::placeholder { color:#5b6472; }
+#media-browser .tree-header { display:flex; align-items:center; gap:6px; margin-bottom:8px;
+                               flex-wrap:wrap; }
+#media-browser .breadcrumb { font-size:12px; color:#64748b; }
+#media-browser .breadcrumb span { cursor:pointer; color:#60a5fa; }
+#media-browser .breadcrumb span:hover { text-decoration:underline; }
+#media-browser .tree-list { max-height:400px; overflow-y:auto; margin:0; padding:0; }
+#media-browser .tree-item { display:flex; align-items:center; gap:8px; padding:5px 8px;
+                             border-radius:6px; cursor:pointer; font-size:13px;
+                             color:#cbd5e1; }
+#media-browser .tree-item:hover { background:#1e293b; color:#f1f5f9; }
+#media-browser .tree-item.dir { color:#93c5fd; }
+#media-browser .tree-item.file { color:#cbd5e1; }
+#media-browser .tree-item .icon { font-size:14px; width:20px; text-align:center; flex-shrink:0; }
+#media-browser .tree-item .name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis;
+                                  white-space:nowrap; }
+#media-browser .tree-item .count { font-size:11px; color:#64748b; flex-shrink:0; }
+#media-browser .tree-item.playing { background:#1e3a5f; color:#93c5fd; }
+#media-browser .empty { color:#5b6472; font-size:13px; padding:20px 8px; text-align:center; }
+
+#vol-pct.muted { color:#e8b34b; }
 @keyframes pulse { 50% { opacity:.45; } }
 </style>
 </head>
@@ -134,6 +173,25 @@ input[type=range] { width:auto; flex:1; padding:0; margin:0;
       <input type="range" id="vol-slider" min="0" max="100" step="1" value="100">
       <span class="vol-pct" id="vol-pct">100 %</span>
     </div>
+    <div style="margin-top:10px;">
+      <button id="b-media-toggle" class="action-btn" style="min-width:auto; padding:4px 14px; font-size:12px;">📚 Bibliothek</button>
+    </div>
+  </div>
+  <!-- ── Media Browser ──────────────────────────────────────────── -->
+  <div id="media-browser">
+    <div class="head">
+      <span class="tag">Mediathek</span>
+      <span class="title" id="mb-title">Bibliothek</span>
+    </div>
+    <div class="toolbar">
+      <div class="tab active" data-view="tree">📁 Musik</div>
+      <div class="tab" data-view="playlists">🎵 Playlists</div>
+    </div>
+    <div class="search-row">
+      <input id="mb-search" type="search" placeholder="Suchen…" disabled>
+    </div>
+    <div class="tree-header" id="mb-header"></div>
+    <div class="tree-list" id="mb-tree"></div>
   </div>
   <ul class="feed" id="feed"><li class="empty" id="feed-empty">Noch keine Aktivität</li></ul>
   <div class="forms">
@@ -453,6 +511,214 @@ $("vol-slider").addEventListener("input", ev => {
     }).catch(() => { /* Zustand kommt per SSE von selbst */ });
   }, 400);
 });
+
+// ── Media Browser ──────────────────────────────────────────────────
+let mbView = "tree";     // "tree" | "playlists"
+let mbPath = "";         // current tree prefix
+let mbData = null;       // cached /api/music response
+let mbSearchTimer = null;
+
+const $mb = $("media-browser");
+const $mbTree = $("mb-tree");
+const $mbHeader = $("mb-header");
+const $mbSearch = $("mb-search");
+const $mbTitle = $("mb-title");
+
+// Toggle visibility
+$("b-media-toggle").addEventListener("click", () => {
+  const vis = $mb.classList.toggle("visible");
+  if (vis) {
+    loadMediaIndex();
+  }
+});
+
+// Tabs
+document.querySelectorAll("#media-browser .tab").forEach(tab => {
+  tab.addEventListener("click", () => {
+    document.querySelectorAll("#media-browser .tab").forEach(t => t.classList.remove("active"));
+    tab.classList.add("active");
+    mbView = tab.dataset.view;
+    $mbSearch.value = "";
+    $mbSearch.disabled = true;
+    mbPath = "";
+    renderView();
+  });
+});
+
+// Search
+$mbSearch.addEventListener("input", () => {
+  clearTimeout(mbSearchTimer);
+  mbSearchTimer = setTimeout(doSearch, 400);
+});
+
+async function doSearch() {
+  const q = $mbSearch.value.trim();
+  if (!q) {
+    $mbSearch.disabled = true;
+    $mbHeader.innerHTML = "";
+    $mbTree.innerHTML = "";
+    return;
+  }
+  $mbSearch.disabled = false;
+  try {
+    const r = await fetch("/api/music/search?q=" + encodeURIComponent(q));
+    const j = await r.json();
+    renderSearchResults(j.results || []);
+  } catch (e) {
+    $mbTree.innerHTML = `<div class="empty">Fehler: ${e.message}</div>`;
+  }
+}
+
+function renderSearchResults(results) {
+  $mbHeader.innerHTML = `<span class="breadcrumb">Suche: „${escHtml($mbSearch.value)}"</span>`;
+  if (!results.length) {
+    $mbTree.innerHTML = '<div class="empty">Keine Treffer</div>';
+    return;
+  }
+  $mbTree.innerHTML = results.map(r =>
+    `<div class="tree-item file" onclick="playPath('${escAttr(r.path)}')">
+      <span class="icon">🎵</span>
+      <span class="name" title="${escHtml(r.name)}">${escHtml(r.name)}</span>
+    </div>`
+  ).join("");
+}
+
+// Load full index once
+async function loadMediaIndex() {
+  if (mbData) {
+    renderView();
+    return;
+  }
+  try {
+    const r = await fetch("/api/music");
+    mbData = await r.json();
+    renderView();
+  } catch (e) {
+    $mbTree.innerHTML = `<div class="empty">Fehler: ${e.message}</div>`;
+  }
+}
+
+function renderView() {
+  if (!mbData) {
+    $mbTree.innerHTML = '<div class="empty">Lädt…</div>';
+    return;
+  }
+  if (mbView === "playlists") {
+    renderPlaylists();
+  } else {
+    renderTree();
+  }
+}
+
+function renderPlaylists() {
+  const pls = mbData.playlists || [];
+  $mbTitle.textContent = `Playlists (${pls.length})`;
+  $mbHeader.innerHTML = "";
+  if (!pls.length) {
+    $mbTree.innerHTML = '<div class="empty">Keine Playlists gefunden</div>';
+    return;
+  }
+  $mbTree.innerHTML = pls.map(p =>
+    `<div class="tree-item dir" onclick="playPath('${escAttr(p)}')">
+      <span class="icon">🎵</span>
+      <span class="name" title="${escHtml(p)}">${escHtml(p)}</span>
+    </div>`
+  ).join("");
+}
+
+function renderTree() {
+  $mbTitle.textContent = `Musik`;
+  if (!mbPath) {
+    $mbHeader.innerHTML = "";
+  } else {
+    const parts = mbPath.split("/").filter(Boolean);
+    let bc = '<span class="breadcrumb">🏠';
+    let cur = "";
+    parts.forEach((p, i) => {
+      cur += p + "/";
+      const isLast = i === parts.length - 1;
+      bc += ` <span ${!isLast ? `onclick="navigateTo('${escAttr(cur)}')"` : ''}>${escHtml(p)}</span>`;
+    });
+    bc += "</span>";
+    $mbHeader.innerHTML = bc;
+  }
+  fetchTree(mbPath);
+}
+
+async function fetchTree(prefix) {
+  try {
+    const r = await fetch("/api/music/tree?prefix=" + encodeURIComponent(prefix));
+    const j = await r.json();
+    renderTreeData(j);
+  } catch (e) {
+    $mbTree.innerHTML = `<div class="empty">Fehler: ${e.message}</div>`;
+  }
+}
+
+function renderTreeData(data) {
+  const dirs = data.dirs || [];
+  const files = data.files || [];
+  let html = "";
+
+  // Dirs zuerst, sortiert
+  dirs.forEach(d => {
+    html += `<div class="tree-item dir" onclick="navigateTo('${escAttr(d.path)}')">
+      <span class="icon">📁</span>
+      <span class="name">${escHtml(d.name)}</span>
+      <span class="count">${d.count}</span>
+    </div>`;
+  });
+
+  // Audio-Dateien, sortiert
+  files.forEach(f => {
+    html += `<div class="tree-item file" onclick="playPath('${escAttr(f.path)}')">
+      <span class="icon">🎵</span>
+      <span class="name" title="${escHtml(f.name)}">${escHtml(f.name)}</span>
+      <span class="count">${escHtml(f.ext)}</span>
+    </div>`;
+  });
+
+  if (!html) {
+    html = '<div class="empty">Leer</div>';
+  }
+  $mbTree.innerHTML = html;
+}
+
+// Breadcrumb navigation
+function navigateTo(path) {
+  mbPath = path;
+  $mbSearch.value = "";
+  $mbSearch.disabled = true;
+  renderTree();
+}
+
+// Play helper
+function playPath(path) {
+  const isMp3 = path.endsWith(".mp3") || path.endsWith(".m4a") || path.endsWith(".ogg") ||
+                path.endsWith(".flac") || path.endsWith(".opus") || path.endsWith(".wav");
+  if (isMp3) {
+    fetch("/music/play", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: path })
+    }).catch(() => {});
+  } else {
+    // Playlist
+    fetch("/music/play", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: path })
+    }).catch(() => {});
+  }
+}
+
+// Escape helpers
+function escHtml(s) {
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+function escAttr(s) {
+  return String(s).replace(/\\/g,"\\\\").replace(/'/g,"\\'");
+}
 </script>
 </body>
 </html>

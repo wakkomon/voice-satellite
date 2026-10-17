@@ -47,8 +47,99 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
+        import urllib.parse as _url
+        qs: dict[str, str] = {}
+        parts = self.path.split("?", 1)
+        if len(parts) > 1:
+            qs = dict(_url.parse_qsl(parts[1]))
         if path == "/health":
             self._send(200, {"ok": True})
+        elif path == "/api/music":
+            # Vollstaendiger Index fuer WebUI-Browser
+            import intent as _im
+            with _im._lock:
+                idx = _im._mp3_index or {}
+                m3u = _im._m3u_all or []
+                didx = _im._dir_index or {}
+            out = []
+            for _k, paths in idx.items():
+                for p in paths:
+                    out.append(p)
+            self._send(200, {
+                "playlists": m3u,
+                "dir_index": didx,
+                "total_files": len(out),
+                "total_playlists": len(m3u),
+            })
+        elif path == "/api/music/tree":
+            # Baumstruktur: Ordner + Audio-Dateien auf gegebener Ebene
+            import intent as _im
+            prefix = qs.get("prefix", "")
+            # _mp3_all existiert nicht als globale Variable – flache aus _mp3_index
+            with _im._lock:
+                mp3_all = []
+                for paths in (_im._mp3_index or {}).values():
+                    mp3_all.extend(paths)
+            prefix = prefix.rstrip("/") + "/" if prefix else ""
+            dirs: dict[str, int] = {}
+            files: list[str] = []
+            audio_exts = (".mp3", ".m4a", ".ogg", ".oga", ".flac", ".opus", ".wav")
+            for rel in mp3_all:
+                if not rel.startswith(prefix):
+                    continue
+                rest = rel[len(prefix):]
+                if "/" in rest:
+                    d = rest.split("/", 1)[0]
+                    dirs[d] = dirs.get(d, 0) + 1
+                else:
+                    files.append(rel)
+            children = []
+            for d in sorted(dirs):
+                try:
+                    p = os.path.join(config.MUSIC_ROOT, prefix + d)
+                    pa = os.path.abspath(p)
+                    mr = os.path.abspath(config.MUSIC_ROOT)
+                    if (pa == mr or pa.startswith(mr + os.sep)) and os.path.isdir(p):
+                        children.append({"type": "dir", "name": d, "count": dirs[d]})
+                except OSError:
+                    pass
+            audio_files = []
+            for f in sorted(files, key=lambda s: os.path.basename(s).lower()):
+                try:
+                    fp = os.path.join(config.MUSIC_ROOT, prefix + f)
+                    fa = os.path.abspath(fp)
+                    mr = os.path.abspath(config.MUSIC_ROOT)
+                    if fa == mr or fa.startswith(mr + os.sep):
+                        ext = os.path.splitext(f)[1].lstrip(".")
+                        audio_files.append({"type": "file", "name": os.path.basename(f), "path": prefix + f, "ext": ext})
+                except OSError:
+                    pass
+            self._send(200, {"type": "dir", "path": prefix or "/", "dirs": children, "files": audio_files})
+        elif path == "/api/music/search":
+            # Suchen in allen indizierten Dateien
+            import intent as _im
+            q = qs.get("q", "").lower().strip()
+            with _im._lock:
+                # _mp3_all existiert nicht – flache aus _mp3_index
+                mp3_all = []
+                for paths in (_im._mp3_index or {}).values():
+                    mp3_all.extend(paths)
+            terms = [t for t in q.split() if t]
+            if not terms:
+                self._send(200, {"results": []})
+                return
+            out = []
+            for rel in mp3_all:
+                hay = rel.lower()
+                if all(t in hay for t in terms):
+                    out.append(rel)
+                    if len(out) >= 200:
+                        break
+            res = []
+            for r in out:
+                bn = os.path.basename(r)
+                res.append({"name": bn, "path": r, "ext": os.path.splitext(bn)[1].lstrip(".")})
+            self._send(200, {"results": res})
         elif path == "/frame":
             self._send_frame()
         elif path == "/":
@@ -167,6 +258,20 @@ class Handler(BaseHTTPRequestHandler):
                 err = playback.player.play_url(url, data.get("title") or "")
             if err:
                 self._ev(f"Web-Play fehlgeschlagen: {err}")
+                return self._send(404, {"error": err})
+            return self._send(200, {"ok": True, **playback.player.status()})
+        if self.path == "/music/play":
+            # Alias für Web-UI-Media-Browser (gleiche Logik wie /play).
+            rel = (data.get("path") or "").strip()
+            url = (data.get("url") or "").strip()
+            if not rel and not url:
+                return self._send(400, {"error": "path oder url fehlt"})
+            if rel:
+                err = playback.player.play_path(rel)
+            else:
+                err = playback.player.play_url(url, data.get("title") or "")
+            if err:
+                self._ev(f"Web-Play (/music/play) fehlgeschlagen: {err}")
                 return self._send(404, {"error": err})
             return self._send(200, {"ok": True, **playback.player.status()})
         if self.path == "/stop":
