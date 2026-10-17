@@ -55,81 +55,83 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/health":
             self._send(200, {"ok": True})
         elif path == "/api/music":
-            # Vollstaendiger Index fuer WebUI-Browser
+            # Index fuer WebUI-Browser (ohne 42MB dir_index – wird im Frontend nicht genutzt)
             from . import intent as _im
             with _im._lock:
                 idx = _im._mp3_index or {}
                 m3u = _im._m3u_all or []
-                didx = _im._dir_index or {}
             out = []
             for _k, paths in idx.items():
                 for p in paths:
                     out.append(p)
             self._send(200, {
                 "playlists": m3u,
-                "dir_index": didx,
                 "total_files": len(out),
                 "total_playlists": len(m3u),
             })
         elif path == "/api/music/tree":
-            # Baumstruktur: Ordner + Audio-Dateien auf gegebener Ebene
+            # Baumstruktur per faulem CIFS-listdir – O(Kinder) statt O(alle)
             from . import intent as _im
             prefix = qs.get("prefix", "")
-            # _mp3_all existiert nicht als globale Variable – flache aus _mp3_index
-            with _im._lock:
-                mp3_all = []
-                for paths in (_im._mp3_index or {}).values():
-                    mp3_all.extend(paths)
             prefix = prefix.rstrip("/") + "/" if prefix else ""
-            dirs: dict[str, int] = {}
-            files: list[str] = []
-            audio_exts = (".mp3", ".m4a", ".ogg", ".oga", ".flac", ".opus", ".wav")
-            for rel in mp3_all:
-                if not rel.startswith(prefix):
+            abs_dir = os.path.join(config.MUSIC_ROOT, prefix) if prefix else config.MUSIC_ROOT
+            audio_exts = {".mp3", ".m4a", ".ogg", ".oga", ".flac", ".opus", ".wav"}
+
+            # Verzeichnis lesen
+            try:
+                entries = sorted(os.listdir(abs_dir))
+            except OSError:
+                return self._send(404, {"type": "dir", "path": prefix or "/", "dirs": [], "files": []})
+
+            # Einträge klassifizieren: Audio-Datei? Unterverzeichnis?
+            # Zähler für Verzeichnisse aus _mp3_index holen (schnell, O(1) pro Ordner)
+            with _im._lock:
+                idx = _im._mp3_index or {}
+
+            dirs_out = []
+            files_out = []
+            for name in entries:
+                fp = os.path.join(abs_dir, name)
+                pa = os.path.abspath(fp)
+                mr = os.path.abspath(config.MUSIC_ROOT)
+                if pa != mr and not pa.startswith(mr + os.sep):
                     continue
-                rest = rel[len(prefix):]
-                if "/" in rest:
-                    d = rest.split("/", 1)[0]
-                    dirs[d] = dirs.get(d, 0) + 1
-                else:
-                    files.append(rel)
-            children = []
-            for d in sorted(dirs):
-                try:
-                    p = os.path.join(config.MUSIC_ROOT, prefix + d)
-                    pa = os.path.abspath(p)
-                    mr = os.path.abspath(config.MUSIC_ROOT)
-                    if (pa == mr or pa.startswith(mr + os.sep)) and os.path.isdir(p):
-                        children.append({"type": "dir", "name": d, "count": dirs[d]})
-                except OSError:
-                    pass
-            audio_files = []
-            for f in sorted(files, key=lambda s: os.path.basename(s).lower()):
-                try:
-                    fp = os.path.join(config.MUSIC_ROOT, prefix + f)
-                    fa = os.path.abspath(fp)
-                    mr = os.path.abspath(config.MUSIC_ROOT)
-                    if fa == mr or fa.startswith(mr + os.sep):
-                        ext = os.path.splitext(f)[1].lstrip(".")
-                        audio_files.append({"type": "file", "name": os.path.basename(f), "path": prefix + f, "ext": ext})
-                except OSError:
-                    pass
-            self._send(200, {"type": "dir", "path": prefix or "/", "dirs": children, "files": audio_files})
+                ext = os.path.splitext(name)[1].lower()
+                if ext in audio_exts:
+                    files_out.append({"type": "file", "name": name, "path": prefix + name, "ext": ext.lstrip(".")})
+                elif os.path.isdir(fp):
+                    # Zähler über _dir_index: O(1) pro Ordner
+                    count = 0
+                    dname_lower = name.lower()
+                    paths = idx.get(dname_lower)
+                    if paths:
+                        for p in paths:
+                            pprefix = (prefix + name + "/") if prefix else (name + "/")
+                            if p.startswith(pprefix):
+                                count += 1
+                            else:
+                                break
+                    dirs_out.append({"type": "dir", "name": name, "count": count})
+
+            # Dateinamen alphabetisch (case-insensitive), Verzeichnisnamen sortiert
+            files_out.sort(key=lambda s: s["name"].lower())
+            self._send(200, {"type": "dir", "path": prefix or "/", "dirs": dirs_out, "files": files_out})
         elif path == "/api/music/search":
-            # Suchen in allen indizierten Dateien
+            # Suchen in allen indizierten Dateien – nutzt eine einmalig gebaute
+            # flache Liste (flat_cache) statt _mp3_index zu durchlaufen.
             from . import intent as _im
             q = qs.get("q", "").lower().strip()
-            with _im._lock:
-                # _mp3_all existiert nicht – flache aus _mp3_index
-                mp3_all = []
-                for paths in (_im._mp3_index or {}).values():
-                    mp3_all.extend(paths)
             terms = [t for t in q.split() if t]
             if not terms:
-                self._send(200, {"results": []})
-                return
+                return self._send(200, {"results": []})
+            flat = getattr(_im, "_flat_cache", None)
+            if flat is None:
+                with _im._lock:
+                    flat = _im._flat_cache = [
+                        p for paths in (_im._mp3_index or {}).values() for p in paths
+                    ]
             out = []
-            for rel in mp3_all:
+            for rel in flat:
                 hay = rel.lower()
                 if all(t in hay for t in terms):
                     out.append(rel)
