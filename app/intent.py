@@ -138,59 +138,57 @@ def _build_media_index(root: str, max_depth: int = 3,
         if base.lower() not in meaningful and base.lower() not in _IGNORE_TOKENS:
             idx.setdefault(base.lower(), []).append(rel)
 
-    def listdir_sorted(d: str) -> list[str]:
+    def scandir_sorted(d: str) -> list:
         try:
-            return sorted(os.listdir(d))
+            return sorted(os.scandir(d), key=lambda e: e.name)
         except OSError:
             return []
 
-    def _index_dir(p: str) -> bool:
+    def _index_dir(p: str, entries: "list | None" = None) -> bool:
         """Ordner *p* in dir_idx eintragen (Schlüssel: Ordnernamen.lower()).
-        Gibt True zurück, wenn der Ordner selbst Audio-Dateien enthält."""
+        Gibt True zurück, wenn der Ordner selbst Audio-Dateien enthält.
+        entries: bereits gescannte Einträge (kein zweites listdir mehr)."""
         rel = os.path.relpath(p, root)
         nm = os.path.basename(p.rstrip(os.sep)).lower()
         has_audio = False
-        for e2 in listdir_sorted(p):
-            e2p = os.path.join(p, e2)
-            if e2.lower().endswith(AUDIO_EXTS):
-                try:
-                    if os.path.isfile(e2p):
-                        has_audio = True
-                except OSError:
-                    pass
-            elif has_audio:
+        if entries is None:
+            entries = scandir_sorted(p)
+        for e2 in entries:
+            base = e2.name if hasattr(e2, "name") else str(e2)
+            if base.lower().endswith(AUDIO_EXTS) and not e2.is_dir():
+                has_audio = True
                 break
         if nm and len(nm) > 1 and nm not in _IGNORE_TOKENS:
             dir_idx.setdefault(nm, []).append(rel)
         return has_audio
 
     def rec(d: str, depth: int) -> None:
-        for e in listdir_sorted(d):
-            p = os.path.join(d, e)
+        for e in scandir_sorted(d):
             try:
-                if os.path.isfile(p):
-                    if e.lower().endswith((".m3u", ".m3u8")):
-                        add(m3u_idx, m3u_all, p)
-                    elif e.lower().endswith(AUDIO_EXTS):
-                        add(mp3_idx, mp3_all, p)
-                elif depth < max_depth and os.path.isdir(p):
+                if e.is_file():
+                    base = e.name
+                    if base.lower().endswith((".m3u", ".m3u8")):
+                        add(m3u_idx, m3u_all, e.path)
+                    elif base.lower().endswith(AUDIO_EXTS):
+                        add(mp3_idx, mp3_all, e.path)
+                elif depth < max_depth and e.is_dir():
                     # Ordnernamen indexieren (Interpreten wie „Falco",
                     # „Beatles", …) — Namen holen ist ein listdir, kein walk.
-                    _index_dir(p)
-                    rec(p, depth + 1)
+                    _index_dir(e.path)
+                    rec(e.path, depth + 1)
             except OSError:
                 continue
 
-    entries = listdir_sorted(scan_root)
+    entries = scandir_sorted(scan_root)
     # Pass 1: alle Level-1-Dateien (schnell, garantiert)
     for e in entries:
-        p = os.path.join(scan_root, e)
         try:
-            if os.path.isfile(p):
-                if e.lower().endswith((".m3u", ".m3u8")):
-                    add(m3u_idx, m3u_all, p)
-                elif e.lower().endswith(AUDIO_EXTS):
-                    add(mp3_idx, mp3_all, p)
+            if e.is_file():
+                base = e.name
+                if base.lower().endswith((".m3u", ".m3u8")):
+                    add(m3u_idx, m3u_all, e.path)
+                elif base.lower().endswith(AUDIO_EXTS):
+                    add(mp3_idx, mp3_all, e.path)
         except OSError:
             continue
     # Pass 2: Unterverzeichnisse bis max_depth (komplett, kein Zeitbudget)
@@ -209,7 +207,9 @@ def _build_media_index(root: str, max_depth: int = 3,
 
 
 def _index_cache_path() -> str:
-    d = config.DATA_DIR
+    """Cache-Datei im persistenten /m-Volume (Bind-Mount des Fileserver-Shares).
+    Überlebt Container-Re-Deploys – kein erneuter CIFS-Scan beim nächsten Start."""
+    d = os.path.join(config.MUSIC_ROOT, ".vs-cache")
     os.makedirs(d, exist_ok=True)
     return os.path.join(d, "media_index.json")
 
