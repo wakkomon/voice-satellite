@@ -56,7 +56,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"ok": True})
         elif path == "/api/music":
             # Vollstaendiger Index fuer WebUI-Browser
-            import intent as _im
+            from . import intent as _im
             with _im._lock:
                 idx = _im._mp3_index or {}
                 m3u = _im._m3u_all or []
@@ -73,7 +73,7 @@ class Handler(BaseHTTPRequestHandler):
             })
         elif path == "/api/music/tree":
             # Baumstruktur: Ordner + Audio-Dateien auf gegebener Ebene
-            import intent as _im
+            from . import intent as _im
             prefix = qs.get("prefix", "")
             # _mp3_all existiert nicht als globale Variable – flache aus _mp3_index
             with _im._lock:
@@ -117,7 +117,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"type": "dir", "path": prefix or "/", "dirs": children, "files": audio_files})
         elif path == "/api/music/search":
             # Suchen in allen indizierten Dateien
-            import intent as _im
+            from . import intent as _im
             q = qs.get("q", "").lower().strip()
             with _im._lock:
                 # _mp3_all existiert nicht – flache aus _mp3_index
