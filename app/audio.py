@@ -12,6 +12,7 @@ import array
 import collections
 import math
 import subprocess
+import time
 import wave
 
 from . import config
@@ -35,15 +36,24 @@ class MicStream:
 
     def drain(self):
         """Buffer leeren – ALLE Pufferdaten verwerfen, ohne arecord zu
-        restarten. 10-50ms statt 300-500ms beim restart()."""
+        restarten. 10-50ms statt 300-500ms beim restart().
+
+        WICHTIG: arecord läuft permanent, die Pipe liefert NIE b'' (kein
+        EOF) – ein while-True-Loop ohne Zeitlimit hängt ewig (seit v1.9.5
+        im Cleanup-Thread / im Main-Loop -> 'folgefrage'-Hang). Deshalb
+        festes Zeitlimit: ~0,1 s reichen, um den Ton-/TTS-Echo aus dem
+        Puffer zu werfen; danach ist das Fenster ohnehin Geschichte."""
         if self._proc is None or self._proc.stdout is None:
             return
+        deadline = time.monotonic() + 0.10
         while True:
             try:
                 data = self._proc.stdout.read(self.frame_bytes * 16)
                 if not data:
                     break
             except Exception:
+                break
+            if time.monotonic() >= deadline:
                 break
 
     def restart(self):
