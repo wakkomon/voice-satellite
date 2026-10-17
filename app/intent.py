@@ -69,6 +69,7 @@ _m3u_index: dict[str, list[str]] | None = None  # name.lower() -> [relpaths (rel
 _m3u_all: list[str] | None = None               # alle Playlists (rel. MUSIC_ROOT)
 _mp3_index: dict[str, list[str]] | None = None  # name.lower() -> [relpaths] für .mp3/.flac/...
 _dir_index: dict[str, list[str]] | None = None  # Ordnernamen.lower() -> [relpaths] (z.B. Interpret-Ordner)
+_flat_cache: list[str] | None = None  # flache [relpaths] – lazy gebaut, dann pro Request Wiederverwendung
 _indexer_started = False
 _index_build_evt = threading.Event()   # manueller Reindex (WebUI-Button / „Neu indizieren")
 _INDEX_REBUILD_INTERVAL = 10800         # s: wie oft der Medien-Index automatisch neu gescannt wird (3h)
