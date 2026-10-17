@@ -299,6 +299,13 @@ function render(d) {
   evts.forEach(addEvent);
 }
 
+function applyShuffleState(on) {
+  const sh = $("b-music-shuffle");
+  sh.classList.toggle("active", !!on);
+  sh.textContent = on ? "🔀 Shuffle an" : "🔀 Shuffle";
+  sh.title = on ? "Zufallswiedergabe ausschalten" : "Zufallswiedergabe einschalten";
+}
+
 function renderMusic(m) {
   const playing = !!m.playing, paused = !!m.paused;
   const title = m.title || (m.source === "radio" ? "Radio" : null);
@@ -313,10 +320,7 @@ function renderMusic(m) {
   toggle.textContent = showPause ? "⏸ Pause" : "▶ Weiterspielen";
   toggle.title = showPause ? "Pause" : "Weiterspielen";
   // Shuffle: aktiven Zustand visuell markieren (hell) bzw. deaktiviert (dunkel).
-  const sh = $("b-music-shuffle");
-  sh.classList.toggle("active", !!m.shuffle);
-  sh.textContent = m.shuffle ? "🔀 Shuffle an" : "🔀 Shuffle";
-  sh.title = m.shuffle ? "Zufallswiedergabe ausschalten" : "Zufallswiedergabe einschalten";
+  applyShuffleState(m.shuffle);
 }
 
 function renderVolume(v) {
@@ -432,6 +436,10 @@ $("b-music-next").addEventListener("click", () => musicBtn("/next"));
 $("b-music-shuffle").addEventListener("click", () => {
   // Shuffle ist aktiv -> ausschalten, sonst einschalten.
   const enable = !$("b-music-shuffle").classList.contains("active");
+  // Optimistischer Update: Button schaltet sofort um und wartet nicht auf
+  // den naechsten SSE-Frame (der beim Index-Build stocken
+  // koennte) — der Rahmen bestaetigt/korrigiert den Zustand von selbst.
+  applyShuffleState(enable);
   musicBtn("/shuffle", { enable });
 });
 

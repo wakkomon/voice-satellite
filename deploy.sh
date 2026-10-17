@@ -101,8 +101,11 @@ $DOCKER stop voice-satellite >/dev/null 2>&1 || true
 $DOCKER rm -f voice-satellite 2>/dev/null || true
 
 # 3. Musik-Bind-Mount vorhanden? (Playlists, Radio, Kamera-M3U)
+# rw (nicht :ro): Der Medien-Indexer schreibt seinen Cache unter
+# /m/.vs-cache/media_index.json (config.MUSIC_ROOT/.vs-cache/). Ein
+# read-only-Mount würde das Schreiben verhindern -> Cache nie persistiert.
 if [ -d /media/private ]; then
-  MUSIC_MOUNT="/media/private:/m:ro"
+  MUSIC_MOUNT="/media/private:/m"
 else
   echo "Hinweis: /media/private nicht vorhanden – Musik/Kamera-Playlists liegen"
   echo "vorerst nicht im Container. Volume mounten (SMB: mount.cifs), dann neu deployen."
