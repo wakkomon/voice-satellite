@@ -267,19 +267,16 @@ def reindex_now() -> None:
 def start_m3u_indexer(root: str, interval: int | None = None) -> None:
     """Start background thread: build media index, refresh every `interval` s.
 
-    Indexiert Playlists (.m3u) UND Audiodateien im Hintergrund, damit
-    'spiel <name>' ohne CIFS-Traversal in O(1) auflösbar ist. Der fertige
-    Index wird unter DATA_DIR persistiert: beim Container-Start wird er
-    geladen (kein CIFS-Scan), ein neuer Scan läuft erst nach `interval`
-    Sekunden oder nach einem manuellen Reindex (reindex_now).
-    Threaded (not asyncio) – die App läuft ohne Event-Loop.
+    2.0: Wird nur noch aufgerufen, wenn KEIN Master konfiguriert ist
+    (main.py) oder wenn der Master dauerhaft unerreichbar ist
+    (master_index.py Fallback). Idempotent via _indexer_started.
     """
     global _indexer_started
-    if interval is None:
-        interval = _INDEX_REBUILD_INTERVAL
     if _indexer_started:
         return
     _indexer_started = True
+    if interval is None:
+        interval = _INDEX_REBUILD_INTERVAL
     _load_index_cache()
 
     def _progress(n: int) -> None:

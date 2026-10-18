@@ -96,6 +96,10 @@ services:
       - DEFAULT_IMAGE_URL=${DEFAULT_IMAGE_URL:-http://192.168.1.33/weather/snap.jpg}
       # ── Musik-Player / Pi-Bridge ──
       - MUSIC_ROOT=${MUSIC_ROOT:-/m}
+      # ── Master (2.0alpha: Indexing-Server, dev) ──
+      # leer = lokaler CIFS-Scan wie 1.x
+      - MASTER_URL=${MASTER_URL:-http://192.168.1.24:8791}
+      - MASTER_POLL_SEC=${MASTER_POLL_SEC:-300}
       - BRIDGE_HOST=${BRIDGE_HOST:-192.168.1.32}
       - BRIDGE_PORT=${BRIDGE_PORT:-8790}
       - RTSP_USER=${RTSP_USER:-}                     # leer = ohne Kamera-Auth

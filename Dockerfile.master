@@ -1,0 +1,33 @@
+FROM python:3.11-slim AS builder
+
+WORKDIR /build
+COPY requirements_master.txt .
+RUN pip install --no-cache-dir -r requirements_master.txt
+
+FROM python:3.11-slim
+
+ENV TZ=Europe/Berlin
+
+# Nur http/ssh - keine Audio/Display-Tools
+RUN apt-get update -qq && \
+    apt-get install -y --no-install-recommends curl openssh-client && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY --from=builder /usr/local/lib/python3.11/site-packages/ \
+    /usr/local/lib/python3.11/site-packages/
+COPY master/ ./master/
+
+# Datenverzeichnis (SQLite-Gedächtnis) – Volume in der compose-Datei
+RUN mkdir -p /data
+
+# Läuft nicht privilegiert
+RUN useradd -m -u 1000 master && chown -R master /app /data
+USER master
+
+EXPOSE 8791
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s \
+  CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8791/healthz', timeout=3).status==200 else 1)"
+
+CMD ["python", "-m", "master.main"]

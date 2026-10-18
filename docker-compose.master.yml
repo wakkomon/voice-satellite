@@ -1,0 +1,58 @@
+# Voice-Satellite Master (2.0.0alpha)
+# Läuft auf dev-server (x86_64, 16 CPU) – übernimmt Indexing + Raspi-Verwaltung
+version: '3.9'
+
+services:
+  voice-satellite-master:
+    image: voice-satellite-master:2.0.0alpha
+    build:
+      context: .
+      dockerfile: Dockerfile.master
+    container_name: voice-satellite-master
+    restart: unless-stopped
+
+    # ── Volume: /m = CIFS-Mount vom Host (1:1 wie Satellite) ──
+    volumes:
+      - /media/fileserver:/m:ro
+      - index-data:/data
+      # Master-SSH-Key für Pi-Verwaltung (Key-Only, BatchMode)
+      - /home/hermes/.ssh/vs_master_ed25519:/home/master/.ssh/vs_master_ed25519:ro
+
+    # ── Environment (oder .env.master) ──
+    env_file:
+      - .env.master
+
+    # ── API Port ──
+    ports:
+      - "8791:8791"    # Master API (Satelliten + Web-Frontend)
+
+    # ── Ressourcen (kein Overkill, aber mehr als Raspi) ──
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '4.0'
+
+    # ── Health Check (liefert 200, sobald die API antwortet) ──
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8791/healthz', timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+    # ── Labels (für Docker-UI/Portainer) ──
+    labels:
+      - "com.voice-satellite.role=master"
+      - "com.voice-satellite.version=2.0.0alpha"
+
+    # ── Satellite-Discovery ──
+    environment:
+      SATELLITE_NETWORK: "192.168.1.0/24"
+      # Bekannte Satelliten (ip[,mac];ip[,mac]) – MAC wird bei Erkennung gelernt
+      SATELLITES: "192.168.1.32;192.168.1.26"
+      SSH_USER: "pi"
+
+volumes:
+  index-data:
+    name: voice-satellite-index-data

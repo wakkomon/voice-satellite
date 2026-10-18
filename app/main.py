@@ -452,9 +452,17 @@ def main():
     web.start(p)                    # Debug-/Health-HTTP im Hintergrundthread
     _start_mcp_server()              # MCP-Remote-Steuerung
     router.warm_async()             # LLM-Modell im Hintergrund vorwärmen
-    # M3U-Index im Hintergrund aufbauen (vermeidet langsame CIFS-Scans pro Befehl)
+    # M3U-Index im Hintergrund (2.0alpha): Primärquelle ist der Master-Container
+    # (dev, CIFS-Scanner). Satellite zieht fertigen Index per HTTP.
+    # Lokaler CIFS-Scan nur als Fallback ohne Master.
     from . import intent as _intent
-    _intent.start_m3u_indexer(config.MUSIC_ROOT)
+    if config.MASTER_URL:
+        log.info("Medien-Index: Master-Index-Sync gestartet (%s)",
+                 config.MASTER_URL)
+        from . import master_index as _mi
+        _mi.start_sync()
+    else:
+        _intent.start_m3u_indexer(config.MUSIC_ROOT)
     p.run()
 
 

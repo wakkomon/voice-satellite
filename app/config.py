@@ -249,3 +249,12 @@ MCP_HOST        = _env("MCP_HOST", "0.0.0.0")
 MCP_PORT        = int(_env("MCP_PORT", "8780"))
 
 LOG_LEVEL       = _env("LOG_LEVEL", "INFO")
+
+# ── Master (2.0.0alpha) ─────────────────────────────────────────
+# Indexing wandert in den Master-Container (dev-server, x86): er
+# scannert CIFS und liefert den fertigen Index per HTTP. Der
+# Satellite scannt CIFS nur noch als Fallback, wenn MASTER_URL
+# leer ist oder der Master nicht erreichbar.
+# Beispiel: MASTER_URL=http://192.168.1.24:8791
+MASTER_URL      = _env("MASTER_URL", "")
+MASTER_POLL_SEC = int(_env("MASTER_POLL_SEC", "300"))  # Refresh-Intervall (s)
