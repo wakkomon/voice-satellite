@@ -14,6 +14,7 @@ import os
 import shutil
 import socket
 import subprocess
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -62,7 +63,21 @@ class SatManager:
         self._discovery_thread: threading.Thread | None = None
         self._monitor_thread: threading.Thread | None = None
         self._key_local: str | None = None
+        self._status_cb = None  # Callable[[str, Satellite], None] – bei Status-Wechsel
         self._ensure_ssh_key()
+
+    def set_status_callback(self, cb) -> None:
+        """Callback(mac, sat) bei jeder Status-/Docker-Änderung (für SSE)."""
+        self._status_cb = cb
+
+    def _notify(self, mac: str, sat: "Satellite") -> None:
+        """Status-Änderung an UI weitergeben (außerhalb des Locks aufrufen!)."""
+        if self._status_cb is None:
+            return
+        try:
+            self._status_cb(mac, sat)
+        except Exception:
+            log.debug("Status-Callback fehlgeschlagen", exc_info=True)
 
     def _ensure_ssh_key(self) -> None:
         """SSH-Key einrichten: Key aus Volume (ro) nach ~/.vs-ssh (0600) kopieren.
@@ -72,16 +87,20 @@ class SatManager:
         """
         try:
             sshdir = os.path.join(os.path.expanduser("~"), ".vs-ssh")
-            os.makedirs(sshdir, mode=0o700, exist_ok=True)
-            key = os.path.join(sshdir, "id_ed25519")
-            if os.path.exists(SSH_PKEY):
+            try:
+                os.makedirs(sshdir, mode=0o700, exist_ok=True)
+                key = os.path.join(sshdir, "id_ed25519")
                 shutil.copyfile(SSH_PKEY, key)
                 os.chmod(key, 0o600)
-                self._key_local = key
-                log.info("SSH-Key nach %s kopiert", key)
-            else:
-                self._key_local = None
-                log.warning("SSH-Key %s fehlt – Discovery läuft nur IP-basiert", SSH_PKEY)
+            except (PermissionError, OSError):
+                # Mount-Punkt evtl. root-eigentlich (Docker-Default) → /tmp-Fallback
+                sshdir = os.path.join(tempfile.gettempdir(), "vs-ssh")
+                os.makedirs(sshdir, mode=0o700, exist_ok=True)
+                key = os.path.join(sshdir, "id_ed25519")
+                shutil.copyfile(SSH_PKEY, key)
+                os.chmod(key, 0o600)
+            self._key_local = key
+            log.info("SSH-Key nach %s kopiert", key)
         except Exception:
             self._key_local = None
             log.exception("SSH-Key-Setup fehlgeschlagen – Discovery läuft IP-basiert weiter")
@@ -121,33 +140,36 @@ class SatManager:
 
     def _discover_loop(self) -> None:
         """Periodischer paralleler Port-22-Scan, dann SSH-Identifikation."""
-        net = os.environ.get("SATELLITE_NETWORK", "192.168.1.0/24")
-        prefix = ".".join(net.split(".")[:3]) + "."
+        sats_cfg = self._known_sats()  # ip -> mac (aus SATELLITES)
+        if sats_cfg:
+            ips = list(sats_cfg.keys())   # Nur explizit definierte IPs
+        else:
+            net = os.environ.get("SATELLITE_NETWORK", "192.168.1.0/24")
+            prefix = ".".join(net.split(".")[:3]) + "."
+            my_ip = self._own_ip()
+            ips = [f"{prefix}{i}" for i in range(1, 254)
+                   if f"{prefix}{i}" != my_ip]
         interval = int(os.environ.get("SATELLITE_DISCOVERY_SEC", "120"))
-        my_ip = self._own_ip()
         from concurrent.futures import ThreadPoolExecutor
 
         while True:
             t0 = time.time()
-            ips = [f"{prefix}{i}" for i in range(1, 254)
-                   if f"{prefix}{i}" != my_ip]
             with ThreadPoolExecutor(max_workers=64) as pool:
                 open_ips = [ip for ip, ok in zip(ips, pool.map(self._tcp_probe, ips)) if ok]
             log.info("Discovery: %d Host(s) mit offenem Port 22 in %.1f s",
                      len(open_ips), time.time() - t0)
             for ip in open_ips:
                 self._identify(ip)
-            # Konfigurierte Satelliten (SATELLITES) als bekannt markieren,
-            # falls Port 22 z. B. per Firewall gefiltert ist
-            for ip, mac in self._known_sats().items():
-                self._upsert(ip, mac or None, ip, known=True)
-            # Alle nicht (neu) gesehenen Satelliten → offline
+            # Nicht (neu) gesehene explizite Satelliten → online halten
+            for ip in ips:
+                self._upsert(ip, sats_cfg.get(ip), "", known=True)
             with self._lock:
                 for mac, sat in self.satellites.items():
                     if sat.status == "online" and (
                             time.time() - sat.last_seen > 3 * interval):
                         sat.status = "offline"
                         log.warning("Satellit offline (nicht im Scan): %s", sat.hostname)
+                        self._notify(mac, sat)
             time.sleep(interval)
 
     def _own_ip(self) -> str:
@@ -188,16 +210,15 @@ class SatManager:
             if key in self.satellites:
                 sat = self.satellites[key]
                 sat.ip = ip
-                if hostname and sat.hostname.startswith("sat-") and hostname != sat.hostname:
+                if hostname and hostname != sat.hostname:
                     sat.hostname = hostname
-                elif known and not hostname and sat.hostname.startswith("sat-"):
-                    sat.hostname = f"sat-{ip.rsplit('.', 1)[-1]}"
                 sat.status = "online"
                 sat.last_seen = time.time()
                 sat.is_known = sat.is_known or known
             else:
                 self.satellites[key] = Satellite(
-                    mac=key, ip=ip, hostname=hostname or f"sat-{ip.rsplit('.', 1)[-1]}",
+                    mac=key, ip=ip,
+                    hostname=hostname or f"sat-{ip.rsplit('.', 1)[-1]}",
                     status="online", last_seen=time.time(), is_known=known,
                 )
                 log.info("Satellit %s: %s (%s)",
@@ -245,9 +266,11 @@ class SatManager:
                     if age > interval * max_missed and sat.status != "offline":
                         sat.status = "offline"
                         log.warning("Satellit offline: %s (%.0f s)", sat.hostname, age)
+                        self._notify(mac, sat)
                     elif age < interval * 2 and sat.status == "offline":
                         sat.status = "online"
                         log.info("Satellit wieder online: %s", sat.hostname)
+                        self._notify(mac, sat)
             time.sleep(interval)
 
     def record_heartbeat(self, mac: str, data: dict) -> None:

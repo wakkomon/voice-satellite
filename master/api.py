@@ -22,6 +22,7 @@ import threading
 import time
 
 from starlette.applications import Starlette
+from starlette.background import BackgroundTask
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse, Response
 from starlette.routing import Route
@@ -31,6 +32,8 @@ from .indexer import _build_media_index, load_index_cache, save_index
 from .manager import SatManager
 
 log = logging.getLogger("master.api")
+
+_STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
 # Globale Zustände
 _index_data: dict | None = None
@@ -159,11 +162,35 @@ async def _satellite_list(req: Request) -> JSONResponse:
     return JSONResponse(satellites)
 
 
+async def _ui(req: Request) -> Response:
+    """Web-UI (Dashboard) – single-file HTML."""
+    path = os.path.join(_STATIC_DIR, "index.html")
+    with open(path, "rb") as f:
+        return Response(f.read(), media_type="text/html; charset=utf-8")
+
+
 # ── App Setup ───────────────────────────────────────────────────
 
 manager = SatManager()
 
+
+def _on_sat_status(mac: str, sat) -> None:
+    """Manager-Callback: Status-Wechsel per SSE an die Web-UI senden."""
+    payload = {
+        "mac": mac, "ip": sat.ip, "hostname": sat.hostname,
+        "status": sat.status, "docker_running": sat.docker_running,
+    }
+    try:
+        asyncio.get_running_loop().call_soon_threadsafe(
+            _broadcast, "sat_status", payload)
+    except RuntimeError:
+        _broadcast("sat_status", payload)  # Fallback (selbe Loop)
+
+
+manager.set_status_callback(_on_sat_status)
+
 routes = [
+    Route("/", _ui),
     Route("/healthz", lambda req: JSONResponse({"ok": True})),
     Route("/api/heartbeat", _heartbeat),
     Route("/api/music", _api_music),

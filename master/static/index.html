@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voice-Satellite Master</title>
+<style>
+:root { --bg:#12141a; --card:#1c1f28; --fg:#e8eaf0; --dim:#8b90a0; --acc:#4fa3ff; --ok:#3ecf8e; --warn:#f0a03c; --err:#f0605a; }
+* { box-sizing:border-box; }
+body { margin:0; font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; background:var(--bg); color:var(--fg); padding:24px; }
+h1 { font-size:1.3rem; font-weight:600; margin:0 0 4px; }
+h1 .v { color:var(--dim); font-size:0.85rem; font-weight:400; margin-left:8px; }
+.sub { color:var(--dim); font-size:0.85rem; margin-bottom:20px; }
+.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:16px; }
+.card { background:var(--card); border-radius:10px; padding:16px 18px; }
+.card h2 { font-size:0.8rem; text-transform:uppercase; letter-spacing:0.06em; color:var(--dim); margin:0 0 12px; }
+.row { display:flex; justify-content:space-between; align-items:center; padding:5px 0; font-size:0.92rem; }
+.row .k { color:var(--dim); }
+.badge { display:inline-block; padding:2px 10px; border-radius:20px; font-size:0.75rem; font-weight:600; }
+.badge.ok { background:#173328; color:var(--ok); }
+.badge.warn { background:#33291a; color:var(--warn); }
+.badge.err { background:#33201f; color:var(--err); }
+.badge.dim { background:#262a35; color:var(--dim); }
+table { width:100%; border-collapse:collapse; font-size:0.9rem; }
+th { text-align:left; color:var(--dim); font-weight:500; font-size:0.75rem; text-transform:uppercase; padding:4px 8px; border-bottom:1px solid #2a2e3a; }
+td { padding:7px 8px; border-bottom:1px solid #23273300; }
+tr:last-child td { border-bottom:none; }
+.dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:8px; vertical-align:middle; }
+.dot.on { background:var(--ok); }
+.dot.off { background:var(--err); }
+button { background:var(--acc); color:#fff; border:none; border-radius:6px; padding:5px 12px; font-size:0.78rem; cursor:pointer; margin-right:6px; }
+button:hover { filter:brightness(1.15); }
+button.warn { background:var(--warn); }
+button:disabled { opacity:0.4; cursor:default; }
+.log { font-family:ui-monospace,Menlo,monospace; font-size:0.78rem; max-height:220px; overflow-y:auto; background:#0d0f14; border-radius:8px; padding:10px; color:#9fd49f; }
+.log .t { color:var(--dim); margin-right:8px; }
+.num { font-variant-numeric:tabular-nums; }
+a { color:var(--acc); text-decoration:none; }
+footer { margin-top:24px; color:var(--dim); font-size:0.78rem; }
+</style>
+</head>
+<body>
+<h1>Voice-Satellite Master <span class="v" id="version">2.0.0alpha</span></h1>
+<div class="sub" id="hostline">dev-Server · Port 8791</div>
+
+<div class="grid">
+  <div class="card">
+    <h2>System</h2>
+    <div class="row"><span class="k">Index-Status</span><span id="idx-status" class="badge dim">…</span></div>
+    <div class="row"><span class="k">Letzter Re-Scan</span><span class="k num" id="idx-ts">–</span></div>
+    <div class="row"><span class="k">Playlists</span><span class="num" id="idx-m3u">–</span></div>
+    <div class="row"><span class="k">Audiotracks</span><span class="num" id="idx-mp3">–</span></div>
+    <div style="margin-top:12px">
+      <button id="btn-rebuild">Index neu bauen</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Satelliten <span class="num" id="sat-count" style="color:var(--dim)"></span></h2>
+    <table>
+      <thead><tr><th>Satellit</th><th>IP</th><th>Docker</th><th>Aktion</th></tr></thead>
+      <tbody id="sat-body"><tr><td colspan="4" style="color:var(--dim)">lade …</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Events (SSE)</h2>
+    <div class="log" id="log"><div><span class="t">–</span>verbinde …</div></div>
+  </div>
+</div>
+
+<footer>API: /api/heartbeat · /api/satellites · /api/music · /index/rebuild · /events</footer>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fmtTs = ts => ts ? new Date(ts*1000).toLocaleTimeString('de-DE') : '–';
+
+async function refresh() {
+  try {
+    const [hb, sats, music] = await Promise.all([
+      fetch('/api/heartbeat').then(r => r.ok || r.status === 202 ? r.json() : {}),
+      fetch('/api/satellites').then(r => r.json()).catch(() => []),
+      fetch('/api/music', {headers:{'Accept-Encoding':'identity'}}).then(r => r.json()).catch(() => null),
+    ]);
+
+    // System
+    const idxOk = hb.status === 'running' || (hb.index_ts > 0);
+    const idx = $('idx-status');
+    if (hb.status === 'indexing') { idx.className='badge warn'; idx.textContent='Indexing …'; }
+    else if (idxOk) { idx.className='badge ok'; idx.textContent='aktiv'; }
+    else { idx.className='badge dim'; idx.textContent='kein Index'; }
+    $('idx-ts').textContent = hb.index_ts ? fmtTs(hb.index_ts) + (hb.index_busy ? ' (läuft …)' : '') : '–';
+    if (music) {
+      $('idx-m3u').textContent = (music.m3u_all||[]).length.toLocaleString('de-DE');
+      $('idx-mp3').textContent = (music.mp3_all||[]).length.toLocaleString('de-DE');
+    }
+
+    // Satelliten
+    const known = sats.filter(s => s.known);
+    $('sat-count').textContent = `(${known.filter(s=>s.status==='online').length} online / ${known.length} bekannt)`;
+    $('sat-body').innerHTML = known.length ? known.map(s => `
+      <tr>
+        <td><span class="dot ${s.status==='online'?'on':'off'}"></span>${esc(s.hostname || s.ip)}</td>
+        <td class="num">${esc(s.ip)}</td>
+        <td>${s.docker_running ? '<span class="badge ok">läuft</span>' : '<span class="badge dim">stopt</span>'}</td>
+        <td>
+          <button onclick="act('${esc(s.mac)}','restart')">Start</button>
+          <button class="warn" onclick="act('${esc(s.mac)}','pause')">Pause</button>
+        </td>
+      </tr>`).join('')
+      : '<tr><td colspan="4" style="color:var(--dim)">keine Satelliten konfiguriert</td></tr>';
+  } catch (e) {
+    $('idx-status').className='badge err'; $('idx-status').textContent='nicht erreichbar';
+  }
+}
+
+async function act(mac, action) {
+  const label = action === 'restart' ? 'Start' : 'Pause';
+  logEvent('sat_action', {mac, action: label});
+  try {
+    const r = await fetch(`/api/satellite/${mac}/${action}`, {method:'POST'});
+    const j = await r.json();
+    logEvent('sat_action', {mac, action: label, result: r.ok ? 'ok' : JSON.stringify(j)});
+  } catch (e) { logEvent('sat_action', {mac, action: label, result: 'Fehler: '+e}); }
+  setTimeout(refresh, 2500);
+}
+
+function logEvent(event, data) {
+  const log = $('log');
+  const t = new Date().toLocaleTimeString('de-DE');
+  let msg;
+  if (event === 'index_done') msg = `Index fertig (${data.ts ? fmtTs(data.ts) : ''}${data.elapsed ? `, ${Math.round(data.elapsed)}s` : ''})`;
+  else if (event === 'index_error') msg = 'Index-Fehler!';
+  else if (event === 'sat_status') msg = `Satellit ${data.hostname||data.ip}: ${data.status}`;
+  else if (event === 'sat_action') msg = `Aktion ${data.action} → ${data.mac}: ${data.result||'…'}`;
+  else msg = `${event}: ${JSON.stringify(data)}`;
+  log.insertAdjacentHTML('afterbegin', `<div><span class="t">${t}</span>${esc(msg)}</div>`);
+  while (log.children.length > 60) log.lastChild.remove();
+}
+
+function connectSSE() {
+  const es = new EventSource('/events');
+  es.onopen = () => logEvent('connected', {});
+  es.addEventListener('index_done', e => logEvent('index_done', JSON.parse(e.data).data));
+  es.addEventListener('index_error', e => logEvent('index_error', JSON.parse(e.data).data));
+  es.addEventListener('sat_status', e => logEvent('sat_status', JSON.parse(e.data).data));
+  es.onerror = () => { es.close(); setTimeout(connectSSE, 5000); };
+}
+
+$('btn-rebuild').onclick = async () => {
+  const b = $('btn-rebuild'); b.disabled = true; b.textContent = 'läuft …';
+  logEvent('index_rebuild', {action:'start'});
+  try {
+    const r = await fetch('/index/rebuild', {method:'POST'});
+    const j = await r.json();
+    logEvent('index_rebuild', {action:'start', result:j.status||r.status});
+    if (j.status !== 'started') { b.disabled = false; b.textContent = 'Index neu bauen'; }
+  } catch(e) { b.disabled = false; b.textContent = 'Index neu bauen'; }
+};
+
+refresh();
+connectSSE();
+setInterval(refresh, 30000);
+</script>
+</body>
+</html>
