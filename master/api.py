@@ -222,13 +222,20 @@ async def _config_sat_get(req: Request) -> JSONResponse:
     return JSONResponse(config_store.get_effective(mac))
 
 
+async def _config_push(req: Request) -> JSONResponse:
+    """POST /api/config/push → Config an alle (online) Satelliten pushen."""
+    await _push_config_to_all()
+    return JSONResponse({"ok": True})
+
+
 async def _config_apply(req: Request) -> JSONResponse:
     """GET /api/config/apply?mac=...&version=... → Satellite-Pull.
 
-    Der Satellite ruft dies im Heartbeat-Loop auf. Ist die angegebene
-    version älter als die aktuelle, liefert der Master die gültige
-    Konfiguration; sonst leeres overrides (kein Redo nötig).
+    POST (ohne mac) → aktiv an alle Satelliten pushen (WebUI-Button).
     """
+    if req.method == "POST":
+        await _push_config_to_all()
+        return JSONResponse({"ok": True})
     mac = req.query_params.get("mac", "").lower()
     try:
         client_ver = int(req.query_params.get("version", "0"))
@@ -395,7 +402,8 @@ routes = [
     # (b) Zentrale Konfigurationsverwaltung
     Route("/api/config", _config_get),
     Route("/api/config", _config_put, methods=["PUT"]),
-    Route("/api/config/apply", _config_apply),
+    Route("/api/config/apply", _config_apply, methods=["GET", "POST"]),
+    Route("/api/config/push", _config_push, methods=["POST"]),
     Route("/api/config/satellite/{mac}", _config_sat_get),
     Route("/api/config/push/{mac}", _push_config_sat, methods=["POST"]),
     # (c) Zentrale API-Proxy-Endpunkte (TTS/STT/LLM)

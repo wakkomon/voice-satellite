@@ -161,6 +161,7 @@ const TYPE_MAP = {
 let currentDomain = "tts";
 let globalConfig = {};
 let allSats = {};
+let knownSats = [];  // Heartbeat-Satelliten (für Override-Auswahl)
 
 // ── Tab switching ──
 document.getElementById('cfg-tabs').addEventListener('click', e => {
@@ -244,7 +245,7 @@ async function saveGlobalConfig() {
     const r = await fetch('/api/config', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(overrides),
+      body: JSON.stringify({ global: overrides }),
     });
     const j = await r.json();
     if (r.ok) {
@@ -273,23 +274,123 @@ async function pushConfigToAll() {
 }
 
 // ── Satellite overrides ──
+let selectedSatMac = "";
+let satOverrideDraft = {};
+
 function renderSatOverrides() {
   const container = $('sat-overrides');
-  const sats = Object.entries(allSats);
-  if (!sats.length) {
-    container.innerHTML = '<p style="color:var(--dim);font-size:0.85rem">Keine Overrides konfiguriert</p>';
+  const existingEntries = Object.entries(allSats);
+
+  // Dropdown für verfügbare Satelliten
+  const satList = Object.entries(allSats);
+  const dropdownHtml = `
+    <div style="margin-bottom:12px;display:flex;gap:8px;align-items:center">
+      <select id="sat-overrides-select" style="background:#0d0f14;border:1px solid #2a2e3a;color:var(--fg);padding:4px 8px;border-radius:4px;font-size:0.82rem;min-width:200px">
+        <option value="">-- Satellit wählen --</option>
+        ${satList.map(([mac]) => `<option value="${esc(mac)}" ${selectedSatMac===mac?'selected':''}>${esc(mac)}</option>`).join('')}
+      </select>
+    </div>
+  `;
+
+  // Override-Felder für gewählten Satelliten
+  const fieldsHtml = selectedSatMac ? renderOverrideFields(selectedSatMac) : '';
+
+  container.innerHTML = dropdownHtml + fieldsHtml;
+
+  // Dropdown-Listener
+  const sel = $('sat-overrides-select');
+  if (sel) {
+    sel.addEventListener('change', e => {
+      selectedSatMac = e.target.value;
+      loadSatOverride(selectedSatMac);
+    });
+  }
+}
+
+function renderOverrideFields(mac) {
+  const draft = satOverrideDraft[mac] || {};
+  const fields = DOMAINS[currentDomain] || [];
+
+  return `<div class="sat-override-row" style="border:1px solid #2a2e3a">
+    <h3>${esc(mac)}</h3>
+    <table class="cfg-table">
+      <thead><tr><th class="key-col">Schlüssel</th><th class="type-col">Typ</th><th>Wert</th></tr></thead>
+      <tbody>
+        ${fields.map(f => {
+          const val = draft[f.key] ?? '';
+          if (f.type === 'bool') {
+            return `<tr>
+              <td class="key-col">${esc(f.key)}</td>
+              <td class="type-col">B</td>
+              <td><select class="sat-override-input" data-key="${esc(f.key)}" data-type="bool">
+                <option value="true" ${val==='true'||val===true?'selected':''}>true</option>
+                <option value="false" ${val!=='true'&&val!==true?'selected':''}>false</option>
+              </select></td>
+            </tr>`;
+          }
+          return `<tr>
+            <td class="key-col">${esc(f.key)}</td>
+            <td class="type-col">T</td>
+            <td><input type="text" class="sat-override-input" data-key="${esc(f.key)}" value="${esc(String(val))}" /></td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+  </div>`;
+}
+
+async function loadSatOverride(mac) {
+  if (!mac) {
+    satOverrideDraft = {};
+    renderSatOverrides();
     return;
   }
-  container.innerHTML = sats.map(([mac, satCfg]) => {
-    const entries = Object.entries(satCfg);
-    const entriesHtml = entries.map(([k, v]) =>
-      `<span style="font-family:monospace;font-size:0.8rem;color:var(--dim)">${esc(k)}=${esc(String(v))}</span>`
-    ).join(', ');
-    return `<div class="sat-override-row">
-      <h3>${mac}</h3>
-      <span style="font-size:0.82rem">${entriesHtml || 'keine Overrides'}</span>
-    </div>`;
-  }).join('');
+  try {
+    const r = await fetch(`/api/config/satellite/${mac}`);
+    if (r.ok) {
+      const j = await r.json();
+      satOverrideDraft[mac] = j;
+    }
+  } catch (e) {
+    console.error('Override laden fehlgeschlagen:', e);
+  }
+  renderSatOverrides();
+}
+
+async function saveSatOverride() {
+  if (!selectedSatMac) {
+    showStatus('sat-override-status', 'Bitte Satellit wählen', 'err');
+    return;
+  }
+  const inputs = document.querySelectorAll('.sat-override-input');
+  const overrides = {};
+  inputs.forEach(input => {
+    const key = input.dataset.key;
+    let val = input.value;
+    if (input.dataset.type === 'bool') val = input.value === 'true';
+    overrides[key] = val;
+  });
+
+  try {
+    const r = await fetch('/api/config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ satellites: { [selectedSatMac]: overrides } }),
+    });
+    const j = await r.json();
+    if (r.ok) {
+      showStatus('sat-override-status', `Override gespeichert (v${j.version || '?'})`, 'ok');
+      globalConfig = {}; // neu laden
+      allSats = {};
+      await loadConfig();
+      selectedSatMac = '';
+      renderSatOverrides();
+    } else {
+      showStatus('sat-override-status', 'Fehler: ' + (j.error || r.status), 'err');
+    }
+  } catch (e) {
+    showStatus('sat-override-status', 'Fehler: ' + e, 'err');
+  }
 }
 
 // ── Helpers ──
@@ -303,9 +404,7 @@ function showStatus(id, msg, cls) {
 // ── Event handlers ──
 $('btn-save-global').onclick = saveGlobalConfig;
 $('btn-apply-all').onclick = pushConfigToAll;
-$('btn-save-sat-override').onclick = async () => {
-  showStatus('sat-override-status', 'Override-Speicherung erfordert Satelliten-Auswahl (UI-Planung)', '');
-};
+$('btn-save-sat-override').onclick = saveSatOverride;
 
 // ── Existing refresh / SSE ──
 async function refresh() {
