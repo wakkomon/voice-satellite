@@ -194,6 +194,26 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(502, {"error": "TTS leer"})
             threading.Thread(target=self._play, args=(wav,), daemon=True).start()
             return self._send(200, {"ok": True, "bytes": len(wav)})
+        if self.path == "/apply-config":
+            # Zentrale Konfiguration (Master → Satellite). Body:
+            # {"overrides": {KEY: VAL, …}, "version": N?}
+            # Wird OHNE Neustart wirksam (dynamischer Config-Konsum in
+            # tts.py/stt.py/router.py). Antwort: {"applied":[…],
+            # "ignored":[…], "config_version": N}.
+            overrides = data.get("overrides")
+            if not isinstance(overrides, dict):
+                return self._send(400, {"error": "overrides (dict) fehlt"})
+            applied, ignored = config.apply_overrides(overrides)
+            if applied:
+                config.bump_config_version()
+            self._ev(f"Config-Apply: {len(applied)} Schlüssel geändert, "
+                     f"{len(ignored)} ignoriert → v{config.config_version()}")
+            return self._send(200, {
+                "ok": True,
+                "applied": sorted(applied),
+                "ignored": sorted(ignored),
+                "config_version": config.config_version(),
+            })
         if self.path == "/intent":
             if not text:
                 return self._send(400, {"error": "text fehlt"})

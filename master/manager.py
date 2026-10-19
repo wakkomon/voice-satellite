@@ -273,18 +273,53 @@ class SatManager:
                         self._notify(mac, sat)
             time.sleep(interval)
 
+    def _find_by_ip(self, ip: str) -> str | None:
+        """Bestehenden Satellite-Key mit gleicher IP finden (Docker-MAC-Merge)."""
+        for key, s in self.satellites.items():
+            if s.ip == ip:
+                return key
+        return None
+
     def record_heartbeat(self, mac: str, data: dict) -> None:
-        """Herzschlag empfangen (von Satellite-API)."""
+        """Herzschlag empfangen (von Satellite-API).
+
+        data erwartet: hostname, ip, docker_running, pipeline, system, components.
+        Auch für MACs, die noch nicht bekannt sind (neu entdeckte Satelliten).
+        """
         with self._lock:
-            if mac not in self.satellites:
-                self.satellites[mac] = Satellite(
-                    mac=mac, ip="", hostname=f"sat-{mac}",
-                )
-            sat = self.satellites[mac]
+            ip = data.get("ip", "")
+            key = mac or ip
+            if key not in self.satellites:
+                # Docker-Fall: MAC- oder IP-Eintrag existiert noch nicht.
+                # Versuche zuerst den bestehenden IP-Eintrag zu finden
+                # (Discovery hat ggf. einen IP-basierten Eintrag angelegt).
+                existing = self._find_by_ip(ip) if ip else None
+                if existing is not None:
+                    key = existing
+                else:
+                    self.satellites[key] = Satellite(
+                        mac=mac,
+                        ip=ip,
+                        hostname=data.get("hostname") or f"sat-{key}",
+                    )
+            # Merge: auch wenn der KEY bereits existiert (z.B. MAC-Eintrag),
+            # aktualisiere die IP auf die echte Host-IP (NAT-Quelle), falls
+            # sie vom Discovery-Eintrag abweicht.
+            sat = self.satellites[key]
+            if ip and sat.ip != ip:
+                sat.ip = ip
+                log.debug("Satellite %s: IP aktualisiert auf %s (NAT-Quelle)", key, ip)
+            mac_known = key
+            if data.get("hostname") and data["hostname"] != sat.hostname:
+                sat.hostname = data["hostname"]
             sat.status = "online"
             sat.last_seen = time.time()
-            sat.docker_running = data.get("docker_running", sat.docker_running)
+            if "docker_running" in data:
+                sat.docker_running = bool(data["docker_running"])
             sat.info = data
+            sat.is_known = True  # Herzschlag = bekannt
+        # Status-Update an UI (außerhalb des Locks)
+        self._notify(key, sat)
 
     # ── Docker Actions ─────────────────────────────────────────
 
@@ -362,7 +397,7 @@ class SatManager:
     # ── Query ──────────────────────────────────────────────────
 
     async def list_satellites(self) -> list[dict]:
-        """Liste aller bekannten Satelliten."""
+        """Liste aller bekannten Satelliten (inkl. Heartbeat-Details)."""
         with self._lock:
             return [
                 {
@@ -373,6 +408,9 @@ class SatManager:
                     "last_seen": s.last_seen,
                     "docker_running": s.docker_running,
                     "known": s.is_known,
+                    "pipeline": s.info.get("pipeline"),
+                    "system": s.info.get("system"),
+                    "components": s.info.get("components"),
                 }
                 for s in self.satellites.values()
             ]

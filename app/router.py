@@ -127,8 +127,28 @@ def _is_state_question(t):
     return on and off
 
 
+def _smarthome_proxy_path(item_name: str, state_endpoint: bool = False) -> str:
+    """Master-Proxy-Pfad für SmartHome-Aufrufe.
+
+    Geht über den Master (/proxy/openhab), nicht direkt nach OpenHAB.
+    """
+    master = getattr(config, "MASTER_URL", "")
+    if not master:
+        # Fallback: direkter Aufruf (nur wenn kein Master konfiguriert)
+        return f"{config.OPENHAB_URL}/{quote(item_name, safe='')}" + (
+            "/state" if state_endpoint else ""
+        )
+    # Master-Proxy: {MASTER_URL}/proxy/openhab/{encoded_item}[/state]
+    base = f"{master}/proxy/openhab/{quote(item_name, safe='')}"
+    return base + ("/state" if state_endpoint else "")
+
+
 def try_openhab(text):
-    """-> Antwortstring wenn Befehl an openHAB ging, sonst None (-> LLM)."""
+    """-> Antwortstring wenn Befehl an openHAB ging, sonst None (-> LLM).
+
+    Alle SmartHome-API-Aufrufe laufen über den Master-Proxy (/proxy/openhab),
+    nicht direkt nach OpenHAB.
+    """
     match = _match_device(text)
     if not match:
         return None
@@ -144,21 +164,19 @@ def try_openhab(text):
     if not item_name:
         log.warning("Item ohne Namen – nicht schaltbar: %r", item.get("label"))
         return None
-    # Item-Name URL-encodiert: Namen mit '/' & Co. duerfen keine
-    # kaputten REST-Pfade bauen (openHAB antwortete sonst 'URI is null').
-    url = f"{config.OPENHAB_URL}/{quote(item_name, safe='')}"
+    # Master-Proxy-Pfad (oder Fallback direkt zu OpenHAB)
     if value is None:
         # Gerät erkannt aber kein Zustand -> Status abfragen
         try:
-            st = http.get_text(f"{url}/state",
-                               token=config.OPENHAB_TOKEN, timeout=10)
+            st = http.get_text(_smarthome_proxy_path(item_name, state_endpoint=True),
+                               token="", timeout=10)
             st = {"ON": "an", "OFF": "aus"}.get(st, st)
             return f"{label} ist {st}."
         except Exception as e:
             log.error("openHAB-Status fehlgeschlagen: %s", e)
             return "Bei der Verbindung zum Smarthome ist ein fehler aufgetreten."
     try:
-        ok = http.post_raw(url, value, token=config.OPENHAB_TOKEN, timeout=10)
+        ok = http.post_raw(_smarthome_proxy_path(item_name), value, token="", timeout=10)
         if ok:
             if value in ("ON", "OFF"):
                 return f"{label} ist {'an' if value == 'ON' else 'aus'}."

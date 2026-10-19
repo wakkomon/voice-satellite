@@ -1,0 +1,205 @@
+"""Zentrale API-Proxy-Endpunkte am Master (2.0.0alpha).
+
+Der Master liegt zwischen Satelliten und den Voice-/LLM-Backends:
+
+    /proxy/tts   POST  →  TTS-Backend   (OpenAI /v1/audio/speech, Streaming-WAV)
+    /proxy/stt   POST  →  STT-Backend   (multipart /v1/audio/transcriptions)
+    /proxy/llm   POST  →  LLM-Backend   (OpenAI /v1/chat/completions)
+
+Ziele + Secrets: zentrale Config (master/satconfig.py) bzw. ENV-Fallback
+am Master. Satelliten senden OHNE Secret; der Proxy injiziert das
+Backend-Token. Damit die Secrets nie auf den Satelliten/der Web-UI landen.
+
+Zusätzlich: Optionales Per-Satellite-TOKEN (Authorization: Bearer) gegen
+unbefugte Fremdnutzung des Proxys, wenn AUTH_TOKEN gesetzt ist.
+"""
+from __future__ import annotations
+
+import logging
+import os
+from urllib.parse import urlparse
+
+import httpx
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response, StreamingResponse
+
+log = logging.getLogger("master.proxy")
+
+# ENV-Fallbacks, falls (noch) keine zentrale Config-URL hinterlegt ist.
+#
+# WICHTIG (Loop-Guard): Die hier genannten Werte sind die *echten Upstream-
+# Backends* (z.B. TTS-Container 192.168.1.31:7811), die am Master liegen.
+# Sie sind NICHT dieselben Keys, die in der zentralen Satellite-Config
+# (satconfig.EDITABLE_KEYS) gespeichert werden: Dort steht TTS_URL als
+# *Proxy-Adresse* (…/proxy/tts), an die die Satelliten sich wenden. Der
+# Proxy liest daher für sein Upstream-Ziel NIE TTS_URL aus dem Store, sondern
+# ausschließlich TTS_BACKEND_URL (oder den ENV-Fallback), sonst würde er sich
+# selbst anprechen (unendliche Schleife).
+ENV_TTS_URL = os.environ.get("TTS_BACKEND_URL", os.environ.get("TTS_URL",
+                                                              "http://192.168.1.31:7811/v1/audio/speech"))
+ENV_STT_URL = os.environ.get("STT_BACKEND_URL", os.environ.get("STT_URL", ""))
+ENV_LLM_URL = os.environ.get("LLM_BACKEND_URL", os.environ.get("LLM_URL", ""))
+ENV_TTS_TOKEN = os.environ.get("TTS_BACKEND_TOKEN", os.environ.get("TTS_TOKEN", ""))
+ENV_STT_TOKEN = os.environ.get("STT_BACKEND_TOKEN", os.environ.get("STT_TOKEN", ""))
+ENV_LLM_TOKEN = os.environ.get("LLM_BACKEND_TOKEN", os.environ.get("LLM_TOKEN", ""))
+ENV_OPENHAB_TOKEN = os.environ.get("OPENHAB_TOKEN", "")
+AUTH_TOKEN = os.environ.get("AUTH_TOKEN", "")  # leer = Auth aus
+
+
+def _is_self_proxy(url: str) -> bool:
+    """True, wenn url auf einen /proxy/-Endpoint dieses Masters zeigt
+    (Schutz gegen up-to-proxy-Schleifen bei falscher ENV-Konfiguration)."""
+    if not url:
+        return False
+    try:
+        p = urlparse(url)
+    except Exception:
+        return False
+    return p.path.split("?")[0].rstrip("/").startswith("/proxy/")
+
+
+def _upstream_url(key_url: str, env_url: str) -> str:
+    """Echtes Upstream-Backend (aus ENV, NIE aus dem Config-Store, wo die
+    Proxy-Adresse liegt) – mit Loop-Guard gegen up-to-proxy-Ziele."""
+    url = env_url or ""
+    if not url:
+        return ""
+    if _is_self_proxy(url):
+        log.warning("%s zeigt auf einen /proxy/-Endpoint – Loop unterbunden", key_url)
+        return ""
+    return url
+
+
+def _upstream_token(key_token: str, env_token: str) -> str:
+    """Backend-Token (Secret, bleibt ENV am Master – nie im Store/UI)."""
+    return env_token or ""
+
+
+def _authorized(req: Request) -> bool:
+    if not AUTH_TOKEN:
+        return True
+    auth = req.headers.get("authorization", "")
+    return auth == f"Bearer {AUTH_TOKEN}"
+
+
+def _auth_error(req: Request) -> Response | None:
+    if not _authorized(req):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return None
+
+
+def _headers(token: str, req: Request, extra: dict | None = None) -> dict:
+    h: dict = {}
+    if token:
+        h["Authorization"] = f"Bearer {token}"
+    ct = req.headers.get("content-type")
+    if ct:
+        h["Content-Type"] = ct
+    if extra:
+        h.update(extra)
+    return h
+
+
+async def proxy_tts(req: Request) -> Response:
+    """TTS-Proxy: JSON rein, audio/wav (Streaming) raus."""
+    if e := _auth_error(req):
+        return e
+    url = _upstream_url("TTS_URL", ENV_TTS_URL)
+    token = _upstream_token("TTS_TOKEN", ENV_TTS_TOKEN)
+    if not url:
+        return JSONResponse({"error": "TTS_URL nicht konfiguriert"}, status_code=502)
+    body = await req.body()
+    resp = None
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
+            resp = await client.send(
+                httpx.Request("POST", url, content=body,
+                              headers=_headers(token, req,
+                                               {"Content-Type": "application/json"})),
+                stream=True)
+    except httpx.HTTPError as e:
+        log.warning("TTS-Proxy-Fehler: %s", e)
+        return JSONResponse({"error": f"tts upstream: {e}"}, status_code=502)
+
+    async def gen():
+        try:
+            async for chunk in resp.aiter_bytes(8192):
+                yield chunk
+        finally:
+            await resp.aclose()
+
+    return StreamingResponse(gen(), media_type="audio/wav")
+
+
+async def proxy_stt(req: Request) -> Response:
+    """STT-Proxy: multipart/form-data rein, JSON-Transkript raus."""
+    if e := _auth_error(req):
+        return e
+    url = _upstream_url("STT_URL", ENV_STT_URL)
+    token = _upstream_token("STT_TOKEN", ENV_STT_TOKEN)
+    if not url:
+        return JSONResponse({"error": "STT_URL nicht konfiguriert"}, status_code=502)
+    body = await req.body()
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
+            r = await client.post(
+                url, content=body,
+                headers=_headers(token, req))
+        return JSONResponse(r.json(), status_code=r.status_code)
+    except httpx.HTTPError as e:
+        log.warning("STT-Proxy-Fehler: %s", e)
+        return JSONResponse({"error": f"stt upstream: {e}"}, status_code=502)
+
+
+async def proxy_llm(req: Request) -> Response:
+    """LLM-Proxy: OpenAI chat/completions rein, JSON-Antwort raus."""
+    if e := _auth_error(req):
+        return e
+    url = _upstream_url("LLM_URL", ENV_LLM_URL)
+    token = _upstream_token("LLM_TOKEN", ENV_LLM_TOKEN)
+    if not url:
+        return JSONResponse({"error": "LLM_URL nicht konfiguriert"}, status_code=502)
+    body = await req.body()
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(300.0)) as client:
+            r = await client.post(
+                url, content=body,
+                headers=_headers(token, req,
+                                 {"Content-Type": "application/json"}))
+        return Response(r.content, status_code=r.status_code,
+                        media_type=r.headers.get("content-type",
+                                                 "application/json"))
+    except httpx.HTTPError as e:
+        log.warning("LLM-Proxy-Fehler: %s", e)
+        return JSONResponse({"error": f"llm upstream: {e}"}, status_code=502)
+
+async def proxy_openhab(req: Request) -> Response:
+    """OpenHAB-Proxy: REST-API rein, JSON raus (GET/POST/PUT/DELETE).
+
+    Der Client sendet zu /proxy/openhab/{subpath} (z.B. /proxy/openhab/lampe_1/state).
+    Wir extrahieren den Sub-Pfad und hängen ihn an die echte Upstream-URL.
+    """
+    if e := _auth_error(req):
+        return e
+    base_url = _upstream_url("OPENHAB_URL", os.environ.get("OPENHAB_BACKEND_URL", os.environ.get("OPENHAB_URL", "")))
+    token = _upstream_token("OPENHAB_TOKEN", ENV_OPENHAB_TOKEN)
+    if not base_url:
+        return JSONResponse({"error": "OPENHAB_URL nicht konfiguriert"}, status_code=502)
+    # Sub-Pfad aus der anfragenden URL extrahieren
+    try:
+        sub_path = "/".join(urlparse(req.url.path).path.split("/proxy/openhab/", 1))
+    except Exception:
+        sub_path = ""
+    target = base_url.rstrip("/") + "/" + sub_path.lstrip("/")
+    method = req.method
+    body = await req.body()
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
+            r = await client.request(
+                method, target, content=body,
+                headers=_headers(token, req, {"Content-Type": req.headers.get("content-type", "application/json")}))
+            return Response(r.content, status_code=r.status_code,
+                            media_type=r.headers.get("content-type", "application/json"))
+    except httpx.HTTPError as e:
+        log.warning("OpenHAB-Proxy-Fehler: %s", e)
+        return JSONResponse({"error": f"openhab upstream: {e}"}, status_code=502)

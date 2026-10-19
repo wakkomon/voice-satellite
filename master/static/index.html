@@ -37,6 +37,27 @@ button:disabled { opacity:0.4; cursor:default; }
 .num { font-variant-numeric:tabular-nums; }
 a { color:var(--acc); text-decoration:none; }
 footer { margin-top:24px; color:var(--dim); font-size:0.78rem; }
+
+/* Config-specific */
+.cfg-tabs { display:flex; gap:6px; margin-bottom:12px; flex-wrap:wrap; }
+.cfg-tabs button { background:var(--card); border:1px solid #2a2e3a; color:var(--dim); padding:4px 14px; font-size:0.78rem; }
+.cfg-tabs button.active { background:var(--acc); color:#fff; border-color:var(--acc); }
+.cfg-table { width:100%; border-collapse:collapse; font-size:0.85rem; }
+.cfg-table th { text-align:left; color:var(--dim); font-size:0.72rem; padding:3px 6px; border-bottom:1px solid #2a2e3a; }
+.cfg-table td { padding:3px 6px; border-bottom:1px solid #1a1d24; vertical-align:middle; }
+.cfg-table input, .cfg-table select { width:100%; background:#0d0f14; border:1px solid #2a2e3a; color:var(--fg); padding:4px 8px; border-radius:4px; font-size:0.82rem; }
+.cfg-table input:focus, .cfg-table select:focus { outline:none; border-color:var(--acc); }
+.cfg-table .key-col { width:170px; font-family:monospace; color:var(--dim); font-size:0.8rem; }
+.cfg-table .type-col { width:45px; text-align:center; color:var(--dim); font-size:0.7rem; }
+.cfg-save-row { margin-top:12px; display:flex; gap:8px; align-items:center; }
+.cfg-status { font-size:0.8rem; color:var(--dim); margin-left:8px; }
+.cfg-status.ok { color:var(--ok); }
+.cfg-status.err { color:var(--err); }
+.sat-override-section { margin-top:20px; }
+.sat-override-row { background:#1a1d24; border-radius:8px; padding:10px 14px; margin-bottom:8px; }
+.sat-override-row h3 { font-size:0.88rem; margin:0 0 8px; color:var(--acc); }
+.cfg-section { display:none; }
+.cfg-section.active { display:block; }
 </style>
 </head>
 <body>
@@ -58,8 +79,8 @@ footer { margin-top:24px; color:var(--dim); font-size:0.78rem; }
   <div class="card">
     <h2>Satelliten <span class="num" id="sat-count" style="color:var(--dim)"></span></h2>
     <table>
-      <thead><tr><th>Satellit</th><th>IP</th><th>Docker</th><th>Aktion</th></tr></thead>
-      <tbody id="sat-body"><tr><td colspan="4" style="color:var(--dim)">lade …</td></tr></tbody>
+      <thead><tr><th>Satellit</th><th>IP</th><th>Docker</th><th>Aktivität</th><th>Aktion</th></tr></thead>
+      <tbody id="sat-body"><tr><td colspan="5" style="color:var(--dim)">lade …</td></tr></tbody>
     </table>
   </div>
 
@@ -69,13 +90,224 @@ footer { margin-top:24px; color:var(--dim); font-size:0.78rem; }
   </div>
 </div>
 
-<footer>API: /api/heartbeat · /api/satellites · /api/music · /index/rebuild · /events</footer>
+<!-- CONFIGURATION -->
+<div class="card" style="margin-top:16px">
+  <h2>Konfiguration</h2>
+  <div class="cfg-tabs" id="cfg-tabs">
+    <button class="active" data-domain="tts">TTS</button>
+    <button data-domain="stt">STT</button>
+    <button data-domain="llm">LLM</button>
+    <button data-domain="openhab">OpenHAB</button>
+  </div>
+
+  <!-- Global config -->
+  <table class="cfg-table" id="cfg-table">
+    <thead><tr><th class="key-col">Schlüssel</th><th class="type-col">Typ</th><th>Wert</th></tr></thead>
+    <tbody id="cfg-tbody"></tbody>
+  </table>
+  <div class="cfg-save-row">
+    <button id="btn-save-global" disabled>Speichern</button>
+    <button id="btn-apply-all" class="warn">Push → alle Satelliten</button>
+    <span id="cfg-status" class="cfg-status"></span>
+  </div>
+
+  <!-- Satellite overrides -->
+  <div class="sat-override-section">
+    <h2 style="font-size:0.8rem;text-transform:uppercase;letter-spacing:0.06em;color:var(--dim);margin:20px 0 12px">Satelliten-Overrides</h2>
+    <div id="sat-overrides"></div>
+    <div class="cfg-save-row">
+      <button id="btn-save-sat-override">Override speichern</button>
+      <span id="sat-override-status" class="cfg-status"></span>
+    </div>
+  </div>
+</div>
+
+<footer>API: /api/heartbeat · /api/satellites · /api/music · /api/config · /index/rebuild · /events</footer>
 
 <script>
 const $ = id => document.getElementById(id);
-const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmtTs = ts => ts ? new Date(ts*1000).toLocaleTimeString('de-DE') : '–';
 
+// ── Config domain definitions ──
+const DOMAINS = {
+  tts: [
+    { key: "TTS_URL", type: "text" },
+    { key: "TTS_MODEL", type: "text" },
+    { key: "TTS_VOICE", type: "text" },
+    { key: "TTS_LANGUAGE", type: "text" },
+  ],
+  stt: [
+    { key: "STT_URL", type: "text" },
+    { key: "STT_MODEL", type: "text" },
+    { key: "STT_LANGUAGE", type: "text" },
+  ],
+  llm: [
+    { key: "LLM_URL", type: "text" },
+    { key: "LLM_MODEL", type: "text" },
+    { key: "LLM_HAS_TOOLS", type: "bool" },
+    { key: "LLM_ENABLE_THINKING", type: "bool" },
+  ],
+  openhab: [
+    { key: "OPENHAB_URL", type: "text" },
+  ],
+};
+
+const TYPE_MAP = {
+  text: "text",
+  bool: "bool",
+};
+
+let currentDomain = "tts";
+let globalConfig = {};
+let allSats = {};
+
+// ── Tab switching ──
+document.getElementById('cfg-tabs').addEventListener('click', e => {
+  if (!e.target.matches('button')) return;
+  document.querySelectorAll('#cfg-tabs button').forEach(b => b.classList.remove('active'));
+  e.target.classList.add('active');
+  currentDomain = e.target.dataset.domain;
+  renderConfigTable();
+});
+
+// ── Config load & render ──
+async function loadConfig() {
+  try {
+    const r = await fetch('/api/config');
+    if (!r.ok) return;
+    const j = await r.json();
+    globalConfig = j.global || {};
+    allSats = j.satellites || {};
+    renderConfigTable();
+    renderSatOverrides();
+  } catch (e) {
+    showStatus('cfg-status', 'Laden fehlgeschlagen: ' + e, 'err');
+  }
+}
+
+function renderConfigTable() {
+  const tbody = $('cfg-tbody');
+  const fields = DOMAINS[currentDomain] || [];
+  tbody.innerHTML = fields.map(f => {
+    const val = globalConfig[f.key] ?? '';
+    const typeLabel = f.type === 'bool' ? 'B' : 'T';
+    if (f.type === 'bool') {
+      const checked = !!val;
+      return `<tr>
+        <td class="key-col">${esc(f.key)}</td>
+        <td class="type-col">${typeLabel}</td>
+        <td><select data-key="${esc(f.key)}" data-type="bool" class="cfg-input">
+          <option value="true" ${checked ? 'selected' : ''}>true</option>
+          <option value="false" ${!checked ? 'selected' : ''}>false</option>
+        </select></td>
+      </tr>`;
+    }
+    return `<tr>
+      <td class="key-col">${esc(f.key)}</td>
+      <td class="type-col">${typeLabel}</td>
+      <td><input type="text" data-key="${esc(f.key)}" data-type="text" value="${esc(String(val))}" class="cfg-input" /></td>
+    </tr>`;
+  }).join('');
+
+  tbody.querySelectorAll('.cfg-input').forEach(input => {
+    input.addEventListener('input', checkDirty);
+    input.addEventListener('change', checkDirty);
+  });
+  checkDirty();
+}
+
+function checkDirty() {
+  const inputs = $('cfg-tbody').querySelectorAll('.cfg-input');
+  let dirty = false;
+  inputs.forEach(input => {
+    const key = input.dataset.key;
+    let val = input.value;
+    if (input.dataset.type === 'bool') val = input.value === 'true';
+    const orig = globalConfig[key];
+    if (String(orig) !== String(val)) dirty = true;
+  });
+  $('btn-save-global').disabled = !dirty;
+}
+
+async function saveGlobalConfig() {
+  const inputs = $('cfg-tbody').querySelectorAll('.cfg-input');
+  const overrides = {};
+  inputs.forEach(input => {
+    const key = input.dataset.key;
+    let val = input.value;
+    if (input.dataset.type === 'bool') val = input.value === 'true';
+    overrides[key] = val;
+  });
+
+  try {
+    const r = await fetch('/api/config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(overrides),
+    });
+    const j = await r.json();
+    if (r.ok) {
+      showStatus('cfg-status', `Gespeichert (v${j.version || '?'})`, 'ok');
+      await loadConfig();
+    } else {
+      showStatus('cfg-status', 'Fehler: ' + (j.error || r.status), 'err');
+    }
+  } catch (e) {
+    showStatus('cfg-status', 'Fehler: ' + e, 'err');
+  }
+}
+
+async function pushConfigToAll() {
+  try {
+    const r = await fetch('/api/config/apply', { method: 'POST' });
+    const j = await r.json();
+    if (r.ok) {
+      showStatus('cfg-status', `Push OK: ${j.pushed || '?'} Satellite(s)`, 'ok');
+    } else {
+      showStatus('cfg-status', 'Push fehlgeschlagen: ' + (j.error || r.status), 'err');
+    }
+  } catch (e) {
+    showStatus('cfg-status', 'Push fehlgeschlagen: ' + e, 'err');
+  }
+}
+
+// ── Satellite overrides ──
+function renderSatOverrides() {
+  const container = $('sat-overrides');
+  const sats = Object.entries(allSats);
+  if (!sats.length) {
+    container.innerHTML = '<p style="color:var(--dim);font-size:0.85rem">Keine Overrides konfiguriert</p>';
+    return;
+  }
+  container.innerHTML = sats.map(([mac, satCfg]) => {
+    const entries = Object.entries(satCfg);
+    const entriesHtml = entries.map(([k, v]) =>
+      `<span style="font-family:monospace;font-size:0.8rem;color:var(--dim)">${esc(k)}=${esc(String(v))}</span>`
+    ).join(', ');
+    return `<div class="sat-override-row">
+      <h3>${mac}</h3>
+      <span style="font-size:0.82rem">${entriesHtml || 'keine Overrides'}</span>
+    </div>`;
+  }).join('');
+}
+
+// ── Helpers ──
+function showStatus(id, msg, cls) {
+  const el = $(id);
+  el.textContent = msg;
+  el.className = 'cfg-status' + (cls ? ' ' + cls : '');
+  setTimeout(() => { el.textContent = ''; el.className = 'cfg-status'; }, 5000);
+}
+
+// ── Event handlers ──
+$('btn-save-global').onclick = saveGlobalConfig;
+$('btn-apply-all').onclick = pushConfigToAll;
+$('btn-save-sat-override').onclick = async () => {
+  showStatus('sat-override-status', 'Override-Speicherung erfordert Satelliten-Auswahl (UI-Planung)', '');
+};
+
+// ── Existing refresh / SSE ──
 async function refresh() {
   try {
     const [hb, sats, music] = await Promise.all([
@@ -99,17 +331,34 @@ async function refresh() {
     // Satelliten
     const known = sats.filter(s => s.known);
     $('sat-count').textContent = `(${known.filter(s=>s.status==='online').length} online / ${known.length} bekannt)`;
-    $('sat-body').innerHTML = known.length ? known.map(s => `
-      <tr>
+    $('sat-body').innerHTML = known.length ? known.map(s => {
+      // Aktivität zusammenbauen
+      const parts = [];
+      if (s.pipeline) parts.push(`Pipeline: <b>${esc(s.pipeline)}</b>`);
+      if (s.system) parts.push(`System: ${esc(s.system)}`);
+      // components als kleine Badges
+      if (s.components && Array.isArray(s.components)) {
+        const comps = s.components.map(c => {
+          const name = typeof c === 'string' ? c : (c.name || 'unknown');
+          const status = c.status || c.state || '';
+          return `<span class="badge ${status==='online'||status==='running'?'ok':status==='offline'||status==='stopped'?'err':''}" style="margin-right:3px;font-size:0.65rem">${esc(String(name))}${status?'='+esc(String(status)):''}</span>`;
+        }).join(' ');
+        parts.push(comps);
+      }
+      const activityHtml = parts.length ? parts.join('<br>') : '<span style="color:var(--dim)">idle</span>';
+
+      return `<tr>
         <td><span class="dot ${s.status==='online'?'on':'off'}"></span>${esc(s.hostname || s.ip)}</td>
         <td class="num">${esc(s.ip)}</td>
         <td>${s.docker_running ? '<span class="badge ok">läuft</span>' : '<span class="badge dim">stopt</span>'}</td>
+        <td style="font-size:0.82rem;line-height:1.4">${activityHtml}</td>
         <td>
           <button onclick="act('${esc(s.mac)}','restart')">Start</button>
           <button class="warn" onclick="act('${esc(s.mac)}','pause')">Pause</button>
         </td>
-      </tr>`).join('')
-      : '<tr><td colspan="4" style="color:var(--dim)">keine Satelliten konfiguriert</td></tr>';
+      </tr>`;
+    }).join('')
+      : '<tr><td colspan="5" style="color:var(--dim)">keine Satelliten konfiguriert</td></tr>';
   } catch (e) {
     $('idx-status').className='badge err'; $('idx-status').textContent='nicht erreichbar';
   }
@@ -162,6 +411,9 @@ $('btn-rebuild').onclick = async () => {
 refresh();
 connectSSE();
 setInterval(refresh, 30000);
+// Config wird beim Start und dann alle 60s geladen
+loadConfig();
+setInterval(loadConfig, 60000);
 </script>
 </body>
 </html>

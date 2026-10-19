@@ -451,6 +451,10 @@ def main():
     p = Pipeline()
     web.start(p)                    # Debug-/Health-HTTP im Hintergrundthread
     _start_mcp_server()              # MCP-Remote-Steuerung
+    # Heartbeat: Status-Push an Master (wenn MASTER_URL gesetzt)
+    if config.MASTER_URL:
+        from . import heartbeat as _hb
+        _hb.start_heartbeat_thread(p)
     router.warm_async()             # LLM-Modell im Hintergrund vorwärmen
     # M3U-Index im Hintergrund (2.0alpha): Primärquelle ist der Master-Container
     # (dev, CIFS-Scanner). Satellite zieht fertigen Index per HTTP.

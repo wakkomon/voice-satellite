@@ -120,10 +120,9 @@ AGENT_SYSTEM_PROMPT = _env(
     "und ohne Emojis. Maximal 3 Saetze – deine Antwort wird vorgelesen.\n\n"
     "MUSIK: Wenn der Nutzer Musik oder Radio hoeren will ('spiele ...', 'spiel ...', "
     "'putz dir ... auf', 'mach Jazz an', Radio-Sender), suchst du die Quelle "
-    "im Fileserver und spielst sie per HTTP an den Pi (192.168.1.32:8770) "
-    "an:\n"
-    "  1. Mediathek: MP3-Ordner liegen unter /fileserver/mp3/<Genre>/<Künstler>/"
-    " (z.B. Jazz, Rock, Deutsch, Heavy Metal, Klassik). Mit `ls`/`find` den "
+    "im Fileserver und spielst sie PER HTTP AN DEN PI AN – OHNE JEDWEDE BESTÄTIGUNG:\n"
+    "  1. Mediathek: MP3-Ordner liegen unter /fileserver/mp3/<Genre>/<Künstler>/ "
+    "(z.B. Jazz, Rock, Deutsch, Heavy Metal, Klassik). Mit `ls`/`find` den "
     "passenden Titel oder Ordner suchen – bei Genres/Alben eine einzelne "
     "Datei oder einen zufaellig gewaehlten Titel auswaehlen (z.B. mit `shuf`).\n"
     "  2. Feste Playlists (Dateien) liegen in /fileserver/mp3/, z.B. "
@@ -136,11 +135,14 @@ AGENT_SYSTEM_PROMPT = _env(
     "  -H 'Content-Type: application/json' "
     "  -d '{\"path\": \"mp3/<Genre>/<Titel>.mp3\"}'        (Mediathek, relativ zu /fileserver/mp3)\n"
     "  oder -d '{\"url\": \"<Stream-URL>\", \"title\": \"<Sender>\"}' (Radio)\n"
-    "  Stoppen: curl -s -X POST http://192.168.1.32:8770/stop\n"
-    "  Antworte KURZ, nachdem der Request durch ist (z.B. 'Klar, jetzt läuft "
-    "Jazz.'), und gib die Wiedergabe IMMER SOFORT ab – bitte NICHT nach Bestätigung fragen, sondern sofort antworten.\n"
-    "  Falls der Pi nicht antwortet oder der Titel nicht auffindbar ist, "
-    "sag das kurz.",
+    "  Stoppen: curl -s -X POST http://192.168.1.32:8770/stop\n\n"
+    "ABSOLUT REGEL FÜR MUSIK:\n"
+    "  - Spiel IMMER SOFORT ab. KEINE Rückfrage. KEINE Bestätigung mit 'Soll ich...?'\n"
+    "  - Es gibt KEINE App. Keine 'Freigabe in der App'. Dieses Konzept existiert nicht.\n"
+    "  - Frag NIEMALS 'Soll ich spielen?', 'Möchtest du...', 'Freigabe nötig'\n"
+    "  - Nach dem curl play: sag nur 'Klar, [Genre/Song] läuft.' und ENDE.\n"
+    "  - Wenn der Pi nicht antwortet: sag 'Konnte den Pi nicht erreichen.' und ENDE.\n"
+    "  - VERBOTEN: Warten, Bestätigen, Rückfragen, 'ich warte auf Freigabe'\n",
 )
 
 # ── Gedächtnis ─────────────────────────────────────────────────
@@ -257,4 +259,58 @@ LOG_LEVEL       = _env("LOG_LEVEL", "INFO")
 # leer ist oder der Master nicht erreichbar.
 # Beispiel: MASTER_URL=http://192.168.1.24:8791
 MASTER_URL      = _env("MASTER_URL", "")
-MASTER_POLL_SEC = int(_env("MASTER_POLL_SEC", "300"))  # Refresh-Intervall (s)
+MASTER_POLL_SEC = int(_env("MASTER_POLL_SEC", "300"))  # Index-Polling-Intervall
+
+# ── Heartbeat (Satellit → Master) ─────────────────────────────
+HEARTBEAT_ENABLED = int(_env("HEARTBEAT_ENABLED", "1"))
+HEARTBEAT_SEC     = int(_env("HEARTBEAT_SEC", "30"))
+
+# ── Zentrale Konfiguration (Master → Satellite-Push) ──────────
+# config_version wird bei jedem apply_override erhöht. Der Heartbeat
+# pollt GET /api/config/apply?mac=… und wendet Änderungen ohne
+# Neustart an (dynamische Config-Konsum in tts.py/stt.py/router.py).
+_CONFIG_VERSION = 0
+
+
+def bump_config_version() -> None:
+    """Version hochzählen (wird vom Heartbeat-Master-Apply gesetzt)."""
+    global _CONFIG_VERSION
+    _CONFIG_VERSION += 1
+
+
+def config_version() -> int:
+    """Aktuelle Config-Version (für UI-Status / Log)."""
+    return _CONFIG_VERSION
+
+
+# Keys, die der Master in den Satelliten pusht. Nur diese dürfen
+# überschrieben werden (keine Hardware-Keys wie MIC_DEVICE/FB_DEVICE).
+_OVERWRITABLE = {
+    "TTS_URL", "TTS_MODEL", "TTS_VOICE", "TTS_LANGUAGE",
+    "STT_URL", "STT_MODEL", "STT_LANGUAGE",
+    "LLM_URL", "LLM_MODEL", "LLM_HAS_TOOLS", "LLM_ENABLE_THINKING",
+    "OPENHAB_URL", "MUSIC_ROOT", "BRIDGE_HOST", "BRIDGE_PORT",
+}
+
+
+def apply_overrides(d: dict) -> tuple[list[str], list[str]]:
+    """Wende Master-Config-Änderungen dynamisch an.
+
+    Gibt (applied_keys, ignored_keys) zurück. Nur Keys aus _OVERWRITABLE
+    werden gesetzt; bools werden aus "true"/"false"/1/0 konvertiert.
+    """
+    import types  # noqa: F401  (nur für Typ-Hinweise; wird nicht gebraucht)
+    applied, ignored = [], []
+    for k, v in (d or {}).items():
+        if k not in _OVERWRITABLE:
+            ignored.append(k)
+            continue
+        if isinstance(v, bool) or (isinstance(v, str) and v.lower() in ("true", "false")):
+            v = (v if isinstance(v, bool) else str(v).lower() == "true")
+        elif v is None or v == "":
+            v = ""
+        elif isinstance(v, str) and v.lstrip("-").isdigit():
+            v = int(v)
+        globals()[k] = v
+        applied.append(k)
+    return applied, ignored
