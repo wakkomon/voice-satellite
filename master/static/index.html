@@ -28,6 +28,7 @@ tr:last-child td { border-bottom:none; }
 .dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:8px; vertical-align:middle; }
 .dot.on { background:var(--ok); }
 .dot.off { background:var(--err); }
+.dot.warn { background:#e5a50a; }
 button { background:var(--acc); color:#fff; border:none; border-radius:6px; padding:5px 12px; font-size:0.78rem; cursor:pointer; margin-right:6px; }
 button:hover { filter:brightness(1.15); }
 button.warn { background:var(--warn); }
@@ -375,8 +376,8 @@ async function refresh() {
     $('sat-body').innerHTML = known.length ? known.map(s => {
       // Aktivität zusammenbauen
       const parts = [];
-      if (s.pipeline) parts.push(`Pipeline: <b>${esc(s.pipeline)}</b>`);
-      if (s.system) parts.push(`System: ${esc(s.system)}`);
+      if (s.pipeline) parts.push(`Pipeline: <b>${esc(s.pipeline.state || '–')}</b>`);
+      if (s.system) parts.push(`System: ${esc(s.system.hostname || '–')} (Last: ${(s.system.cpu_load ?? 0).toFixed(1)})`);
       // components als kleine Badges
       if (s.components && Array.isArray(s.components)) {
         const comps = s.components.map(c => {
@@ -386,12 +387,22 @@ async function refresh() {
         }).join(' ');
         parts.push(comps);
       }
-      const activityHtml = parts.length ? parts.join('<br>') : '<span style="color:var(--dim)">idle</span>';
+      // Farbe: grün = online + Container läuft; gelb = Host online,
+      // Container gestoppt; rot = Host offline.
+      const dotCls = s.status !== 'online' ? 'off'
+                   : s.docker_running ? 'on' : 'warn';
+      const dockBadge = s.docker_running
+        ? '<span class="badge ok">läuft</span>'
+        : '<span class="badge" style="color:#e5a50a">Container stopt</span>';
+      const activityHtml = parts.length ? parts.join('<br>') :
+        (s.status === 'online'
+          ? '<span style="color:var(--dim)">Host online, Container stopt</span>'
+          : '<span style="color:var(--dim)">offline</span>');
 
       return `<tr>
-        <td><span class="dot ${s.status==='online'?'on':'off'}"></span>${esc(s.hostname || s.ip)}</td>
+        <td><span class="dot ${dotCls}"></span>${esc(s.hostname || s.ip)}</td>
         <td class="num">${esc(s.ip)}</td>
-        <td>${s.docker_running ? '<span class="badge ok">läuft</span>' : '<span class="badge dim">stopt</span>'}</td>
+        <td>${dockBadge}</td>
         <td style="font-size:0.82rem;line-height:1.4">${activityHtml}</td>
         <td>
           <button onclick="act('${esc(s.mac)}','restart')">Start</button>
