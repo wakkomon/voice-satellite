@@ -33,14 +33,32 @@ CONFIG_PATH = os.path.join(CONFIG_DIR, "satellites.json")
 
 # Schlüssel, die in der zentralen UI editiert werden dürfen (weiche Keys).
 # Müssen exakt app/config.py::_OVERWRITABLE abdecken (sonst ignoriert der
-# Satellite sie). Secrets (Tokens) werden NICHT hier gespeichert – sie bleiben
-# ENV am Master und werden vom Proxy injiziert (siehe master/proxy.py).
+# Satellite sie). Tokens sind MASTER-SEITIG (Proxy injiziert sie) und werden
+# nur GLOBAL gespeichert, nie pro-Satellite – im Snapshot maskiert.
 EDITABLE_KEYS = (
     "TTS_URL", "TTS_MODEL", "TTS_VOICE", "TTS_LANGUAGE",
+    "TTS_TOKEN", "TTS_TIMEOUT",
     "STT_URL", "STT_MODEL", "STT_LANGUAGE",
+    "STT_TOKEN", "STT_TIMEOUT",
     "LLM_URL", "LLM_MODEL", "LLM_HAS_TOOLS", "LLM_ENABLE_THINKING",
-    "OPENHAB_URL", "MUSIC_ROOT", "BRIDGE_HOST", "BRIDGE_PORT",
+    "LLM_TOKEN", "LLM_TIMEOUT", "LLM_MAX_TOKENS",
+    "OPENHAB_URL", "OPENHAB_TOKEN", "OPENHAB_CACHE_TTL",
+    "DEFAULT_IMAGE_URL",
+    "MUSIC_ROOT", "BRIDGE_HOST", "BRIDGE_PORT",
+    "MEMORY_DB", "MEMORY_MAX_TOKENS",
+    "MIC_DEVICE", "DISPLAY", "FB_DEVICE", "FB_WIDTH", "FB_HEIGHT",
+    "ALSA_DEVICE", "ALSA_VOLUME", "ALSA_MUTE",
+    "WOL_MAC", "SCHEDULE_FILE", "RULES_FILE",
 )
+
+# Secrets: nur global, nie per Satellite; Proxy injiziert sie in Requests.
+SECRET_KEYS = frozenset({
+    "TTS_TOKEN", "STT_TOKEN", "LLM_TOKEN", "OPENHAB_TOKEN",
+})
+
+GLOBAL_ONLY_KEYS = ()
+
+UI_KEYS = EDITABLE_KEYS + GLOBAL_ONLY_KEYS
 
 
 class ConfigStore:
@@ -90,19 +108,35 @@ class ConfigStore:
 
     def get_effective(self, mac: str | None = None) -> dict:
         """Gültige Konfiguration (global + satellite-Override), nach
-        Standard-Format normalisiert (dict[str, str|int|bool])."""
+        Standard-Format normalisiert (dict[str, str|int|bool]).
+
+        Enthält KEINE Secrets – die injiziert der Proxy selbst.
+        """
         with self._lock:
             merged = dict(self._global)
             if mac:
                 merged.update(self._sats.get(mac.lower(), {}))
-            return merged
+        for k in SECRET_KEYS:
+            merged.pop(k, None)
+        return merged
+
+    def get_secret(self, key: str) -> str:
+        """Secret (nur global, nur intern – Proxy)."""
+        with self._lock:
+            return self._global.get(key) or ""
 
     def snapshot(self) -> dict:
-        """Vollständiger Stand für die UI (inkl. Version)."""
+        """Vollständiger Stand für die UI (inkl. Version).
+
+        Secret-Werte werden maskiert ("" / "gesetzt") – nie im Klartext.
+        """
         with self._lock:
+            g = dict(self._global)
+            for k in SECRET_KEYS:
+                g[k] = "gesetzt" if (g.get(k) or "") else ""
             return {
                 "version": self._version,
-                "global": dict(self._global),
+                "global": g,
                 "satellites": {k: dict(v) for k, v in self._sats.items()},
             }
 
@@ -132,10 +166,11 @@ class ConfigStore:
         self._on_change = cb
 
     def set_global(self, overrides: dict) -> int:
-        """Globale Schlüssel setzen (nur EDITABLE_KEYS)."""
+        """Globale Schlüssel setzen (EDITABLE_KEYS + GLOBAL_ONLY + Secrets)."""
+        allowed = set(EDITABLE_KEYS) | set(GLOBAL_ONLY_KEYS) | SECRET_KEYS
         def _m() -> None:
             for k, v in (overrides or {}).items():
-                if k in EDITABLE_KEYS:
+                if k in allowed:
                     self._global[k] = v
         self._set(_m)
         return self._version

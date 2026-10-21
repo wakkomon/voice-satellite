@@ -2,15 +2,17 @@
 
 Der Master liegt zwischen Satelliten und den Voice-/LLM-Backends:
 
-    /proxy/tts   POST  →  TTS-Backend   (OpenAI /v1/audio/speech, Streaming-WAV)
-    /proxy/stt   POST  →  STT-Backend   (multipart /v1/audio/transcriptions)
-    /proxy/llm   POST  →  LLM-Backend   (OpenAI /v1/chat/completions)
+    /proxy/tts     POST  →  TTS-Backend   (OpenAI /v1/audio/speech, Streaming-WAV)
+    /proxy/stt     POST  →  STT-Backend   (multipart /v1/audio/transcriptions)
+    /proxy/llm     POST  →  LLM-Backend   (OpenAI /v1/chat/completions)
+    /proxy/openhab  *    →  OpenHAB-REST-API
+    /proxy/music    GET  →  Musik-Dateien vom CIFS-Mount (Range-Requests)
 
 Ziele + Secrets: zentrale Config (master/satconfig.py) bzw. ENV-Fallback
 am Master. Satelliten senden OHNE Secret; der Proxy injiziert das
 Backend-Token. Damit die Secrets nie auf den Satelliten/der Web-UI landen.
 
-Zusätzlich: Optionales Per-Satellite-TOKEN (Authorization: Bearer) gegen
+Zusätzlich: Optionales Per-Satellite-TOKEN (Authorization: *** gegen
 unbefugte Fremdnutzung des Proxys, wenn AUTH_TOKEN gesetzt ist.
 """
 from __future__ import annotations
@@ -22,6 +24,9 @@ from urllib.parse import urlparse
 import httpx
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
+
+from . import config as master_cfg
+from .satconfig import store as config_store
 
 log = logging.getLogger("master.proxy")
 
@@ -71,8 +76,9 @@ def _upstream_url(key_url: str, env_url: str) -> str:
 
 
 def _upstream_token(key_token: str, env_token: str) -> str:
-    """Backend-Token (Secret, bleibt ENV am Master – nie im Store/UI)."""
-    return env_token or ""
+    """Backend-Token: ConfigStore (global) zuerst, dann ENV-Fallback."""
+    val = config_store.get_secret(key_token)
+    return val or env_token or ""
 
 
 def _authorized(req: Request) -> bool:
@@ -203,3 +209,95 @@ async def proxy_openhab(req: Request) -> Response:
     except httpx.HTTPError as e:
         log.warning("OpenHAB-Proxy-Fehler: %s", e)
         return JSONResponse({"error": f"openhab upstream: {e}"}, status_code=502)
+
+
+async def proxy_music(req: Request) -> Response:
+    """Musik-Streaming-Proxy: Liefert Dateien vom CIFS-Mount am Master.
+    Unterstützt Range-Requests für flüssiges Streaming.
+
+    Pfad ist relativ zu MUSIC_ROOT, z.B. /proxy/music/Radio/FluxFM.mp3.
+    """
+    if e := _auth_error(req):
+        return e
+    try:
+        rel_path = "/".join(urlparse(req.url.path).path.split("/proxy/music/", 1))
+        if not rel_path:
+            return JSONResponse({"error": "kein Pfad angegeben"}, status_code=400)
+        # Sichere Pfad-Auflösung (kein Directory-Traversal)
+        abs_path = os.path.normpath(os.path.join(master_cfg.MUSIC_ROOT, rel_path))
+        if not abs_path.startswith(master_cfg.MUSIC_ROOT):
+            return JSONResponse({"error": "unauthorized path"}, status_code=403)
+        if not os.path.isfile(abs_path):
+            return JSONResponse({"error": "datei nicht gefunden"}, status_code=404)
+
+        range_hdr = req.headers.get("range")
+        file_size = os.path.getsize(abs_path)
+        mime_type = _guess_mime(abs_path)
+
+        if range_hdr:
+            # Range-Request: Teilbereich senden
+            start, end = _parse_range(range_hdr, file_size)
+            with open(abs_path, "rb") as f:
+                f.seek(start)
+                data = f.read(end - start + 1)
+            resp = Response(
+                content=data,
+                status_code=206,
+                media_type=mime_type,
+                headers={
+                    "Accept-Ranges": "bytes",
+                    "Content-Range": f"bytes {start}-{end}/{file_size}",
+                    "Content-Length": str(len(data)),
+                },
+            )
+        else:
+            # Komplette Datei
+            with open(abs_path, "rb") as f:
+                data = f.read()
+            resp = Response(
+                content=data,
+                status_code=200,
+                media_type=mime_type,
+                headers={
+                    "Accept-Ranges": "bytes",
+                    "Content-Length": str(len(data)),
+                },
+            )
+        return resp
+    except Exception as e:
+        log.warning("Music-Proxy-Fehler: %s", e)
+        return JSONResponse({"error": f"music proxy: {e}"}, status_code=500)
+
+
+def _guess_mime(path: str) -> str:
+    """Mime-Type basierend auf Extension erraten."""
+    ext = os.path.splitext(path)[1].lower()
+    return {
+        ".mp3": "audio/mpeg",
+        ".wav": "audio/wav",
+        ".ogg": "audio/ogg",
+        ".flac": "audio/flac",
+        ".m3u": "audio/x-mpegurl",
+        ".m3u8": "audio/x-mpegurl",
+        ".aac": "audio/aac",
+        ".wma": "audio/x-ms-wma",
+    }.get(ext, "application/octet-stream")
+
+
+def _parse_range(range_hdr: str, file_size: int) -> tuple[int, int]:
+    """Range-Header parsen und (start, end) zurückgeben."""
+    try:
+        unit, range_spec = range_hdr.split("=", 1)
+        if unit.strip() != "bytes":
+            return 0, file_size - 1
+        start_end = range_spec.split("-", 1)
+        if not start_end[0]:
+            # Suffix-Range (letzten N Bytes)
+            return file_size - int(start_end[1]), file_size - 1
+        start = int(start_end[0])
+        if not start_end[1]:
+            return start, file_size - 1
+        end = int(start_end[1])
+        return start, min(end, file_size - 1)
+    except (ValueError, IndexError):
+        return 0, file_size - 1

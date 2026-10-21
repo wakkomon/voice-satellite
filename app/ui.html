@@ -19,6 +19,10 @@ h1 { font-size:16px; margin:0; font-weight:600; letter-spacing:.3px; }
 .badge.processing { color:#e8b34b; border-color:#6e5a27; background:#2b2413; }
 .badge.speaking   { color:#b48cff; border-color:#4d3a78; background:#1e1733; }
 .badge.live       { animation:pulse 1.2s infinite; }
+/* Master-Verbindung: grün=verbunden, gelb=Fallback, rot=getrennt */
+.badge.master-ok   { color:#5fd068; border-color:#2b5e32; background:#14241a; }
+.badge.master-fb   { color:#e8b34b; border-color:#6e5a27; background:#2b2413; }
+.badge.master-off  { color:#e85555; border-color:#6e2b2b; background:#2b1414; }
 .dot { width:9px; height:9px; border-radius:50%; background:#e85555;
        margin-left:auto; flex:none; }
 .dot.on { background:#5fd068; }
@@ -85,6 +89,36 @@ input[type=range] { width:auto; flex:1; padding:0; margin:0;
                     accent-color:#2563eb; }
 .vol-pct { font-size:13px; color:#e6e9ee; font-variant-numeric:tabular-nums;
            min-width:52px; text-align:right; }
+/* ── Mic-Mute-Button ─────────────────────────────────────── */
+.btn-mic { background:#1c212b; border:1px solid #2c3340; border-radius:6px;
+           color:#e6e9ee; font-size:15px; padding:3px 9px; cursor:pointer;
+           line-height:1; white-space:nowrap; flex:none; }
+.btn-mic:hover { background:#2c3340; }
+.btn-mic.muted { color:#e8b34b; border-color:#6e5a27; }
+
+/* ── Config Modal ────────────────────────────────────────── */
+#config-modal {
+  display:none; position:fixed; inset:0; background:rgba(0,0,0,.7);
+  z-index:1000; align-items:center; justify-content:center;
+}
+#config-modal.open { display:flex; }
+#config-box {
+  background:#161b22; border:1px solid #232833; border-radius:12px;
+  padding:20px 24px; max-width:540px; width:90%; max-height:80vh;
+  overflow-y:auto; color:#e6e9ee;
+}
+#config-box h2 { margin:0 0 14px; font-size:16px; color:#e6e9ee; }
+#config-box table { width:100%; border-collapse:collapse; font-size:13px; }
+#config-box td { padding:4px 8px; border-bottom:1px solid #232833; vertical-align:top; }
+#config-box td:first-child { color:#8b93a1; width:180px; white-space:nowrap; }
+#config-box td:last-child { font-family:monospace; color:#c9d1d9; }
+#config-box .hidden-key { color:#e85555; }
+#config-box .close-btn {
+  margin-top:14px; background:#2c3340; border:1px solid #3d4450;
+  padding:6px 16px; border-radius:6px; color:#e6e9ee; cursor:pointer;
+  font-size:13px;
+}
+#config-box .close-btn:hover { background:#3d4450; }
 
 /* ── Media Browser ─────────────────────────────────────────────── */
 #media-browser { margin-top:14px; background:#11151b; border:1px solid #232833;
@@ -132,10 +166,11 @@ input[type=range] { width:auto; flex:1; padding:0; margin:0;
 <header>
   <h1>Voice Satellite</h1>
   <span id="state" class="badge wake">Bereit</span>
-  <button id="b-index-rebuild" class="btn-idx" title="Medien-Index neu aufbauen (Sprachbefehl: „Neu indizieren")">
-    <span class="icon">🔄</span><span class="count" id="idx-count">–</span>
-  </button>
+  <span id="master" class="badge master-off" title="Master-Container-Verbindung" hidden>Master –</span>
+  <button id="b-mic-mute" class="btn-mic" title="Mikrofon stummschalten">🎤</button>
+  <span class="badge" id="idx-count" title="Indizierte Dateien (Quelle: Master) –">–</span>
   <span class="badge" id="ver" title="Software-Version">–</span>
+  <button id="b-config-info" class="btn-mic" title="Konfiguration anzeigen">ℹ️</button>
   <span class="dot" id="conn" title="Live-Verbindung"></span>
 </header>
 <div class="stats">
@@ -211,6 +246,17 @@ input[type=range] { width:auto; flex:1; padding:0; margin:0;
     </div>
   </div>
 </main>
+
+<!-- ── Config Info Modal ──────────────────────────────────────── -->
+<div id="config-modal">
+  <div id="config-box">
+    <h2>📋 Konfiguration (vom Master)</h2>
+    <div id="config-loading">Lädt…</div>
+    <table id="config-table" style="display:none"></table>
+    <button class="close-btn" id="b-config-close">Schließen</button>
+  </div>
+</div>
+
 <script>
 const LABELS = {
   wake:       "Bereit",
@@ -228,6 +274,60 @@ function fmtUp(s) {
   return Math.floor(s/3600) + "h " + Math.floor(s%3600/60) + "m";
 }
 function setStat(id, v) { $(id).textContent = v; }
+
+// ── Config Info Modal ────────────────────────────────────────────
+const $cfgModal = $("config-modal");
+const $cfgLoading = $("config-loading");
+const $cfgTable = $("config-table");
+
+$("b-config-info").addEventListener("click", () => {
+  $cfgModal.classList.add("open");
+  $cfgLoading.style.display = "";
+  $cfgTable.style.display = "none";
+  loadConfigInfo();
+});
+
+$("b-config-close").addEventListener("click", () => {
+  $cfgModal.classList.remove("open");
+});
+
+$cfgModal.addEventListener("click", (ev) => {
+  if (ev.target === $cfgModal) $cfgModal.classList.remove("open");
+});
+
+async function loadConfigInfo() {
+  try {
+    const r = await fetch("/api/config/info");
+    const j = await r.json();
+    const cfg = j.config || {};
+    $cfgLoading.style.display = "none";
+    $cfgTable.style.display = "";
+    // Master-URL und Config-Version zuerst
+    let rows = "";
+    const masterUrl = cfg["_master_url"];
+    const configVer = cfg["_config_version"];
+    if (masterUrl) {
+      rows += `<tr><td>Master-URL</td><td>${escHtml(masterUrl)}</td></tr>`;
+    }
+    if (configVer) {
+      rows += `<tr><td>Config-Version</td><td>v${escHtml(configVer)}</td></tr>`;
+    }
+    // Alle anderen Config-Keys sortiert auflisten
+    const sorted = Object.keys(cfg).filter(k => !k.startsWith("_")).sort();
+    for (const k of sorted) {
+      const v = cfg[k];
+      // Secret-Keys rot markieren
+      const isSecret = k.includes("KEY") || k === "MEMORY_DB" || k === "SCHEDULE_FILE";
+      const cls = isSecret ? " class=\"hidden-key\"" : "";
+      const displayVal = isSecret ? "[vertrauliche Einstellung]" : (v || "–");
+      rows += `<tr><td>${escHtml(k)}</td><td${cls}>${escHtml(displayVal)}</td></tr>`;
+    }
+    if (!rows) rows = "<tr><td colspan=\"2\">Keine Konfiguration verfügbar</td></tr>";
+    $cfgTable.innerHTML = rows;
+  } catch (e) {
+    $cfgLoading.textContent = "Fehler: " + e.message;
+  }
+}
 
 // maxSeq persistent speichern (localStorage) damit beim Reload
 // keine Events übersprungen werden; das erste Snapshot baut den Feed
@@ -287,6 +387,8 @@ function render(d) {
   renderMusic(d.music || {});
   renderIndex(d.index || {});
   renderVolume(d.volume);
+  renderMicMute(d.mic_muted);
+  renderMaster(d.master);
   const evts = d.events || [];
   const topEv = evts.length ? (evts[evts.length - 1].seq || 0) : 0;
   // Container-Neustart: Server-Seq ist zurueckgesprungen -> Dedupe neu starten
@@ -332,23 +434,46 @@ function renderVolume(v) {
   p.className = "vol-pct" + (v.muted ? " muted" : "");
 }
 
-function renderIndex(ix) {
-  // Header-Button: Dateizähler + Baupuls
-  const btn = $("b-index-rebuild"), cnt = $("idx-count");
-  if (btn && cnt) {
-    if (ix.building) {
-      btn.classList.add("busy");
-      btn.title = "Indiziere… (" + (ix.files_seen ?? 0) + " Dateien)";
-      cnt.textContent = (ix.files ?? "?") + " …";
-    } else {
-      btn.classList.remove("busy");
-      btn.title = "Medien-Index neu aufbauen (Sprachbefehl: „Neu indizieren“)";
-      cnt.textContent = (ix.files ?? "–");
-    }
+function renderMicMute(mic) {
+  if (mic === undefined) return;
+  const btn = $("b-mic-mute");
+  if (!btn) return;
+  btn.textContent = mic ? "🔇" : "🎤";
+  btn.title = mic ? "Mikrofon freischalten" : "Mikrofon stummschalten";
+  btn.classList.toggle("muted", mic);
+}
+
+// Master-Verbindung: leeres Object = Standalone (Badge ausblenden);
+// sonst connected / lokal-fallback / getrennt – mit letztem OK im Titel.
+function renderMaster(m) {
+  const el = $("master");
+  if (!el) return;
+  if (!m || m.configured === false) { el.hidden = true; return; }
+  el.hidden = false;
+  el.classList.remove("master-ok", "master-fb", "master-off");
+  const okT = m.last_ok ? " · OK " + m.last_ok.slice(11, 19) : "";
+  if (m.connected) {
+    el.classList.add("master-ok");
+    el.textContent = "Master verbunden";
+    el.title = "Verbunden mit Master-Container" + okT;
+  } else if (m.source === "local_fallback") {
+    el.classList.add("master-fb");
+    el.textContent = "Master offline · lokal";
+    el.title = "Master nicht erreichbar – lokaler Medien-Index aktiv" + okT;
+  } else {
+    el.classList.add("master-off");
+    el.textContent = "Master getrennt";
+    el.title = "Keine Verbindung zum Master-Container" +
+      (m.failures ? " (" + m.failures + "× Fehlschlag)" : "") + okT;
   }
-  // Stats-Karten: während des Builds Live-Zähler, ansonsten Endstand.
-  $("st-index-files").textContent =
-    ix.building ? ((ix.files ?? 0) + " …") : (ix.files ?? "–");
+}
+
+function renderIndex(ix) {
+  // Header-Button: reiner Dateizähler (Quelle: Master, kein lokaler Build).
+  const cnt = $("idx-count");
+  if (cnt) cnt.textContent = (ix.files ?? "–");
+  // Stats-Karten: aktueller Stand des Master-Index.
+  $("st-index-files").textContent = (ix.files ?? "–");
   $("st-index-m3u").textContent = (ix.playlists ?? "–");
 }
 
@@ -443,25 +568,8 @@ $("b-music-shuffle").addEventListener("click", () => {
   musicBtn("/shuffle", { enable });
 });
 
-// „Neu indizieren“-Button: Medien-Index sofort neu bauen (asynchron).
-$("b-index-rebuild").addEventListener("click", async () => {
-  const btn = $("b-index-rebuild");
-  btn.disabled = true;
-  try {
-    await fetch("/index/rebuild", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: "{}"
-    });
-    $("idx-count").textContent = "✅";
-  } catch (e) {
-    $("idx-count").textContent = "❌";
-  }
-  setTimeout(() => {
-    btn.disabled = false;
-    // renderIndex wird per SSE zurücksetzen
-  }, 2500);
-});
+// „Neu indizieren“-Button entfernt: Der Master ist die einzige Index-Quelle.
+// Der Header zeigt nur noch den Zähler des Master-Index als Badge.
 
 // Zuhören-Button: startet manuelle Aufnahme
 $("b-listen").addEventListener("click", async () => {
@@ -518,6 +626,23 @@ $("vol-slider").addEventListener("input", ev => {
       body: JSON.stringify({ volume: Number(ev.target.value) })
     }).catch(() => { /* Zustand kommt per SSE von selbst */ });
   }, 400);
+});
+
+// Mic-Mute-Button: toggelt {muted: true|false}
+$("b-mic-mute").addEventListener("click", async () => {
+  const btn = $("b-mic-mute");
+  const current = btn.classList.contains("muted");
+  const muted = !current;  // gegen-toggeln
+  btn.textContent = muted ? "🔇" : "🎤";
+  btn.title = muted ? "Mikrofon freischalten" : "Mikrofon stummschalten";
+  btn.classList.toggle("muted", muted);
+  try {
+    await fetch("/mic", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ muted })
+    }).catch(() => { /* Zustand kommt per SSE von selbst */ });
+  } catch (e) { /* Fehler ignoriert, SSE korrigiert später */ }
 });
 
 // ── Media Browser ──────────────────────────────────────────────────

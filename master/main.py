@@ -10,7 +10,26 @@ import sys
 import uvicorn
 
 from . import config as cfg
-from .api import app, manager, start_indexer_background
+from .api import app, manager, start_indexer_background, _append_log_line
+import logging
+
+# ── Logging sink: leitet Logs in den Live-Log-Puffer ───────────────
+
+
+class _MasterLogSink(logging.Handler):
+    """Handler, der Log-Einträge auch in den Live-Log-Puffer schreibt."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setLevel(logging.DEBUG)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            line = self.format(record)
+            _append_log_line(line)
+        except Exception:
+            self.handleError(record)
+
 
 log = logging.getLogger("master")
 
@@ -24,6 +43,9 @@ def main() -> None:
 
     # Raspi-Manager starten (Discovery + Heartbeat) — Singleton aus api.py
     manager.start()
+
+    # Logging-Handler: alle Logs der 'master' Kategorie auch in den Live-Log-Puffer schreiben
+    log.addHandler(_MasterLogSink())
 
     # Initialer Index-Scan im Hintergrund-Thread
     start_indexer_background()

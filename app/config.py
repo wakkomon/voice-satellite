@@ -4,6 +4,7 @@ Werte ohne ENV-Default sind die Legacy-Werte aus dem Rhasspy-Setup.
 Secrets gehören in eine .env-Datei (siehe .env.example), nicht in den Code.
 """
 import os
+import sys
 
 def _load_dotenv(path):
     """Minimaler .env-Parser (KEIN python-dotenv): KEY=WERT, # Kommentare.
@@ -60,16 +61,16 @@ PREROLL_SEC     = float(_env("PREROLL_SEC", "0.3"))    # Vorlauf, damit der Satz
 WAKE_SKIP_SEC   = float(_env("WAKE_SKIP_SEC", "0.15")) # Rest des Codeworts verwerfen (verkürzt für schnellere Reaktion)
 
 # ── STT (Whisper auf .31) ─────────────────────────────────────
-STT_URL         = _env("STT_URL", "http://192.168.1.31:9000/v1/audio/transcriptions")
-STT_MODEL       = _env("STT_MODEL", "whisper-1")
+STT_URL         = _env("STT_URL", "")
+STT_MODEL       = _env("STT_MODEL", "")
 STT_LANGUAGE    = _env("STT_LANGUAGE", "de")   # fest Deutsch vorgeben, sonst rät Whisper und liefert Englisch
 STT_TIMEOUT     = float(_env("STT_TIMEOUT", "30"))
 
 # ── openHAB Rules ─────────────────────────────────────────────
-OPENHAB_URL     = _env("OPENHAB_URL", "http://192.168.1.33:8080/rest/items")
+OPENHAB_URL     = _env("OPENHAB_URL", "")
 OPENHAB_TOKEN   = _env("OPENHAB_TOKEN", "")
-RULES_FILE      = _env("RULES_FILE", "/data/rules.yaml")
-CACHE_TTL       = float(_env("OPENHAB_CACHE_TTL", "300"))  # Item-Liste cachen (s)
+RULES_FILE      = _env("RULES_FILE", "")
+CACHE_TTL       = float(_env("OPENHAB_CACHE_TTL", "300"))  # Item-Liste cachen (s); numerisch -> Default muss bleiben (crashed sonst beim Start)
 
 # ── LLM-Fallback (Hermes-Gateway-Agent .33:8642) ──────────────
 # Live-Default: Hermes-Gateway (:8642, Modell hermes-agent) – ein echter
@@ -77,13 +78,13 @@ CACHE_TTL       = float(_env("OPENHAB_CACHE_TTL", "300"))  # Item-Liste cachen (
 # unterstuetzt: mit enable_thinking=false antworten sie schnell; die Antwort
 # kann in content oder reasoning_content liegen -> router.ask_llm liest beide.
 LLM_ENABLE_THINKING = _env("LLM_ENABLE_THINKING", "false") == "true"
-LLM_URL         = _env("LLM_URL", "http://192.168.1.33:8642/v1/chat/completions",
+LLM_URL         = _env("LLM_URL", "",
                        fallback_empty=True)
 LLM_TOKEN       = _env("LLM_TOKEN", "")            # Gateway: Client-Secret; Ollama: leer
-LLM_MODEL       = _env("LLM_MODEL", "hermes-agent",  # Hermes-Gateway-Agent
+LLM_MODEL       = _env("LLM_MODEL", "",  # Hermes-Gateway-Agent
                        fallback_empty=True)
-LLM_TIMEOUT     = float(_env("LLM_TIMEOUT", "180", fallback_empty=True))  # Kaltstart (Gateway-Agent braucht länger)
-LLM_MAX_TOKENS  = int(_env("LLM_MAX_TOKENS", "1024", fallback_empty=True))  # mit Thinking-aus reicht 1024 fuer Voice-Antworten
+LLM_TIMEOUT     = float(_env("LLM_TIMEOUT", "180", fallback_empty=True))  # Kaltstart (Gateway-Agent braucht länger); numerisch -> Default muss bleiben (crashed sonst beim Start)
+LLM_MAX_TOKENS  = int(_env("LLM_MAX_TOKENS", "1024", fallback_empty=True))  # mit Thinking-aus reicht 1024 fuer Voice-Antworten; numerisch -> Default muss bleiben
 SYSTEM_PROMPT   = _env(
     "SYSTEM_PROMPT",
     "Du bist ein hilfsbereiter Sprachassistent im Wohnzimmer. "
@@ -99,7 +100,7 @@ SYSTEM_PROMPT   = _env(
 # Gateway (:8642, Modell hermes-agent) laeuft ein echter Agent MIT Terminal
 # – dort wuerde derselbe Text ihn werkzeuglos machen: er raet dann z.B. die
 # Uhrzeit statt sie per `date` zu ermitteln. Deshalb hier trennen.
-LLM_HAS_TOOLS   = _env("LLM_HAS_TOOLS", "auto")  # true | false | auto
+LLM_HAS_TOOLS   = _env("LLM_HAS_TOOLS", "")  # true | false | auto
 
 def llm_has_tools():
     v = str(LLM_HAS_TOOLS).strip().lower()
@@ -146,7 +147,7 @@ AGENT_SYSTEM_PROMPT = _env(
 )
 
 # ── Gedächtnis ─────────────────────────────────────────────────
-MEMORY_DB       = _env("MEMORY_DB", "/data/memory.db", fallback_empty=True)
+MEMORY_DB       = _env("MEMORY_DB", "/data/memory.db", fallback_empty=True)  # sqlite-Pfad -> Default muss bleiben; kein Master-Override-Key
 MAX_HISTORY     = int(_env("MAX_HISTORY", "20"))       # Nachrichten im Kurzzeitgedächtnis
 MAX_FACTS       = int(_env("MAX_FACTS", "100"))
 MEMORY_EXTRACT_PROMPT = (
@@ -159,10 +160,10 @@ MEMORY_EXTRACT_PROMPT = (
 )
 
 # ── TTS (Qwen3-TTS auf .31:7811) ──────────────────────────────
-TTS_URL         = _env("TTS_URL", "http://192.168.1.31:7811/v1/audio/speech", fallback_empty=True)
+TTS_URL         = _env("TTS_URL", "", fallback_empty=True)
 TTS_TOKEN       = _env("TTS_TOKEN", "")
-TTS_MODEL       = _env("TTS_MODEL", "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice")
-TTS_VOICE       = _env("TTS_VOICE", "Uncle_fu")
+TTS_MODEL       = _env("TTS_MODEL", "")
+TTS_VOICE       = _env("TTS_VOICE", "")
 # Sprache der Synthese (API-Feld "language"); leer = Server-Default.
 TTS_LANGUAGE    = _env("TTS_LANGUAGE", "German")
 TTS_TIMEOUT     = float(_env("TTS_TIMEOUT", "60"))
@@ -258,8 +259,12 @@ LOG_LEVEL       = _env("LOG_LEVEL", "INFO")
 # Satellite scannt CIFS nur noch als Fallback, wenn MASTER_URL
 # leer ist oder der Master nicht erreichbar.
 # Beispiel: MASTER_URL=http://192.168.1.24:8791
-MASTER_URL      = _env("MASTER_URL", "")
+MASTER_URL      = _env("MASTER_URL", "http://192.168.1.24:8791")
 MASTER_POLL_SEC = int(_env("MASTER_POLL_SEC", "300"))  # Index-Polling-Intervall
+
+# ── Satellite Identifikation ──────────────────────────────────
+SATELLITE_MAC = _env("SATELLITE_MAC", "").strip() or "00:00:00:00:00:00"
+
 
 # ── Heartbeat (Satellit → Master) ─────────────────────────────
 HEARTBEAT_ENABLED = int(_env("HEARTBEAT_ENABLED", "1"))
@@ -283,13 +288,53 @@ def config_version() -> int:
     return _CONFIG_VERSION
 
 
-# Keys, die der Master in den Satelliten pusht. Nur diese dürfen
-# überschrieben werden (keine Hardware-Keys wie MIC_DEVICE/FB_DEVICE).
+def _pull_config_from_master(mac: str, version: int) -> dict:
+    """Holt Config-Overrides vom Master-Proxy via GET /api/config/apply.
+    
+    Gibt dict mit Keys zurück, die gesetzt werden sollen (oder {} bei Fehler).
+    """
+    import urllib.request
+    import json
+    import logging
+    
+    master_url = MASTER_URL.rstrip('/')
+    if not master_url:
+        logging.warning("config_pull: MASTER_URL nicht gesetzt")
+        return {}
+    
+    url = f"{master_url}/api/config/apply?mac={mac}&version={version}"
+    logging.info("config_pull: Fetch config v%s from %s", version, url)
+    
+    try:
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            if resp.status == 200:
+                data = json.loads(resp.read())
+                overrides = data.get('overrides', {})
+                if data.get('changed'):
+                    logging.info("config_pull: Config changed, %d keys", len(overrides))
+                return overrides
+            else:
+                logging.warning("config_pull: HTTP %d", resp.status)
+    except Exception as e:
+        logging.error("config_pull: Failed to fetch config: %s", e)
+    
+    return {}
+
+
+# Keys, die der Master in den Satelliten zieht (einmalig beim Boot).
+# Nur diese dürfen überschrieben werden (keine Hardware-Keys
+# wie MIC_DEVICE/FB_DEVICE). Die 7 "globalen" Keys (Timeouts, Limits,
+# Defaults) sollen nicht pro Container gesetzt werden, sondern zentral
+# über den Master verwaltet werden.
 _OVERWRITABLE = {
     "TTS_URL", "TTS_MODEL", "TTS_VOICE", "TTS_LANGUAGE",
     "STT_URL", "STT_MODEL", "STT_LANGUAGE",
     "LLM_URL", "LLM_MODEL", "LLM_HAS_TOOLS", "LLM_ENABLE_THINKING",
     "OPENHAB_URL", "MUSIC_ROOT", "BRIDGE_HOST", "BRIDGE_PORT",
+    # Globale Settings (Timeouts, Limits, Defaults):
+    "STT_TIMEOUT", "TTS_TIMEOUT", "LLM_TIMEOUT",
+    "LLM_MAX_TOKENS", "OPENHAB_CACHE_TTL",
 }
 
 
@@ -311,6 +356,6 @@ def apply_overrides(d: dict) -> tuple[list[str], list[str]]:
             v = ""
         elif isinstance(v, str) and v.lstrip("-").isdigit():
             v = int(v)
-        globals()[k] = v
+        setattr(sys.modules[__name__], k, v)
         applied.append(k)
     return applied, ignored

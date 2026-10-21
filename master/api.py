@@ -32,9 +32,25 @@ from . import proxy
 from . import mcp_gateway
 from .indexer import _build_media_index, load_index_cache, save_index
 from .manager import SatManager
-from .satconfig import store as config_store, EDITABLE_KEYS
+from .satconfig import store as config_store, EDITABLE_KEYS, GLOBAL_ONLY_KEYS, SECRET_KEYS
 
 log = logging.getLogger("master.api")
+
+# Master-Startzeit für Uptime-Anzeige
+_START_TIME = time.time()
+
+# Live-Log-Puffer: Ringpuffer der letzten N Log-Zeilen
+_LOG_LINES: list[str] = []
+_LOG_MAX = 500
+_log_lock = threading.Lock()
+
+
+def _append_log_line(msg: str) -> None:
+    """Einen Text-Zeilen-Eintrag zum Live-Log-Puffer hinzufügen."""
+    with _log_lock:
+        _LOG_LINES.append(msg)
+        if len(_LOG_LINES) > _LOG_MAX:
+            del _LOG_LINES[:_LOG_MAX]
 
 _STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
@@ -196,8 +212,10 @@ async def _config_put(req: Request) -> JSONResponse:
     if not isinstance(data, dict):
         return JSONResponse({"error": "invalid body"}, status_code=400)
 
-    # Nur erlaubte Schlüssel setzen.
-    g = {k: v for k, v in (data.get("global") or {}).items() if k in EDITABLE_KEYS}
+    # Nur erlaubte Schlüssel setzen (global: EDITABLE + GLOBAL_ONLY +
+    # Secrets; per Satellite: nur EDITABLE_KEYS).
+    g_allowed = set(EDITABLE_KEYS) | set(GLOBAL_ONLY_KEYS) | set(SECRET_KEYS)
+    g = {k: v for k, v in (data.get("global") or {}).items() if k in g_allowed}
     sats: dict[str, dict] = {}
     for mac, ov in (data.get("satellites") or {}).items():
         if isinstance(ov, dict):
@@ -211,8 +229,6 @@ async def _config_put(req: Request) -> JSONResponse:
     version = config_store.version()
     log.info("Zentrale Config aktualisiert (version=%d): global=%s sats=%s",
              version, sorted(g), sorted(sats))
-    # Push an alle bekannten Satelliten (aktiv, ohne Warten auf nächsten Pull).
-    asyncio.get_running_loop().create_task(_push_config_to_all())
     return JSONResponse({"ok": True, "version": version})
 
 
@@ -222,20 +238,8 @@ async def _config_sat_get(req: Request) -> JSONResponse:
     return JSONResponse(config_store.get_effective(mac))
 
 
-async def _config_push(req: Request) -> JSONResponse:
-    """POST /api/config/push → Config an alle (online) Satelliten pushen."""
-    await _push_config_to_all()
-    return JSONResponse({"ok": True})
-
-
-async def _config_apply(req: Request) -> JSONResponse:
-    """GET /api/config/apply?mac=...&version=... → Satellite-Pull.
-
-    POST (ohne mac) → aktiv an alle Satelliten pushen (WebUI-Button).
-    """
-    if req.method == "POST":
-        await _push_config_to_all()
-        return JSONResponse({"ok": True})
+async def _config_apply_get(req: Request) -> JSONResponse:
+    """GET /api/config/apply?mac=...&version=... → Satellite-Pull."""
     mac = req.query_params.get("mac", "").lower()
     try:
         client_ver = int(req.query_params.get("version", "0"))
@@ -249,61 +253,6 @@ async def _config_apply(req: Request) -> JSONResponse:
     overrides = {k: _normalize_override(v) for k, v in eff.items() if v is not None}
     return JSONResponse({"changed": True, "version": master_ver,
                          "overrides": overrides})
-
-
-async def _push_config_to_all() -> None:
-    """Aktive Config-Push an alle (online) Satelliten (außerhalb SSE-Loop)."""
-    import httpx
-    with manager._lock:
-        targets = [(s.mac, s.ip) for s in manager.satellites.values()
-                   if s.status == "online" and s.ip]
-    if not targets:
-        return
-    port = os.environ.get("SATELLITE_WEB_PORT", "8793")
-    ver = config_store.version()
-    async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
-        for mac, ip in targets:
-            eff = config_store.get_effective(mac)
-            overrides = {k: _normalize_override(v)
-                         for k, v in eff.items() if v is not None}
-            try:
-                r = await client.post(
-                    f"http://{ip}:{port}/apply-config",
-                    json={"mac": mac, "version": ver, "overrides": overrides})
-                log.debug("Config-Push %s → %d", ip, r.status_code)
-            except Exception as ex:
-                log.debug("Config-Push %s fehlgeschlagen: %s", ip, ex)
-
-
-async def _push_config_sat(req: Request) -> JSONResponse:
-    """POST /api/config/push/{mac} → gezielt einen Satellite pushen."""
-    mac = req.path_params["mac"].lower()
-    sat = manager.satellites.get(mac)
-    if not sat or not sat.ip:
-        return JSONResponse({"error": "satellite not found"}, status_code=404)
-    import httpx
-    port = os.environ.get("SATELLITE_WEB_PORT", "8793")
-    eff = config_store.get_effective(mac)
-    overrides = {k: _normalize_override(v) for k, v in eff.items() if v is not None}
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
-            r = await client.post(
-                f"http://{sat.ip}:{port}/apply-config",
-                json={"mac": mac, "version": config_store.version(),
-                      "overrides": overrides})
-        return JSONResponse({"ok": r.status_code == 200, "status": r.status_code})
-    except Exception as ex:
-        return JSONResponse({"error": f"push failed: {ex}"}, status_code=502)
-
-
-def _on_config_change() -> None:
-    """Config-Store-Callback (außerhalb des Locks): UI über Änderung informieren."""
-    payload = {"version": config_store.version()}
-    try:
-        asyncio.get_running_loop().call_soon_threadsafe(
-            _broadcast, "config_change", payload)
-    except RuntimeError:
-        _broadcast("config_change", payload)
 
 
 # ── SSE Events ──────────────────────────────────────────────────
@@ -361,6 +310,57 @@ async def _ui(req: Request) -> Response:
         return Response(f.read(), media_type="text/html; charset=utf-8")
 
 
+async def _status(req: Request) -> JSONResponse:
+    """GET /api/status → Master-Uptime + Startzeit."""
+    uptime_s = time.time() - _START_TIME
+    return JSONResponse({
+        "start_time": _START_TIME,
+        "uptime_s": int(uptime_s),
+        "uptime": _fmt_uptime(uptime_s),
+    })
+
+
+def _fmt_uptime(seconds: float) -> str:
+    """Seconds → menschenlesbare Zeichenkette (Tage, Stunden, Minuten, Sekunden)."""
+    days, rem = divmod(int(seconds), 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, secs = divmod(rem, 60)
+    parts = []
+    if days:
+        parts.append(f"{days}T")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    parts.append(f"{secs}s")
+    return " ".join(parts)
+
+
+async def _live_log(req: Request) -> StreamingResponse:
+    """GET /logs → SSE-Stream der letzten Log-Zeilen + neue Einträge."""
+    q: asyncio.Queue[str] = asyncio.Queue(maxsize=128)
+
+    async def generator():
+        # Erst die vorhandenen Zeilen senden
+        with _log_lock:
+            snapshot = list(_LOG_LINES)
+        for line in snapshot:
+            yield f"data: {line}\n\n"
+        # Dann neue Zeilen live
+        try:
+            while True:
+                if await req.is_disconnected():
+                    break
+                msg = await q.get()
+                yield f"data: {msg}\n\n"
+        finally:
+            # Cleanup: Queue aus _log_clients entfernen (hier: keine Liste nötig,
+            # da pro-Request eigener Queue + Generator endet bei Disconnect)
+            pass
+
+    return StreamingResponse(generator(), media_type="text/event-stream")
+
+
 # ── App Setup ───────────────────────────────────────────────────
 
 manager = SatManager()
@@ -383,11 +383,12 @@ def _on_sat_status(mac: str, sat) -> None:
 
 
 manager.set_status_callback(_on_sat_status)
-config_store.set_change_callback(_on_config_change)
 
 routes = [
     Route("/", _ui),
     Route("/healthz", lambda req: JSONResponse({"ok": True})),
+    Route("/api/status", _status),
+    Route("/logs", _live_log),
     Route("/api/heartbeat", _heartbeat),
     Route("/api/music", _api_music),
     Route("/api/music/search", _api_music),  # Alias für Satelliten
@@ -402,15 +403,14 @@ routes = [
     # (b) Zentrale Konfigurationsverwaltung
     Route("/api/config", _config_get),
     Route("/api/config", _config_put, methods=["PUT"]),
-    Route("/api/config/apply", _config_apply, methods=["GET", "POST"]),
-    Route("/api/config/push", _config_push, methods=["POST"]),
+    Route("/api/config/apply", _config_apply_get, methods=["GET"]),
     Route("/api/config/satellite/{mac}", _config_sat_get),
-    Route("/api/config/push/{mac}", _push_config_sat, methods=["POST"]),
     # (c) Zentrale API-Proxy-Endpunkte (TTS/STT/LLM)
     Route("/proxy/tts", proxy.proxy_tts, methods=["POST"]),
     Route("/proxy/stt", proxy.proxy_stt, methods=["POST"]),
     Route("/proxy/llm", proxy.proxy_llm, methods=["POST"]),
-    Route("/proxy/openhab", proxy.proxy_openhab, methods=["GET", "POST", "PUT", "DELETE"]), 
+    Route("/proxy/openhab", proxy.proxy_openhab, methods=["GET", "POST", "PUT", "DELETE"]),
+    Route("/proxy/music", proxy.proxy_music),
     # (d) Zentrales MCP-Gateway (Tools aller Satelliten)
     Route("/mcp/tools", mcp_gateway.mcp_tools_all),
     Route("/mcp/tools/{mac}", mcp_gateway.mcp_tools_one),

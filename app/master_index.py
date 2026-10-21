@@ -1,14 +1,13 @@
 """Master-Index-Client (2.0.0alpha).
 
 Der Satellite holt den fertigen Medien-Index vom Master-Container per
-HTTP. Das Master-Payload hat dieselbe Struktur wie der Rückgabewert von
-``intent._build_media_index()`` — dadurch überleben alle Matching- und
-Scoring-Logik ohne Anpassung.
+HTTP. Der Master (dev) ist die EINZIGE Index-Quelle: er scannt CIFS
+selbst und liefert den fertigen Payload. Der Satellite indiziert
+selbst nicht — kein lokaler CIFS-Scan, kein Fallback.
 
-Fallback-Kette:
-  1. Master-Index (Primär, via HTTP, sofort + periodisch)
-  2. Master dauerhaft unerreichbar (3× Fehlschlag) → lokaler CIFS-Scan
-     wird als Fallback gestartet (1.x-Verhalten)
+Das Master-Payload hat dieselbe Struktur wie der Rückgabewert von
+``master.indexer._build_media_index()`` — dadurch überleben alle
+Matching- und Scoring-Logik ohne Anpassung.
 """
 from __future__ import annotations
 
@@ -23,7 +22,41 @@ from . import config, intent
 
 log = logging.getLogger("master_index")
 
-_CONSECUTIVE_FAIL_THRESHOLD = 3
+
+# ── Verbindungs-Status (für WebUI / Status-Endpoint) ──────────
+# Zentrales, thread-übergreifend abfragbares Bild der Master-Verbindung.
+# Der Index-Sync-Thread (unten) schreibt; Web-/Heartbeat-Threads lesen.
+_master_lock = threading.Lock()
+_master_state = {
+    "connected": False,   # letzter HTTP-Versuch war erfolgreich
+    "failures": 0,        # aufeinanderfolgende Fehlschläge (seit letztem OK)
+    "last_ok": None,      # ISO-Zeit des letzten erfolgreichen Syncs
+    "last_try": None,     # ISO-Zeit des letzten Versuchs
+    "source": "none",     # "master", sobald der erste Sync geklappt hat
+}
+
+
+def _now_iso() -> str:
+    """Lokale Zeit (Europe/Berlin) als ISO-Zeitstempel."""
+    return time.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def master_status() -> dict:
+    """Aktuellen Master-Verbindungsstatus als JSON-fähiges Dict.
+
+    Für die Satelliten-WebUI (web.build_status). „configured"=false, wenn
+    kein MASTER_URL gesetzt ist (reiner Standalone-Betrieb, lokaler Index).
+    """
+    configured = bool(config.MASTER_URL)
+    with _master_lock:
+        return {
+            "configured": configured,
+            "connected": bool(_master_state["connected"]) and configured,
+            "failures": _master_state["failures"],
+            "last_ok": _master_state["last_ok"],
+            "last_try": _master_state["last_try"],
+            "source": _master_state["source"],
+        }
 
 
 def _http_get_json(url: str, timeout: int = 30) -> dict | None:
@@ -46,7 +79,7 @@ def _http_get_json(url: str, timeout: int = 30) -> dict | None:
 def get_master_index_data() -> dict | None:
     """Fertigen Index vom Master holen.
 
-    Payload hat dieselbe Struktur wie ``intent._build_media_index()``:
+    Payload hat dieselbe Struktur wie ``master.indexer._build_media_index()``:
       { "m3u_idx": {...}, "m3u_all": [...],
         "mp3_idx": {...}, "mp3_all": [...], "dir_idx": {...} }
 
@@ -71,28 +104,30 @@ def _apply_payload(payload: dict) -> None:
 def _sync_once(failures: list[int]) -> bool:
     """Einmaligen Sync versuchen. True wenn Erfolg.
 
-    Bei _CONSECUTIVE_FAIL_THRESHOLD aufeinanderfolgenden Fehlschlägen
-    wird der lokale CIFS-Scan als Fallback gestartet (idempotent —
-    intent.start_m3u_indexer prüft _indexer_started).
+    Der Master ist die einzige Index-Quelle: bei Fehlschlag wird kein
+    lokaler CIFS-Scan gestartet — der letzte erfolgreiche Master-Index
+    bleibt bis der Master wieder antwortet.
     """
     payload = get_master_index_data()
     if payload is not None:
         if failures[0] > 0:
-            log.info("Master wieder erreichbar — lokaler Fallback-Index "
-                     "wird durch Master-Index ersetzt")
+            log.info("Master wieder erreichbar — Index wird aktualisiert")
         failures[0] = 0
         _apply_payload(payload)
+        with _master_lock:
+            _master_state["connected"] = True
+            _master_state["failures"] = 0
+            _master_state["last_ok"] = _now_iso()
+            _master_state["last_try"] = _master_state["last_ok"]
+            _master_state["source"] = "master"
         return True
     failures[0] += 1
-    log.warning("Master %s antwortet nicht (Fehlschlag %d/%d)",
-                config.MASTER_URL, failures[0], _CONSECUTIVE_FAIL_THRESHOLD)
-    if failures[0] == _CONSECUTIVE_FAIL_THRESHOLD:
-        log.warning("Master dauerhaft nicht erreichbar — starte lokalen "
-                    "CIFS-Scan als Fallback")
-        try:
-            intent.start_m3u_indexer(config.MUSIC_ROOT)
-        except Exception:
-            log.exception("Lokaler Fallback-Scan fehlgeschlagen")
+    with _master_lock:
+        _master_state["connected"] = False
+        _master_state["failures"] = failures[0]
+        _master_state["last_try"] = _now_iso()
+    log.warning("Master %s antwortet nicht (Fehlschlag %d)",
+                config.MASTER_URL, failures[0])
     return False
 
 

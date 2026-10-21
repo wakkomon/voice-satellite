@@ -31,3 +31,8 @@ SATELLITE_NETWORK  = _env("SATELLITE_NETWORK", "192.168.1.0/24")
 SATELLITE_HEARTBEAT_SEC = _env_int("SATELLITE_HEARTBEAT_SEC", "60")
 # Maximale verpasste Heartbeats bevor ein Satellite als tot gilt
 SATELLITE_MAX_MISSED = _env_int("SATELLITE_MAX_MISSED", "5")
+
+# ── Backend-URLs (nur Master-intern, nie an Satelliten senden) ──
+TTS_BACKEND_URL     = _env("TTS_BACKEND_URL", "http://192.168.1.31:7811/v1/audio/speech")
+STT_BACKEND_URL     = _env("STT_BACKEND_URL", "http://192.168.1.31:9000/v1/audio/transcriptions")
+LLM_BACKEND_URL     = _env("LLM_BACKEND_URL", "http://192.168.1.33:8642/v1/chat/completions")

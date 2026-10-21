@@ -38,20 +38,15 @@ services:
       - STT_URL=${STT_URL:-http://192.168.1.31:9000/v1/audio/transcriptions}
       - STT_MODEL=${STT_MODEL:-whisper-1}
       - STT_LANGUAGE=${STT_LANGUAGE:-de}
-      - STT_TIMEOUT=${STT_TIMEOUT:-30}
       # ── openHAB ──
       - OPENHAB_URL=${OPENHAB_URL:-http://192.168.1.33:8080/rest/items}
       - OPENHAB_TOKEN=${OPENHAB_TOKEN:-}             # leer = ohne Bearer
       - RULES_FILE=${RULES_FILE:-/data/rules.yaml}
-      - OPENHAB_CACHE_TTL=${OPENHAB_CACHE_TTL:-300}
       # ── LLM ──
       - LLM_URL=${LLM_URL:-http://192.168.1.33:8642/v1/chat/completions}
       - LLM_TOKEN=${LLM_TOKEN:-}                     # Gateway: Secret; Ollama: leer
       - LLM_MODEL=${LLM_MODEL:-hermes-agent}
-      - LLM_ENABLE_THINKING=${LLM_ENABLE_THINKING:-false}
       - LLM_HAS_TOOLS=${LLM_HAS_TOOLS:-auto}         # true | false | auto
-      - LLM_TIMEOUT=${LLM_TIMEOUT:-180}
-      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-1024}
       # ── Gedächtnis ──
       - MEMORY_DB=${MEMORY_DB:-/data/memory.db}
       - MAX_HISTORY=${MAX_HISTORY:-20}
@@ -62,7 +57,6 @@ services:
       - TTS_MODEL=${TTS_MODEL:-Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice}
       - TTS_VOICE=${TTS_VOICE:-Uncle_fu}
       - TTS_LANGUAGE=${TTS_LANGUAGE:-German}
-      - TTS_TIMEOUT=${TTS_TIMEOUT:-60}
       # ── Feedback-Töne ──
       - TONE_GAIN=${TONE_GAIN:-0.5}
       - TONE_SEC=${TONE_SEC:-0.15}
@@ -93,7 +87,6 @@ services:
       - IDLE_FRAME_DIR=${IDLE_FRAME_DIR:-/data/idle}
       - IDLE_TIMEOUT=${IDLE_TIMEOUT:-5}
       - IDLE_SHOW_MUSIC=${IDLE_SHOW_MUSIC:-1}
-      - DEFAULT_IMAGE_URL=${DEFAULT_IMAGE_URL:-http://192.168.1.33/weather/snap.jpg}
       # ── Musik-Player / Pi-Bridge ──
       - MUSIC_ROOT=${MUSIC_ROOT:-/m}
       # ── Master (2.0alpha: Indexing-Server, dev) ──

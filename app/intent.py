@@ -17,7 +17,6 @@ import logging
 import os
 import re
 import threading
-import time
 
 from . import config, display, playback, volume
 
@@ -70,258 +69,10 @@ _m3u_all: list[str] | None = None               # alle Playlists (rel. MUSIC_ROO
 _mp3_index: dict[str, list[str]] | None = None  # name.lower() -> [relpaths] für .mp3/.flac/...
 _dir_index: dict[str, list[str]] | None = None  # Ordnernamen.lower() -> [relpaths] (z.B. Interpret-Ordner)
 _flat_cache: list[str] | None = None  # flache [relpaths] – lazy gebaut, dann pro Request Wiederverwendung
-_indexer_started = False
-_index_build_evt = threading.Event()   # manueller Reindex (WebUI-Button / „Neu indizieren")
-_INDEX_REBUILD_INTERVAL = 10800         # s: wie oft der Medien-Index automatisch neu gescannt wird (3h)
-_index_building = False                # True, solange ein (Re-)Build läuft (Web-UI/SSE)
-_index_files_seen = 0                  # Laufzähler: Audios + Playlists im laufenden Build
-_index_last_build = None               # (ts, m3u_n, mp3_n) nach letztem fertigem Build
 
 # Kurze Füllwörter (deutsche Grammatik): tauchen in fast jedem zweiten
 # Dateinamen/Befehl auf und machen eine Substring-Suche unsinnig
 # ("von" in "musik von falco" → False-Positiv auf "Ritter Von Roßbach").
-_IGNORE_TOKENS = frozenset({
-    "von", "der", "die", "das", "den", "dem", "des", "ein", "eine",
-    "einer", "eines", "am", "im", "um", "zu", "mit", "auf", "an",
-    "in", "für", "fuer", "und", "oder", "ist", "sind", "war",
-    "bei", "nach", "aus", "vor", "über", "ueber", "unter",
-    "bis", "doch", "ich", "du", "er", "sie", "es", "mal",
-})
-
-
-def _build_media_index(root: str, max_depth: int = 3,
-                       on_progress=None
-                       ) -> tuple[dict[str, list[str]], list[str],
-                                  dict[str, list[str]], list[str],
-                                  dict[str, list[str]]]:
-    """Scan root/mp3 (max_depth Ebenen) in EINEM Walk und baut:
-      1. M3U-Index:  name.lower() -> [relpaths]  (Playlists .m3u/.m3u8)
-      2. MP3-Index:  name.lower() -> [relpaths]  (Audiodateien .mp3/.flac/...)
-      3. Dir-Index:  Ordnernamen.lower() -> [relpaths] (Interpret-Ordner etc.)
-
-    Begrenzung: nur mp3-Unterverzeichnis, nur max_depth Ebenen. Kein
-    Zeitbudget — der Baum liegt auf CIFS/SMB und ein abgeschnittener Scan
-    würde Songs dauerhaft aus dem Index lassen. on_progress(n_seen) wird
-    nach jeder Datei aufgerufen (Live-Zähler für Web-UI/SSE).
-    """
-    m3u_idx: dict[str, list[str]] = {}
-    m3u_all: list[str] = []
-    mp3_idx: dict[str, list[str]] = {}
-    mp3_all: list[str] = []
-    dir_idx: dict[str, list[str]] = {}
-    scan_root = os.path.join(root, "mp3")
-    if not os.path.isdir(scan_root):
-        return m3u_idx, m3u_all, mp3_idx, mp3_all, dir_idx
-    AUDIO_EXTS = (".mp3", ".flac", ".ogg", ".wav", ".m4a", ".opus")
-    seen = [0]  # Laufzähler für on_progress (Playlists + Audios)
-
-    def _tick() -> None:
-        if on_progress is not None:
-            try:
-                on_progress(seen[0])
-            except Exception:
-                pass
-
-    def add(idx: dict, paths: list, path: str) -> None:
-        rel = os.path.relpath(path, root)
-        if rel in paths:
-            return
-        paths.append(rel)
-        seen[0] += 1
-        _tick()
-        base = os.path.basename(path).rsplit(".", 1)[0]
-        tokens = [t.lower() for t in base.replace("_", " ").split() if t] or [base.lower()]
-        # Kurze/unspezifische Token ausschließen
-        meaningful = [t for t in tokens if t not in _IGNORE_TOKENS and len(t) > 2]
-        for token in sorted(set(meaningful)):
-            idx.setdefault(token, []).append(rel)
-        if base.lower() not in meaningful and base.lower() not in _IGNORE_TOKENS:
-            idx.setdefault(base.lower(), []).append(rel)
-
-    def scandir_sorted(d: str) -> list:
-        try:
-            return sorted(os.scandir(d), key=lambda e: e.name)
-        except OSError:
-            return []
-
-    def _index_dir(p: str, entries: "list | None" = None) -> bool:
-        """Ordner *p* in dir_idx eintragen (Schlüssel: Ordnernamen.lower()).
-        Gibt True zurück, wenn der Ordner selbst Audio-Dateien enthält.
-        entries: bereits gescannte Einträge (kein zweites listdir mehr)."""
-        rel = os.path.relpath(p, root)
-        nm = os.path.basename(p.rstrip(os.sep)).lower()
-        has_audio = False
-        if entries is None:
-            entries = scandir_sorted(p)
-        for e2 in entries:
-            base = e2.name if hasattr(e2, "name") else str(e2)
-            if base.lower().endswith(AUDIO_EXTS) and not e2.is_dir():
-                has_audio = True
-                break
-        if nm and len(nm) > 1 and nm not in _IGNORE_TOKENS:
-            dir_idx.setdefault(nm, []).append(rel)
-        return has_audio
-
-    def rec(d: str, depth: int) -> None:
-        for e in scandir_sorted(d):
-            try:
-                if e.is_file():
-                    base = e.name
-                    if base.lower().endswith((".m3u", ".m3u8")):
-                        add(m3u_idx, m3u_all, e.path)
-                    elif base.lower().endswith(AUDIO_EXTS):
-                        add(mp3_idx, mp3_all, e.path)
-                elif depth < max_depth and e.is_dir():
-                    # Ordnernamen indexieren (Interpreten wie „Falco",
-                    # „Beatles", …) — Namen holen ist ein listdir, kein walk.
-                    _index_dir(e.path)
-                    rec(e.path, depth + 1)
-            except OSError:
-                continue
-
-    entries = scandir_sorted(scan_root)
-    # Pass 1: alle Level-1-Dateien (schnell, garantiert)
-    for e in entries:
-        try:
-            if e.is_file():
-                base = e.name
-                if base.lower().endswith((".m3u", ".m3u8")):
-                    add(m3u_idx, m3u_all, e.path)
-                elif base.lower().endswith(AUDIO_EXTS):
-                    add(mp3_idx, mp3_all, e.path)
-        except OSError:
-            continue
-    # Pass 2: Unterverzeichnisse bis max_depth (komplett, kein Zeitbudget)
-    rec(scan_root, 0)
-    if on_progress is not None:
-        try:
-            on_progress(seen[0])
-        except Exception:
-            pass
-    # De-duplizierung (Pass 1 + rec überlappen sich bei Level-1-Dateien)
-    m3u_all = list(dict.fromkeys(m3u_all))
-    mp3_all = list(dict.fromkeys(mp3_all))
-    for k in dir_idx:
-        dir_idx[k] = list(dict.fromkeys(dir_idx[k]))
-    return m3u_idx, m3u_all, mp3_idx, mp3_all, dir_idx
-
-
-def _index_cache_path() -> str:
-    """Cache-Datei im persistenten /m-Volume (Bind-Mount des Fileserver-Shares).
-    Überlebt Container-Re-Deploys – kein erneuter CIFS-Scan beim nächsten Start."""
-    d = os.path.join(config.MUSIC_ROOT, ".vs-cache")
-    os.makedirs(d, exist_ok=True)
-    return os.path.join(d, "media_index.json")
-
-
-def _save_index(m3u_idx, m3u_all, mp3_idx, mp3_all, dir_idx) -> None:
-    """Index atomar auf der Platte persistieren, damit der Container-Start
-    mit einem warmen Index startet (kein CIFS-Scan) – atomic via rename."""
-    import json as _json
-    path = _index_cache_path()
-    payload = {"ts": time.time(),
-               "m3u_idx": m3u_idx, "m3u_all": m3u_all,
-               "mp3_idx": mp3_idx, "mp3_all": mp3_all,
-               "dir_idx": dir_idx}
-    tmp = path + ".tmp"
-    try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            _json.dump(payload, f, ensure_ascii=False)
-        os.replace(tmp, path)
-    except OSError as e:
-        log.warning("intent: Index-Persist fehlgeschlagen: %s", e)
-
-
-def _load_index_cache() -> bool:
-    """Persistierten Index laden. True, wenn ein Index geladen wurde und der
-    erste CIFS-Rebuild ein volles Intervall warten darf."""
-    import json as _json
-    global _m3u_index, _m3u_all, _mp3_index, _dir_index
-    path = _index_cache_path()
-    if not os.path.isfile(path):
-        return False
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            payload = _json.load(f)
-        mp3_count = len(payload.get("mp3_all") or [])
-        with _lock:
-            _m3u_index = payload.get("m3u_idx") or {}
-            _m3u_all = payload.get("m3u_all") or []
-            _mp3_index = payload.get("mp3_idx") or {}
-            _dir_index = payload.get("dir_idx") or {}
-        log.info("intent: Medien-Index aus Cache geladen — %d Playlists, %d Audios (Alter: %.0f min)",
-                 len(_m3u_all or []), mp3_count,
-                 (time.time() - payload.get("ts", time.time())) / 60.0)
-        return True
-    except (OSError, ValueError) as e:
-        log.warning("intent: Index-Cache nicht lesbar, wird neu gebaut: %s", e)
-        return False
-
-
-def reindex_now() -> None:
-    """Manueller Reindex (WebUI-Button / „Neu indizieren"): der Indexer
-    wachst aus der Intervall-Wartung auf und baut sofort um."""
-    _index_build_evt.set()
-
-
-def start_m3u_indexer(root: str, interval: int | None = None) -> None:
-    """Start background thread: build media index, refresh every `interval` s.
-
-    2.0: Wird nur noch aufgerufen, wenn KEIN Master konfiguriert ist
-    (main.py) oder wenn der Master dauerhaft unerreichbar ist
-    (master_index.py Fallback). Idempotent via _indexer_started.
-    """
-    global _indexer_started
-    if _indexer_started:
-        return
-    _indexer_started = True
-    if interval is None:
-        interval = _INDEX_REBUILD_INTERVAL
-    _load_index_cache()
-
-    def _progress(n: int) -> None:
-        global _index_files_seen
-        _index_files_seen = n
-
-    def _worker():
-        global _m3u_index, _m3u_all, _mp3_index, _dir_index, _index_building, _index_last_build
-        # Index-Build ist CPU-lastig und hoeld das GIL; als nickester Thread
-        # (nice 15) bekommt der SSE-/Web-Writer waehrenddessen faire CPU-Quote,
-        # sonst "friert" die Web-UI beim (Re-)Build ein (Pi 3, 2.5 h Build).
-        try:
-            os.nice(15)
-        except Exception:
-            pass
-        # Warm Cache? -> erst nach einem vollen Intervall neu scannen;
-        # sonst (erster Start ohne Cache) sofort bauen.
-        with _lock:
-            ready = _m3u_index is not None or _mp3_index is not None
-        while True:
-            _index_build_evt.wait(interval if ready else 0)
-            _index_build_evt.clear()
-            ready = True
-            try:
-                _index_building = True
-                _index_files_seen = 0
-                log.info("intent: Medien-Index wird gebaut …")
-                t0 = time.time()
-                m3u_idx, m3u_all, mp3_idx, mp3_all, dir_idx = _build_media_index(
-                    root, on_progress=_progress)
-                _save_index(m3u_idx, m3u_all, mp3_idx, mp3_all, dir_idx)
-                with _lock:
-                    _m3u_index = m3u_idx
-                    _m3u_all = m3u_all
-                    _mp3_index = mp3_idx
-                    _dir_index = dir_idx
-                _index_last_build = (time.time(), len(m3u_all), len(mp3_all))
-                log.info("intent: Medien-Index bereit — %d Playlists, %d Audios, %d Interpreten, %.1f s",
-                         len(m3u_all), len(mp3_all), len(dir_idx), time.time() - t0)
-            except Exception:
-                log.exception("intent: Medien-Index-Refresh fehlgeschlagen")
-            finally:
-                _index_building = False
-
-    threading.Thread(target=_worker, name="media-indexer", daemon=True).start()
 
 
 def _find_in_index(idx: dict[str, list[str]] | None, name: str, root: str,
@@ -543,18 +294,8 @@ def try_play_music(text: str) -> tuple[bool, str | None]:
             mp3_dir = os.path.join(config.MUSIC_ROOT, "mp3")
             if not os.path.isdir(mp3_dir):
                 return True, "MP3-Ordner nicht erreichbar."
-            playlists: list[str] = []
             with _lock:
-                if _m3u_all is not None:
-                    playlists = list(_m3u_all)
-            if not playlists:
-                # Index noch nicht fertig (Startphase) → einmaliger Scan
-                for root_dir, _dirs, files in os.walk(mp3_dir):
-                    for f in files:
-                        if f.lower().endswith((".m3u", ".m3u8")):
-                            playlists.append(
-                                os.path.relpath(os.path.join(root_dir, f), config.MUSIC_ROOT)
-                            )
+                playlists = list(_m3u_all or [])
             if playlists:
                 import random as _rand
                 selected = _rand.choice(playlists)
@@ -668,23 +409,6 @@ def try_resume(text: str) -> tuple[bool, str | None]:
 # ---------------------------------------------------------------------------
 # 7b. Reindex (Neu indizieren) - LOCAL, no LLM
 # ---------------------------------------------------------------------------
-
-_REINDEX_RE = re.compile(
-    r"^(?:neu\s+indizieren|indizier\s*neu|reindex(?:\s+jetzt)?)\s*$")
-
-
-def try_reindex(text: str) -> tuple[bool, str | None]:
-    """Match „Neu indizieren" / „Reindex" – Medien-Index sofort neu bauen.
-
-    Lokal, OHNE LLM. Triggert den Indexer-Thread (reindex_now), der sofort
-    (nicht erst nach dem Intervall) den CIFS-Scan startet.
-    Returns (True, „Neu indizieren …") or (False, None).
-    """
-    t = text.lower().strip().rstrip("!")
-    if not _REINDEX_RE.match(t):
-        return False, None
-    reindex_now()
-    return True, "Neu indizieren – der Medien-Index wird jetzt aktualisiert."
 
 
 def try_play_mp3(text: str) -> tuple[bool, str | None]:
@@ -821,16 +545,6 @@ def try_play_mp3(text: str) -> tuple[bool, str | None]:
         if err:
             return True, err
         return True, f"Playlist '{os.path.splitext(os.path.basename(rel))[0]}' wird abgespielt"
-
-    # 5. Index noch nicht fertig (Startphase) → einmaliger, begrenzter Glob
-    for pat in (f"*{name}*.mp3", f"*{name}*.flac", f"*{name}*.m4a", f"*{name}*.ogg"):
-        for f in glob.glob(os.path.join(mp3_dir, pat), recursive=False):
-            if os.path.isfile(f):
-                rel = os.path.relpath(f, root)
-                err = playback.player.play_path(rel)
-                if err:
-                    return True, err
-                return True, f"'{f}' wird abgespielt"
 
     return True, f"'{name}' nicht gefunden"
 

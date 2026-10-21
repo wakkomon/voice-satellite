@@ -209,9 +209,10 @@ def _heartbeat_loop(pipeline) -> None:
     """Periodischer Heartbeat-POST im Thread."""
     log.info("Heartbeat-Thread gestartet (alle %ds, Master %s)",
              config.HEARTBEAT_SEC, config.MASTER_URL)
+    # Config einmalig beim Start vom Master ziehen
+    pull_and_apply_config()
     while not _stop_event.is_set():
         _do_heartbeat(pipeline)
-        pull_and_apply_config()
         _stop_event.wait(config.HEARTBEAT_SEC)
 
 

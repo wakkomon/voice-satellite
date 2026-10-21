@@ -146,6 +146,31 @@ class Handler(BaseHTTPRequestHandler):
             self._send_frame()
         elif path == "/":
             self._send_html()
+        elif path == "/api/config/info":
+            # Config-Anzeige fuer Info-Button (ohne Secret-Values)
+            # Nur ueberschreibbare Keys aus _OVERWRITABLE, Secrets = ROT maskiert
+            overwritable = {
+                "TTS_URL", "TTS_MODEL", "TTS_VOICE", "TTS_LANGUAGE",
+                "STT_URL", "STT_MODEL", "STT_LANGUAGE",
+                "LLM_URL", "LLM_MODEL", "LLM_HAS_TOOLS", "LLM_ENABLE_THINKING",
+                "OPENHAB_URL", "MUSIC_ROOT", "BRIDGE_HOST", "BRIDGE_PORT",
+                "STT_TIMEOUT", "TTS_TIMEOUT", "LLM_TIMEOUT",
+                "LLM_MAX_TOKENS", "OPENHAB_CACHE_TTL",
+                "DEFAULT_IMAGE_URL",
+            }
+            secret_keys = {
+                "TTS_API_KEY", "STT_API_KEY", "LLM_API_KEY",
+                "OPENHAB_TOKEN", "MEMORY_DB", "SCHEDULE_FILE",
+            }
+            info = {}
+            for k in overwritable:
+                v = getattr(config, k, None)
+                if v is not None:
+                    info[k] = str(v)
+            # Config-Version + Heartbeat-URL anzeigen
+            info["_config_version"] = str(config.config_version())
+            info["_master_url"] = config.MASTER_URL or "Nicht konfiguriert"
+            self._send(200, {"config": info})
         elif path == "/events":
             self._sse()
         elif path == "/volume":
@@ -169,6 +194,8 @@ class Handler(BaseHTTPRequestHandler):
                 "events": p.events[-20:],
                 "music": playback.player.status(),
                 "volume": _vol_snap(),
+                "mic_muted": p.mic_muted,
+                "master": _master_snap(),
             })
         elif path == "/state":
             # Musik-Status + Shuffle-State für die WebUI
@@ -299,15 +326,6 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/stop":
             playback.player.stop()
             return self._send(200, {"ok": True})
-        if self.path == "/index/rebuild":
-            # Manueller Reindex (Web-UI-Button „Neu indizieren"): Indexer-Thread
-            # wird sofort geweckt – asynchron, Antwort kommt direkt zurück.
-            from . import intent as _intent_mod
-            threading.Thread(
-                target=lambda: _intent_mod.reindex_now(),
-                daemon=True).start()
-            self._ev("Web: Index neu indiziert (angefordert)")
-            return self._send(200, {"ok": True, "index": _index_snap()})
         if self.path == "/stop_agent":
             # STOP für die Pipeline (LLM/TTS unterbrechen, zurück zu wake)
             if not _pipeline:
@@ -320,6 +338,21 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(503, {"error": "Pipeline nicht aktiv"})
             ok, msg = _pipeline.manual_listen()
             return self._send(200, {"ok": ok, "message": msg, "state": _pipeline.state})
+        if self.path == "/mic":
+            # Mic-Mute-Toggle: {\"muted\": true|false} – wenn kein muted dabei,
+            # wird gegentoggled. Zustand wird in events + SSE gemeldet.
+            if not _pipeline:
+                return self._send(503, {"error": "Pipeline nicht aktiv"})
+            p = _pipeline
+            if "muted" in data:
+                muted = bool(data["muted"])
+            else:
+                muted = not p.mic_muted
+            p.mic_muted = muted
+            audio.set_mic_mute(muted)
+            p.ev(f"Mic: {'Gemutet' if muted else 'Entmutet'}")
+            self._send(200, {"mic_muted": muted})
+            return
         if self.path == "/pause":
             # Web-UI-Pause: eigener Counter, haengt die Wiedergabe an der
             # Position an (ohne die Sprachpipeline zu betreffen).
@@ -449,6 +482,8 @@ class Handler(BaseHTTPRequestHandler):
                         "music": playback.player.status(),
                         "volume": _vol_snap(),
                         "index": _index_snap(),
+                        "mic_muted": p.mic_muted,
+                        "master": _master_snap(),
                     }
                     self.wfile.write(f"id: {p.seq}\n".encode("utf-8"))
                     self.wfile.write(("data: "
@@ -531,38 +566,40 @@ def _vol_snap():
 
 
 def _index_snap():
-    """Musik-Index-Status: Anzahl indizierter Dateien/Playlists +
-    Build-Fortschritt. Kommt jede SSE-Runde (Reload zeigt damit den
-    aktuellen Index-Zustand mit): während eines (Re-)Builds zeigen
-    `building`/`files_seen` den Fortschritt in Echtzeit, `files` zählt
-    die Dateien des laufenden Builds."""
+    """Musik-Index-Status: Anzahl indizierter Dateien/Playlists.
+
+    Der Satellite indiziert selbst nie — der Index kommt per HTTP vom
+    Master. Hier zählt nur der aktuelle Stand im Speicher; es gibt
+    keinen lokalen Build und damit keinen Build-Fortschritt.
+    """
     from . import intent as _intent_mod
-    building = bool(getattr(_intent_mod, "_index_building", False))
-    files_seen = int(getattr(_intent_mod, "_index_files_seen", 0) or 0)
     try:
         mp3_idx = _intent_mod._mp3_index
         m3u_idx = _intent_mod._m3u_index
-        if mp3_idx is None:
-            mp3_total = 0
-        else:
-            mp3_total = sum(len(f) for f in mp3_idx.values())
+        mp3_total = sum(len(f) for f in (mp3_idx or {}).values())
         m3u_total = len(m3u_idx) if m3u_idx else 0
-        if building:
-            # Build läuft: Live-Zähler statt Endstand (alte Werte tauschen
-            # nur aus, wenn der Build fertig ist).
-            files = files_seen
-        else:
-            files = mp3_total
         return {
-            "files": files,
+            "files": mp3_total,
             "playlists": m3u_total,
-            "building": building,
-            "files_seen": files_seen,
-            "interval_s": getattr(_intent_mod, "_INDEX_REBUILD_INTERVAL", 3600),
         }
     except Exception:
-        return {"files": files_seen if building else 0, "playlists": 0,
-                "building": building, "files_seen": files_seen}
+        return {"files": 0, "playlists": 0}
+
+
+def _master_snap():
+    """Master-Verbindungsstatus fuer die WebUI (SSE + /status).
+
+    Ohne MASTER_URL: leeres Dict -> UI blendt das Master-Badge aus
+    (reiner Standalone-Betrieb). Ansonsten aktuelles Bild aus dem
+    Index-Sync-Thread (master_index.master_status).
+    """
+    if not config.MASTER_URL:
+        return {}
+    try:
+        from . import master_index
+        return master_index.master_status()
+    except Exception:
+        return {}
 
 
 def start(pipeline):

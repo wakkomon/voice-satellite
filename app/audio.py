@@ -248,6 +248,23 @@ def to_wav(pcm_bytes, rate=None):
     return buf.getvalue()
 
 
+def set_mic_mute(mute):
+    """Mikrofon stummschalten (True) oder entsperren (False)
+    über den 'Capture'-Mute-Control von ALSA.
+    Der Control-Name ist hardwareabhängig; 'Capture' funktioniert
+    mit den PCM2902-USB-Soundkarten. Bei anderen Devices ggf.
+    `amixer -D plughw:2 controls` prüfen."""
+    state = "off" if mute else "on"
+    try:
+        subprocess.run(
+            ["amixer", "-q", "cset", "iface='Capture',name='Capture'",
+             state],
+            capture_output=True, timeout=3, check=True,
+        )
+    except Exception as e:
+        print(f"[audio] mic_mute({state}) fehlgeschlagen: {e}")
+
+
 def play_wav(wav_bytes, device=None, blocking=True):
     """WAV -> aplay.
 

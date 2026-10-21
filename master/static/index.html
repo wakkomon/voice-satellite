@@ -61,7 +61,9 @@ footer { margin-top:24px; color:var(--dim); font-size:0.78rem; }
 </style>
 </head>
 <body>
-<h1>Voice-Satellite Master <span class="v" id="version">2.0.0alpha</span></h1>
+<h1>Voice-Satellite Master <span class="v" id="version">2.0.0alpha</span>
+  <button id="btn-open-config" style="float:right;padding:6px 14px;border:1px solid var(--dim);background:transparent;border-radius:4px;cursor:pointer;color:var(--acc);font-size:0.85rem;margin-top:4px">⚙ Konfiguration</button>
+</h1>
 <div class="sub" id="hostline">dev-Server · Port 8791</div>
 
 <div class="grid">
@@ -71,6 +73,8 @@ footer { margin-top:24px; color:var(--dim); font-size:0.78rem; }
     <div class="row"><span class="k">Letzter Re-Scan</span><span class="k num" id="idx-ts">–</span></div>
     <div class="row"><span class="k">Playlists</span><span class="num" id="idx-m3u">–</span></div>
     <div class="row"><span class="k">Audiotracks</span><span class="num" id="idx-mp3">–</span></div>
+    <div class="row"><span class="k">Uptime</span><span class="k num" id="master-uptime">–</span></div>
+    <div class="row"><span class="k">Startzeit</span><span class="k num" id="master-start">–</span></div>
     <div style="margin-top:12px">
       <button id="btn-rebuild">Index neu bauen</button>
     </div>
@@ -85,19 +89,26 @@ footer { margin-top:24px; color:var(--dim); font-size:0.78rem; }
   </div>
 
   <div class="card">
-    <h2>Events (SSE)</h2>
-    <div class="log" id="log"><div><span class="t">–</span>verbinde …</div></div>
+    <h2>Live-Log</h2>
+    <div class="log" id="live-log"><div><span class="t">–</span>verbinde …</div></div>
   </div>
 </div>
 
-<!-- CONFIGURATION -->
-<div class="card" style="margin-top:16px">
-  <h2>Konfiguration</h2>
+<!-- CONFIG PAGE (hidden by default) -->
+<div id="config-page" style="display:none">
+  <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+    <button id="btn-config-back" style="padding:6px 14px;border:1px solid var(--dim);background:transparent;border-radius:4px;cursor:pointer;color:var(--acc);font-size:0.85rem">← Zurück</button>
+    <h2 style="margin:0;font-size:1.15rem">Konfiguration</h2>
+  </div>
+
+  <!-- TABS -->
   <div class="cfg-tabs" id="cfg-tabs">
     <button class="active" data-domain="tts">TTS</button>
     <button data-domain="stt">STT</button>
     <button data-domain="llm">LLM</button>
     <button data-domain="openhab">OpenHAB</button>
+    <button data-domain="secrets">🔑 Secrets</button>
+    <button data-domain="system">System</button>
   </div>
 
   <!-- Global config -->
@@ -107,18 +118,8 @@ footer { margin-top:24px; color:var(--dim); font-size:0.78rem; }
   </table>
   <div class="cfg-save-row">
     <button id="btn-save-global" disabled>Speichern</button>
-    <button id="btn-apply-all" class="warn">Push → alle Satelliten</button>
+    <span style="color:var(--dim);font-size:0.82rem">Satelliten ziehen Config beim Neustart automatisch → kein Push nötig</span>
     <span id="cfg-status" class="cfg-status"></span>
-  </div>
-
-  <!-- Satellite overrides -->
-  <div class="sat-override-section">
-    <h2 style="font-size:0.8rem;text-transform:uppercase;letter-spacing:0.06em;color:var(--dim);margin:20px 0 12px">Satelliten-Overrides</h2>
-    <div id="sat-overrides"></div>
-    <div class="cfg-save-row">
-      <button id="btn-save-sat-override">Override speichern</button>
-      <span id="sat-override-status" class="cfg-status"></span>
-    </div>
   </div>
 </div>
 
@@ -136,20 +137,50 @@ const DOMAINS = {
     { key: "TTS_MODEL", type: "text" },
     { key: "TTS_VOICE", type: "text" },
     { key: "TTS_LANGUAGE", type: "text" },
+    { key: "TTS_TIMEOUT", type: "text" },
   ],
   stt: [
     { key: "STT_URL", type: "text" },
     { key: "STT_MODEL", type: "text" },
     { key: "STT_LANGUAGE", type: "text" },
+    { key: "STT_TIMEOUT", type: "text" },
   ],
   llm: [
     { key: "LLM_URL", type: "text" },
     { key: "LLM_MODEL", type: "text" },
     { key: "LLM_HAS_TOOLS", type: "bool" },
     { key: "LLM_ENABLE_THINKING", type: "bool" },
+    { key: "LLM_TIMEOUT", type: "text" },
+    { key: "LLM_MAX_TOKENS", type: "text" },
   ],
   openhab: [
     { key: "OPENHAB_URL", type: "text" },
+    { key: "OPENHAB_CACHE_TTL", type: "text" },
+    { key: "DEFAULT_IMAGE_URL", type: "text" },
+  ],
+  secrets: [
+    { key: "TTS_TOKEN", type: "password" },
+    { key: "STT_TOKEN", type: "password" },
+    { key: "LLM_TOKEN", type: "password" },
+    { key: "OPENHAB_TOKEN", type: "password" },
+  ],
+  system: [
+    { key: "MUSIC_ROOT", type: "text" },
+    { key: "BRIDGE_HOST", type: "text" },
+    { key: "BRIDGE_PORT", type: "text" },
+    { key: "MEMORY_DB", type: "text" },
+    { key: "MEMORY_MAX_TOKENS", type: "text" },
+    { key: "MIC_DEVICE", type: "text" },
+    { key: "DISPLAY", type: "text" },
+    { key: "FB_DEVICE", type: "text" },
+    { key: "FB_WIDTH", type: "text" },
+    { key: "FB_HEIGHT", type: "text" },
+    { key: "ALSA_DEVICE", type: "text" },
+    { key: "ALSA_VOLUME", type: "text" },
+    { key: "ALSA_MUTE", type: "text" },
+    { key: "WOL_MAC", type: "text" },
+    { key: "SCHEDULE_FILE", type: "text" },
+    { key: "RULES_FILE", type: "text" },
   ],
 };
 
@@ -172,6 +203,17 @@ document.getElementById('cfg-tabs').addEventListener('click', e => {
   renderConfigTable();
 });
 
+// ── Config page toggle ──
+document.getElementById('btn-open-config').addEventListener('click', () => {
+  document.querySelector('.grid').style.display = 'none';
+  $('config-page').style.display = 'block';
+  loadConfig();
+});
+document.getElementById('btn-config-back').addEventListener('click', () => {
+  $('config-page').style.display = 'none';
+  document.querySelector('.grid').style.display = 'block';
+});
+
 // ── Config load & render ──
 async function loadConfig() {
   try {
@@ -181,7 +223,6 @@ async function loadConfig() {
     globalConfig = j.global || {};
     allSats = j.satellites || {};
     renderConfigTable();
-    renderSatOverrides();
   } catch (e) {
     showStatus('cfg-status', 'Laden fehlgeschlagen: ' + e, 'err');
   }
@@ -192,16 +233,24 @@ function renderConfigTable() {
   const fields = DOMAINS[currentDomain] || [];
   tbody.innerHTML = fields.map(f => {
     const val = globalConfig[f.key] ?? '';
-    const typeLabel = f.type === 'bool' ? 'B' : 'T';
+    const typeLabel = f.type === 'bool' ? 'B' : f.type === 'password' ? 'S' : 'T';
     if (f.type === 'bool') {
       const checked = !!val;
       return `<tr>
         <td class="key-col">${esc(f.key)}</td>
         <td class="type-col">${typeLabel}</td>
-        <td><select data-key="${esc(f.key)}" data-type="bool" class="cfg-input">
-          <option value="true" ${checked ? 'selected' : ''}>true</option>
-          <option value="false" ${!checked ? 'selected' : ''}>false</option>
+        <td><select class="cfg-input" data-key="${esc(f.key)}" data-type="bool">
+          <option value="true" ${checked?'selected':''}>true</option>
+          <option value="false" ${!checked?'selected':''}>false</option>
         </select></td>
+      </tr>`;
+    }
+    if (f.type === 'password') {
+      const set = (val === 'gesetzt') || (val !== '' && val !== undefined && val !== null);
+      return `<tr>
+        <td class="key-col">${esc(f.key)}</td>
+        <td class="type-col">${typeLabel}</td>
+        <td><input type="password" class="cfg-input" data-key="${esc(f.key)}" data-type="password" ${set?'data-set="1"':''} value="" placeholder="${set?'gesetzt – leer lassen, um unverändert zu bleiben':'leer'}" /></td>
       </tr>`;
     }
     return `<tr>
@@ -225,6 +274,8 @@ function checkDirty() {
     const key = input.dataset.key;
     let val = input.value;
     if (input.dataset.type === 'bool') val = input.value === 'true';
+    // Passwort-Feld leer gelassen + Token gesetzt → kein Change (unverändert bleibt)
+    if (input.dataset.type === 'password' && val === '' && input.dataset.set) return;
     const orig = globalConfig[key];
     if (String(orig) !== String(val)) dirty = true;
   });
@@ -238,6 +289,8 @@ async function saveGlobalConfig() {
     const key = input.dataset.key;
     let val = input.value;
     if (input.dataset.type === 'bool') val = input.value === 'true';
+    // Leeres Passwort-Feld bei gesetztem Token → Key überspringen (Secret bleibt)
+    if (input.dataset.type === 'password' && val === '' && input.dataset.set) return;
     overrides[key] = val;
   });
 
@@ -269,127 +322,7 @@ async function pushConfigToAll() {
       showStatus('cfg-status', 'Push fehlgeschlagen: ' + (j.error || r.status), 'err');
     }
   } catch (e) {
-    showStatus('cfg-status', 'Push fehlgeschlagen: ' + e, 'err');
-  }
-}
-
-// ── Satellite overrides ──
-let selectedSatMac = "";
-let satOverrideDraft = {};
-
-function renderSatOverrides() {
-  const container = $('sat-overrides');
-  const existingEntries = Object.entries(allSats);
-
-  // Dropdown für verfügbare Satelliten
-  const satList = Object.entries(allSats);
-  const dropdownHtml = `
-    <div style="margin-bottom:12px;display:flex;gap:8px;align-items:center">
-      <select id="sat-overrides-select" style="background:#0d0f14;border:1px solid #2a2e3a;color:var(--fg);padding:4px 8px;border-radius:4px;font-size:0.82rem;min-width:200px">
-        <option value="">-- Satellit wählen --</option>
-        ${satList.map(([mac]) => `<option value="${esc(mac)}" ${selectedSatMac===mac?'selected':''}>${esc(mac)}</option>`).join('')}
-      </select>
-    </div>
-  `;
-
-  // Override-Felder für gewählten Satelliten
-  const fieldsHtml = selectedSatMac ? renderOverrideFields(selectedSatMac) : '';
-
-  container.innerHTML = dropdownHtml + fieldsHtml;
-
-  // Dropdown-Listener
-  const sel = $('sat-overrides-select');
-  if (sel) {
-    sel.addEventListener('change', e => {
-      selectedSatMac = e.target.value;
-      loadSatOverride(selectedSatMac);
-    });
-  }
-}
-
-function renderOverrideFields(mac) {
-  const draft = satOverrideDraft[mac] || {};
-  const fields = DOMAINS[currentDomain] || [];
-
-  return `<div class="sat-override-row" style="border:1px solid #2a2e3a">
-    <h3>${esc(mac)}</h3>
-    <table class="cfg-table">
-      <thead><tr><th class="key-col">Schlüssel</th><th class="type-col">Typ</th><th>Wert</th></tr></thead>
-      <tbody>
-        ${fields.map(f => {
-          const val = draft[f.key] ?? '';
-          if (f.type === 'bool') {
-            return `<tr>
-              <td class="key-col">${esc(f.key)}</td>
-              <td class="type-col">B</td>
-              <td><select class="sat-override-input" data-key="${esc(f.key)}" data-type="bool">
-                <option value="true" ${val==='true'||val===true?'selected':''}>true</option>
-                <option value="false" ${val!=='true'&&val!==true?'selected':''}>false</option>
-              </select></td>
-            </tr>`;
-          }
-          return `<tr>
-            <td class="key-col">${esc(f.key)}</td>
-            <td class="type-col">T</td>
-            <td><input type="text" class="sat-override-input" data-key="${esc(f.key)}" value="${esc(String(val))}" /></td>
-          </tr>`;
-        }).join('')}
-      </tbody>
-    </table>
-  </div>`;
-}
-
-async function loadSatOverride(mac) {
-  if (!mac) {
-    satOverrideDraft = {};
-    renderSatOverrides();
-    return;
-  }
-  try {
-    const r = await fetch(`/api/config/satellite/${mac}`);
-    if (r.ok) {
-      const j = await r.json();
-      satOverrideDraft[mac] = j;
-    }
-  } catch (e) {
-    console.error('Override laden fehlgeschlagen:', e);
-  }
-  renderSatOverrides();
-}
-
-async function saveSatOverride() {
-  if (!selectedSatMac) {
-    showStatus('sat-override-status', 'Bitte Satellit wählen', 'err');
-    return;
-  }
-  const inputs = document.querySelectorAll('.sat-override-input');
-  const overrides = {};
-  inputs.forEach(input => {
-    const key = input.dataset.key;
-    let val = input.value;
-    if (input.dataset.type === 'bool') val = input.value === 'true';
-    overrides[key] = val;
-  });
-
-  try {
-    const r = await fetch('/api/config', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ satellites: { [selectedSatMac]: overrides } }),
-    });
-    const j = await r.json();
-    if (r.ok) {
-      showStatus('sat-override-status', `Override gespeichert (v${j.version || '?'})`, 'ok');
-      globalConfig = {}; // neu laden
-      allSats = {};
-      await loadConfig();
-      selectedSatMac = '';
-      renderSatOverrides();
-    } else {
-      showStatus('sat-override-status', 'Fehler: ' + (j.error || r.status), 'err');
-    }
-  } catch (e) {
-    showStatus('sat-override-status', 'Fehler: ' + e, 'err');
+    showStatus('cfg-status', 'Fehler: ' + e, 'err');
   }
 }
 
@@ -401,18 +334,20 @@ function showStatus(id, msg, cls) {
   setTimeout(() => { el.textContent = ''; el.className = 'cfg-status'; }, 5000);
 }
 
+// ── Uptime ──
+let _masterStart = 0;  // timestamp in seconds
+
 // ── Event handlers ──
 $('btn-save-global').onclick = saveGlobalConfig;
-$('btn-apply-all').onclick = pushConfigToAll;
-$('btn-save-sat-override').onclick = saveSatOverride;
 
-// ── Existing refresh / SSE ──
+// ── Refresh & Status ──
 async function refresh() {
   try {
-    const [hb, sats, music] = await Promise.all([
+    const [hb, sats, music, status] = await Promise.all([
       fetch('/api/heartbeat').then(r => r.ok || r.status === 202 ? r.json() : {}),
       fetch('/api/satellites').then(r => r.json()).catch(() => []),
       fetch('/api/music', {headers:{'Accept-Encoding':'identity'}}).then(r => r.json()).catch(() => null),
+      fetch('/api/status').then(r => r.ok ? r.json() : {}),
     ]);
 
     // System
@@ -425,6 +360,13 @@ async function refresh() {
     if (music) {
       $('idx-m3u').textContent = (music.m3u_all||[]).length.toLocaleString('de-DE');
       $('idx-mp3').textContent = (music.mp3_all||[]).length.toLocaleString('de-DE');
+    }
+
+    // Uptime
+    if (status && status.uptime_s !== undefined) {
+      _masterStart = status.start_time || 0;
+      $('master-uptime').textContent = status.uptime || '–';
+      $('master-start').textContent = _masterStart ? new Date(_masterStart * 1000).toLocaleTimeString('de-DE') : '–';
     }
 
     // Satelliten
@@ -475,25 +417,47 @@ async function act(mac, action) {
 }
 
 function logEvent(event, data) {
-  const log = $('log');
+  const logEl = $('live-log');
+  if (!logEl) return;
   const t = new Date().toLocaleTimeString('de-DE');
   let msg;
   if (event === 'index_done') msg = `Index fertig (${data.ts ? fmtTs(data.ts) : ''}${data.elapsed ? `, ${Math.round(data.elapsed)}s` : ''})`;
   else if (event === 'index_error') msg = 'Index-Fehler!';
   else if (event === 'sat_status') msg = `Satellit ${data.hostname||data.ip}: ${data.status}`;
   else if (event === 'sat_action') msg = `Aktion ${data.action} → ${data.mac}: ${data.result||'…'}`;
+  else if (event === 'index_rebuild') msg = `Index-Neubau: ${data.result||'gestartet'}`;
   else msg = `${event}: ${JSON.stringify(data)}`;
-  log.insertAdjacentHTML('afterbegin', `<div><span class="t">${t}</span>${esc(msg)}</div>`);
-  while (log.children.length > 60) log.lastChild.remove();
+  logEl.insertAdjacentHTML('afterbegin', `<div><span class="t">${t}</span>${msg}</div>`);
+  while (logEl.children.length > 200) logEl.lastChild.remove();
 }
 
 function connectSSE() {
   const es = new EventSource('/events');
-  es.onopen = () => logEvent('connected', {});
   es.addEventListener('index_done', e => logEvent('index_done', JSON.parse(e.data).data));
   es.addEventListener('index_error', e => logEvent('index_error', JSON.parse(e.data).data));
   es.addEventListener('sat_status', e => logEvent('sat_status', JSON.parse(e.data).data));
   es.onerror = () => { es.close(); setTimeout(connectSSE, 5000); };
+}
+
+// ── Live-Log (SSE von /logs) ──
+// Log-Zeilen vom Backend kommen bereits mit Timestamps (formatierter Log-Eintrag).
+// Diese direkt einfügen, ohne zusätzlichen Timestamp.
+function connectLiveLog() {
+  const logEl = $('live-log');
+  if (!logEl) return;
+  const es = new EventSource('/logs');
+  es.addEventListener('message', e => {
+    const line = e.data;
+    // EventSource sendet initial alle gepufferten Zeilen als "message" events.
+    // Danach kommen neue Zeilen live.
+    logEl.insertAdjacentHTML('afterbegin', `<div>${line}</div>`);
+    while (logEl.children.length > 200) logEl.lastChild.remove();
+  });
+  es.onerror = () => {
+    logEl.innerHTML = '<div><span style="color:var(--err)">Verbindung unterbrochen, versuche erneut …</span></div>';
+    es.close();
+    setTimeout(connectLiveLog, 5000);
+  };
 }
 
 $('btn-rebuild').onclick = async () => {
@@ -509,10 +473,8 @@ $('btn-rebuild').onclick = async () => {
 
 refresh();
 connectSSE();
+connectLiveLog();
 setInterval(refresh, 30000);
-// Config wird beim Start und dann alle 60s geladen
-loadConfig();
-setInterval(loadConfig, 60000);
 </script>
 </body>
 </html>

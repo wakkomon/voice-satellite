@@ -59,6 +59,7 @@ class Pipeline:
         self._music_held = False    # Pipeline haelt Geraet (Aufnahme/Töne/TTS)
         self._duck_mine = False     # diese Session hat das Ducking gestartet
         self._stop_flag = False     # Thread-safe STOP (von Web-UI/Debug)
+        self.mic_muted = False      # Mic-Mute-Status (WebUI-Steuerbar)
         # Idle-Display-Alternierung: weather <-> music info
         self._idle_at = 0.0           # Zeitstempel: letzte idle-Aktion
         self._idle_mode = "none"      # "weather" | "music" | "none"
@@ -451,22 +452,35 @@ def main():
     p = Pipeline()
     web.start(p)                    # Debug-/Health-HTTP im Hintergrundthread
     _start_mcp_server()              # MCP-Remote-Steuerung
+    # Config-Pull vom Master (einmalig beim Startup)
+    if config.MASTER_URL:
+        mac = config.SATELLITE_MAC or "00:00:00:00:00:00"
+        overrides = config._pull_config_from_master(mac, config.config_version())
+        if overrides:
+            applied, ignored = config.apply_overrides(overrides)
+            if applied:
+                config.bump_config_version()
+                log.info("Satellite: Config applied (%d keys, version=%d)", len(applied), config.config_version())
+            elif ignored:
+                log.warning("Satellite: Config ignored keys: %s", ignored)
+    
     # Heartbeat: Status-Push an Master (wenn MASTER_URL gesetzt)
     if config.MASTER_URL:
         from . import heartbeat as _hb
         _hb.start_heartbeat_thread(p)
     router.warm_async()             # LLM-Modell im Hintergrund vorwärmen
-    # M3U-Index im Hintergrund (2.0alpha): Primärquelle ist der Master-Container
-    # (dev, CIFS-Scanner). Satellite zieht fertigen Index per HTTP.
-    # Lokaler CIFS-Scan nur als Fallback ohne Master.
-    from . import intent as _intent
+    # Medien-Index (2.0alpha): Der Master-Container (dev) ist die einzige
+    # Index-Quelle. Der Satellite zieht den fertigen Index per HTTP und
+    # indiziert selbst nie (kein lokaler CIFS-Scan, kein Fallback).
     if config.MASTER_URL:
         log.info("Medien-Index: Master-Index-Sync gestartet (%s)",
                  config.MASTER_URL)
         from . import master_index as _mi
         _mi.start_sync()
     else:
-        _intent.start_m3u_indexer(config.MUSIC_ROOT)
+        log.warning("Medien-Index: kein MASTER_URL gesetzt — "
+                    "der Satellite indiziert nicht selbst; ohne Master "
+                    "steht kein Medien-Index zur Verfügung.")
     p.run()
 
 
