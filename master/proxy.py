@@ -133,14 +133,11 @@ async def proxy_tts(req: Request) -> Response:
     async def gen():
         buf = b""
         try:
-            while True:
-                chunk = await resp.aread()
-                if not chunk:
-                    break
+            async for chunk in resp.aiter_bytes(8192):
                 buf += chunk
                 yield chunk
-        except httpx.HTTPError as e:
-            log.warning("TTS-streamer: aread-Fehler, sende %d Bytes bisher: %s", len(buf), e)
+        except httpx.StreamError as e:
+            log.warning("TTS-streamer: %s, sende %d Bytes bisher: %s", e, len(buf), e)
             if buf:
                 yield buf
         finally:
