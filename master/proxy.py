@@ -151,7 +151,14 @@ async def proxy_stt(req: Request) -> Response:
             r = await client.post(
                 url, content=body,
                 headers=_headers(token, req))
-        return JSONResponse(r.json(), status_code=r.status_code)
+        # Upstream liefert ggf. keinen JSON-Body (z.B. 500 vom Whisper)
+        try:
+            return JSONResponse(r.json(), status_code=r.status_code)
+        except Exception:
+            log.warning("STT-Proxy: Upstream-Response kein JSON (RC %d)", r.status_code)
+            return JSONResponse(
+                {"error": "stt upstream: keine JSON-Antwort", "detail": r.text[:200]},
+                status_code=502)
     except httpx.HTTPError as e:
         log.warning("STT-Proxy-Fehler: %s", e)
         return JSONResponse({"error": f"stt upstream: {e}"}, status_code=502)
