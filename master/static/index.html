@@ -388,16 +388,19 @@ async function refresh() {
         parts.push(comps);
       }
       // Farbe: grün = online + Container läuft; gelb = Host online,
-      // Container gestoppt; rot = Host offline.
-      const dotCls = s.status !== 'online' ? 'off'
-                   : s.docker_running ? 'on' : 'warn';
+      // Container gestoppt ODER Status noch unbekannt; rot = Host offline.
+      const dotCls = s.status === 'offline' ? 'off'
+                   : s.status !== 'online'  ? 'warn'
+                   : s.docker_running       ? 'on' : 'warn';
       const dockBadge = s.docker_running
         ? '<span class="badge ok">läuft</span>'
         : '<span class="badge" style="color:#e5a50a">Container stopt</span>';
       const activityHtml = parts.length ? parts.join('<br>') :
-        (s.status === 'online'
-          ? '<span style="color:var(--dim)">Host online, Container stopt</span>'
-          : '<span style="color:var(--dim)">offline</span>');
+        (s.status === 'offline'
+          ? '<span style="color:var(--dim)">offline</span>'
+          : s.status === 'online'
+            ? '<span style="color:var(--dim)">Host online, Container stopt</span>'
+            : '<span style="color:var(--dim)">Status unbekannt</span>');
 
       return `<tr>
         <td><span class="dot ${dotCls}"></span>${esc(s.hostname || s.ip)}</td>

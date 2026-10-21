@@ -160,9 +160,13 @@ class SatManager:
                      len(open_ips), time.time() - t0)
             for ip in open_ips:
                 self._identify(ip)
-            # Nicht (neu) gesehene explizite Satelliten → online halten
+            # Explizit konfigurierte Satelliten, die der Scan NICHT findet,
+            # nur (neu) registrieren – aber niemals als online markieren:
+            # ein _upsert würde status/last_seen auf online setzen und der
+            # Offline-Check unten (3x Intervall) würde nie greifen.
             for ip in ips:
-                self._upsert(ip, sats_cfg.get(ip), "", known=True)
+                if ip not in open_ips:
+                    self._upsert_missing(ip, sats_cfg.get(ip))
             with self._lock:
                 for mac, sat in self.satellites.items():
                     if sat.status == "online" and (
@@ -201,6 +205,20 @@ class SatManager:
         mac = self._get_mac(ip)
         label = hostname or (mac.split(":")[-1] if mac else ip.rsplit(".", 1)[-1])
         self._upsert(ip, mac, label)
+
+    def _upsert_missing(self, ip: str, mac: str | None) -> None:
+        """Explizit konfigurierten Satellite nur (neu) registrieren,
+        wenn er im Scan nicht auftaucht – ohne ihn online zu markieren.
+        Das Offline-Kriterium (3x Intervall ohne Sicht) greift normal."""
+        with self._lock:
+            key = mac or ip
+            if key not in self.satellites:
+                self.satellites[key] = Satellite(
+                    mac=key, ip=ip,
+                    hostname=f"sat-{ip.rsplit('.', 1)[-1]}",
+                    status="unknown", is_known=True,
+                )
+                log.info("Expliziter Satellit registriert (im Scan nicht sichtbar): %s", ip)
 
     def _upsert(self, ip: str, mac: str | None, hostname: str,
                 known: bool = False) -> None:
