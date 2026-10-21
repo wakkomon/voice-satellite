@@ -128,9 +128,18 @@ async def proxy_tts(req: Request) -> Response:
         return JSONResponse({"error": f"tts upstream: {e}"}, status_code=502)
 
     async def gen():
+        buf = b""
         try:
-            async for chunk in resp.aiter_bytes(8192):
+            while True:
+                chunk = await resp.aread()
+                if not chunk:
+                    break
+                buf += chunk
                 yield chunk
+        except httpx.HTTPError as e:
+            log.warning("TTS-streamer: aread-Fehler, sende %d Bytes bisher: %s", len(buf), e)
+            if buf:
+                yield buf
         finally:
             await resp.aclose()
 
@@ -199,11 +208,18 @@ async def proxy_openhab(req: Request) -> Response:
     if not base_url:
         return JSONResponse({"error": "OPENHAB_URL nicht konfiguriert"}, status_code=502)
     # Sub-Pfad aus der anfragenden URL extrahieren
+    # Robust gegen /proxy/openhab und /proxy/openhab/ (mit oder ohne Slash)
     try:
-        sub_path = "/".join(urlparse(req.url.path).path.split("/proxy/openhab/", 1))
+        path = urlparse(req.url.path).path
+        if path.startswith("/proxy/openhab"):
+            sub_path = path[len("/proxy/openhab"):]
+            # Entferne führenden Slash vom Sub-Pfad
+            sub_path = sub_path.lstrip("/")
+        else:
+            sub_path = ""
     except Exception:
         sub_path = ""
-    target = base_url.rstrip("/") + "/" + sub_path.lstrip("/")
+    target = base_url.rstrip("/") + (("/" + sub_path) if sub_path else "")
     method = req.method
     body = await req.body()
     try:
