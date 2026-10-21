@@ -111,14 +111,14 @@ def _check_component(url: str) -> str:
     """Component-Status prüfen (HTTP, stdlib).
 
     Semantik: "läuft der Dienst?" — eine jegliche HTTP-Antwort (inkl. 4xx/5xx)
-    beweist, dass der Server erreichbar ist. POST-only-Endpoints (/v1/audio/speech
-    etc.) antworten auf HEAD mit 405/401/404; das heißt "läuft", nicht "tot".
+    beweist, dass der Server erreichbar ist. Der Master-Proxy antwortet auf
+    GET/HEAD am /proxy/-Endpoint mit 200 (Health-Probe, kein Upstream-Call).
     Nur Netzwerkfehler/Timeout = unreachable.
     """
     if not url:
         return "unconfigured"
     try:
-        req = urllib.request.Request(url, method="HEAD")
+        req = urllib.request.Request(url, method="GET")
         with urllib.request.urlopen(req, timeout=2):
             return "ok"
     except urllib.error.HTTPError:

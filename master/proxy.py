@@ -108,6 +108,9 @@ def _headers(token: str, req: Request, extra: dict | None = None) -> dict:
 
 async def proxy_tts(req: Request) -> Response:
     """TTS-Proxy: JSON rein, audio/wav (Streaming) raus."""
+    # Health-Probe: Satelliten-Heartbeat checkt Komponenten mit GET/HEAD.
+    if req.method in ("GET", "HEAD"):
+        return JSONResponse({"ok": True, "endpoint": "tts"})
     if e := _auth_error(req):
         return e
     url = _upstream_url("TTS_URL", ENV_TTS_URL)
@@ -148,6 +151,8 @@ async def proxy_tts(req: Request) -> Response:
 
 async def proxy_stt(req: Request) -> Response:
     """STT-Proxy: multipart/form-data rein, JSON-Transkript raus."""
+    if req.method in ("GET", "HEAD"):
+        return JSONResponse({"ok": True, "endpoint": "stt"})
     if e := _auth_error(req):
         return e
     url = _upstream_url("STT_URL", ENV_STT_URL)
@@ -175,6 +180,8 @@ async def proxy_stt(req: Request) -> Response:
 
 async def proxy_llm(req: Request) -> Response:
     """LLM-Proxy: OpenAI chat/completions rein, JSON-Antwort raus."""
+    if req.method in ("GET", "HEAD"):
+        return JSONResponse({"ok": True, "endpoint": "llm"})
     if e := _auth_error(req):
         return e
     url = _upstream_url("LLM_URL", ENV_LLM_URL)

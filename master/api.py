@@ -406,9 +406,9 @@ routes = [
     Route("/api/config/apply", _config_apply_get, methods=["GET"]),
     Route("/api/config/satellite/{mac}", _config_sat_get),
     # (c) Zentrale API-Proxy-Endpunkte (TTS/STT/LLM)
-    Route("/proxy/tts", proxy.proxy_tts, methods=["POST"]),
-    Route("/proxy/stt", proxy.proxy_stt, methods=["POST"]),
-    Route("/proxy/llm", proxy.proxy_llm, methods=["POST"]),
+    Route("/proxy/tts", proxy.proxy_tts, methods=["GET", "HEAD", "POST"]),
+    Route("/proxy/stt", proxy.proxy_stt, methods=["GET", "HEAD", "POST"]),
+    Route("/proxy/llm", proxy.proxy_llm, methods=["GET", "HEAD", "POST"]),
     Route("/proxy/openhab/{subpath:path}", proxy.proxy_openhab, methods=["GET", "POST", "PUT", "DELETE"]),
     Route("/proxy/music", proxy.proxy_music),
     # (d) Zentrales MCP-Gateway (Tools aller Satelliten)
