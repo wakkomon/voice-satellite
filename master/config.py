@@ -25,8 +25,7 @@ MUSIC_ROOT      = _env("MUSIC_ROOT", "/m")  # Container-mountpunkt (wie /m auf S
 CACHE_DIR       = _env("CACHE_DIR", "/data/vs-index")  # Index-Cache (persistiertes JSON)
 
 # ── Raspi-Manager ─────────────────────────────────────────────
-# Auto-Discovery-IP-Range (wenn SATELLITES_FILE nicht gesetzt)
-SATELLITE_NETWORK  = _env("SATELLITE_NETWORK", "192.168.1.0/24")
+# (Auto-Discovery entfernt – Satelliten melden sich aktiv per Heartbeat an)
 # Heartbeat-Intervall (s)
 SATELLITE_HEARTBEAT_SEC = _env_int("SATELLITE_HEARTBEAT_SEC", "60")
 # Maximale verpasste Heartbeats bevor ein Satellite als tot gilt

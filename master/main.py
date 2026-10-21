@@ -41,7 +41,7 @@ def main() -> None:
     )
     log.info("Master-Server startet (API auf %s:%d)", cfg.API_HOST, cfg.API_PORT)
 
-    # Raspi-Manager starten (Discovery + Heartbeat) — Singleton aus api.py
+    # Raspi-Manager starten (Satelliten-Anmeldung + Heartbeat) — Singleton aus api.py
     manager.start()
 
     # Logging-Handler: alle Logs der 'master' Kategorie auch in den Live-Log-Puffer schreiben

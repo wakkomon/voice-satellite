@@ -1,7 +1,7 @@
 """Satellite Manager – Raspi-Container verwalten per SSH (2.0.0alpha).
 
 Verwaltet Docker-Container auf den Satelliten-Raspis:
-  - Auto-Discovery (ping/SSH-Scan)
+  - Aktive Satelliten-Anmeldung (Heartbeat) – keine Auto-Discovery
   - Heartbeat-Tracking
   - Docker-Aktionen (restart, pause, logs)
 """
@@ -12,7 +12,6 @@ import json
 import logging
 import os
 import shutil
-import socket
 import subprocess
 import tempfile
 import threading
@@ -28,18 +27,6 @@ SSH_PKEY     = os.path.expanduser(os.environ.get(
                       "SSH_PKEY",
                       os.path.join(os.path.expanduser("~"), ".ssh", "vs_master_ed25519")))
 SSH_TIMEOUT  = 10  # Sekunden
-
-
-def _ssh_base_opts(key: str | None = None) -> list[str]:
-    """Gemeinsame SSH-Optionen (Key, kein Passwort, kurze Timeout)."""
-    opts = [
-        "-o", "BatchMode=yes",
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "ConnectTimeout=5",
-    ]
-    if key and os.path.exists(key):
-        opts += ["-i", key]
-    return opts
 
 
 @dataclass
@@ -60,7 +47,7 @@ class SatManager:
     def __init__(self) -> None:
         self.satellites: dict[str, Satellite] = {}
         self._lock = threading.Lock()
-        self._discovery_thread: threading.Thread | None = None
+        self._discovery_thread: threading.Thread | None = None  # entfernt (Auto-Discovery raus)
         self._monitor_thread: threading.Thread | None = None
         self._key_local: str | None = None
         self._status_cb = None  # Callable[[str, Satellite], None] – bei Status-Wechsel
@@ -105,14 +92,13 @@ class SatManager:
             self._key_local = None
             log.exception("SSH-Key-Setup fehlgeschlagen – Discovery läuft IP-basiert weiter")
 
-    # ── Discovery ──────────────────────────────────────────────────
-
-    def start_discovery(self) -> None:
-        """Thread: Parallel-TCP-Scan (Port 22) im Subnetz + SSH-Identifikation."""
-        self._discovery_thread = threading.Thread(
-            target=self._discover_loop, daemon=True, name="sat-discover"
-        )
-        self._discovery_thread.start()
+    # ── Registrierung (keine Discovery) ─────────────────────────
+    #
+    # Auto-Discovery (Subnetz-Scan) ist entfernt: Satelliten melden sich
+    # aktiv am Master an (Heartbeat via POST /api/heartbeat). Der Master
+    # scannt dafür NICHT ins Netz. Konfigurierte Satelliten (SATELLITES)
+    # erscheinen sofort im Dashboard als „unknown", bis der erste
+    # Heartbeat eintrifft (dann „online").
 
     def _known_sats(self) -> dict[str, str]:
         """IP → optional MAC aus SATELLITES-Env (ip[,mac];ip[,mac])."""
@@ -128,140 +114,22 @@ class SatManager:
                 known[ip] = mac.lower()
         return known
 
-    @staticmethod
-    def _tcp_probe(ip: str) -> bool:
-        """TCP-22-Port offen? (kein ping nötig, läuft auch in slim-Images)."""
-        try:
-            s = socket.create_connection((ip, 22), timeout=0.8)
-            s.close()
-            return True
-        except OSError:
-            return False
+    def _register_known(self) -> None:
+        """Konfigurierte Satelliten als „unknown" registrieren (einmalig).
 
-    def _discover_loop(self) -> None:
-        """Periodischer paralleler Port-22-Scan, dann SSH-Identifikation."""
-        sats_cfg = self._known_sats()  # ip -> mac (aus SATELLITES)
-        if sats_cfg:
-            ips = list(sats_cfg.keys())   # Nur explizit definierte IPs
-        else:
-            net = os.environ.get("SATELLITE_NETWORK", "192.168.1.0/24")
-            prefix = ".".join(net.split(".")[:3]) + "."
-            my_ip = self._own_ip()
-            ips = [f"{prefix}{i}" for i in range(1, 254)
-                   if f"{prefix}{i}" != my_ip]
-        interval = int(os.environ.get("SATELLITE_DISCOVERY_SEC", "120"))
-        from concurrent.futures import ThreadPoolExecutor
-
-        while True:
-            t0 = time.time()
-            with ThreadPoolExecutor(max_workers=64) as pool:
-                open_ips = [ip for ip, ok in zip(ips, pool.map(self._tcp_probe, ips)) if ok]
-            log.info("Discovery: %d Host(s) mit offenem Port 22 in %.1f s",
-                     len(open_ips), time.time() - t0)
-            for ip in open_ips:
-                self._identify(ip)
-            # Explizit konfigurierte Satelliten, die der Scan NICHT findet,
-            # nur (neu) registrieren – aber niemals als online markieren:
-            # ein _upsert würde status/last_seen auf online setzen und der
-            # Offline-Check unten (3x Intervall) würde nie greifen.
-            for ip in ips:
-                if ip not in open_ips:
-                    self._upsert_missing(ip, sats_cfg.get(ip))
-            with self._lock:
-                for mac, sat in self.satellites.items():
-                    if sat.status == "online" and (
-                            time.time() - sat.last_seen > 3 * interval):
-                        sat.status = "offline"
-                        log.warning("Satellit offline (nicht im Scan): %s", sat.hostname)
-                        self._notify(mac, sat)
-            time.sleep(interval)
-
-    def _own_ip(self) -> str:
-        """Eigene IP, damit der Master sich nicht selbst entdeckt."""
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            ip = s.getsockname()[0]
-            s.close()
-            return ip
-        except OSError:
-            return ""
-
-    def _identify(self, ip: str) -> None:
-        """SSH (BatchMode, kurz) für Hostname; ohne Key nur IP-basiert."""
-        try:
-            result = subprocess.run(
-                ["ssh"] + _ssh_base_opts(self._key_local)
-                + [f"{SSH_USER}@{ip}", "hostname 2>/dev/null || true"],
-                capture_output=True, timeout=4,
-            )
-        except (subprocess.TimeoutExpired, Exception):
-            result = None
-        hostname = ""
-        if result is not None and result.returncode == 0:
-            hostname = (result.stdout or b"").decode("utf-8", "replace").strip()
-            if hostname:
-                log.info("Satellit identifiziert: %s (%s)", ip, hostname)
-        mac = self._get_mac(ip)
-        label = hostname or (mac.split(":")[-1] if mac else ip.rsplit(".", 1)[-1])
-        self._upsert(ip, mac, label)
-
-    def _upsert_missing(self, ip: str, mac: str | None) -> None:
-        """Explizit konfigurierten Satellite nur (neu) registrieren,
-        wenn er im Scan nicht auftaucht – ohne ihn online zu markieren.
-        Das Offline-Kriterium (3x Intervall ohne Sicht) greift normal."""
+        Erst der aktive Heartbeat setzt den Status auf „online" –
+        der Monitor-Loop macht ihn offline, wenn er zu lange ausbleibt.
+        """
         with self._lock:
-            key = mac or ip
-            if key not in self.satellites:
-                self.satellites[key] = Satellite(
-                    mac=key, ip=ip,
-                    hostname=f"sat-{ip.rsplit('.', 1)[-1]}",
-                    status="unknown", is_known=True,
-                )
-                log.info("Expliziter Satellit registriert (im Scan nicht sichtbar): %s", ip)
-
-    def _upsert(self, ip: str, mac: str | None, hostname: str,
-                known: bool = False) -> None:
-        """Satellite registrieren / neu bewerten (Key: MAC wenn bekannt, sonst IP)."""
-        with self._lock:
-            key = mac or ip
-            if key in self.satellites:
-                sat = self.satellites[key]
-                sat.ip = ip
-                if hostname and hostname != sat.hostname:
-                    sat.hostname = hostname
-                sat.status = "online"
-                sat.last_seen = time.time()
-                sat.is_known = sat.is_known or known
-            else:
-                self.satellites[key] = Satellite(
-                    mac=key, ip=ip,
-                    hostname=hostname or f"sat-{ip.rsplit('.', 1)[-1]}",
-                    status="online", last_seen=time.time(), is_known=known,
-                )
-                log.info("Satellit %s: %s (%s)",
-                         "bekannt" if known else "neu", self.satellites[key].hostname, ip)
-
-    def _get_mac(self, ip: str) -> str | None:
-        """MAC-Adresse aus ARP-Tabelle holen."""
-        try:
-            result = subprocess.run(
-                ["ip", "n", "show", ip],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if "link/ether" in result.stdout:
-                parts = result.stdout.split()
-                for i, part in enumerate(parts):
-                    if part == "link/ether" and i + 1 < len(parts):
-                        mac_str = parts[i + 1]
-                        # MAC: xx:xx:xx:xx:xx:xx
-                        if len(mac_str) == 17 and mac_str.count(":") == 5:
-                            return mac_str
-        except Exception:
-            pass
-        return None
+            for ip, mac in self._known_sats().items():
+                key = mac or ip
+                if key not in self.satellites:
+                    self.satellites[key] = Satellite(
+                        mac=key, ip=ip,
+                        hostname=f"sat-{ip.rsplit('.', 1)[-1]}",
+                        status="unknown", is_known=True,
+                    )
+                    log.info("Satellit registriert (wartet auf Heartbeat): %s", ip)
 
     # ── Heartbeat ──────────────────────────────────────────────
 
@@ -450,7 +318,7 @@ class SatManager:
             }
 
     def start(self) -> None:
-        """Discovery und Heartbeat-Monitor starten."""
-        self.start_discovery()
+        """Konfigurierte Satelliten registrieren + Heartbeat-Monitor starten."""
+        self._register_known()
         self.start_monitor()
         log.info("Satellite Manager gestartet")
