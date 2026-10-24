@@ -249,11 +249,15 @@ async def proxy_music(req: Request) -> Response:
         return e
     try:
         rel_path = "/".join(urlparse(req.url.path).path.split("/proxy/music/", 1))
+        rel_path = rel_path.strip("/")
+        if not rel_path:
+            rel_path = (req.query_params.get("path") or "").strip("/")
         if not rel_path:
             return JSONResponse({"error": "kein Pfad angegeben"}, status_code=400)
         # Sichere Pfad-Auflösung (kein Directory-Traversal)
-        abs_path = os.path.normpath(os.path.join(master_cfg.MUSIC_ROOT, rel_path))
-        if not abs_path.startswith(master_cfg.MUSIC_ROOT):
+        root = master_cfg.MUSIC_ROOT.rstrip("/")
+        abs_path = os.path.normpath(os.path.join(root, rel_path))
+        if abs_path != root and not abs_path.startswith(root + os.sep):
             return JSONResponse({"error": "unauthorized path"}, status_code=403)
         if not os.path.isfile(abs_path):
             return JSONResponse({"error": "datei nicht gefunden"}, status_code=404)
