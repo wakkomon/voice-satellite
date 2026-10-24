@@ -273,15 +273,25 @@ class MusicPlayer:
         if st != 200 or body is None:
             return None
         text = None
-        for enc in ("utf-16", "utf-8-sig", "latin-1"):
+        # Reihenfolge ist wichtig: ASCII/UTF-8 mit BOM dekodiert utf-16
+        # kampflos (und liefert Müll). UTF-16-Echtkennung nur bei echtem
+        # FF-FE/FE-FF-BOM oder UTF-16-Charakteren in den ersten Zeilen.
+        if body[:2] in (b"\xff\xfe", b"\xfe\xff") or b"\x00" in body[:64]:
             try:
-                text = body.decode(enc)
-                break
+                text = body.decode("utf-16")
             except (UnicodeDecodeError, ValueError):
-                continue
+                text = None
+        if text is None:
+            for enc in ("utf-8-sig", "utf-8", "latin-1"):
+                try:
+                    text = body.decode(enc)
+                    break
+                except (UnicodeDecodeError, ValueError):
+                    continue
         if text is None:
             return []
         tracks = []
+        pl_dir = rel.rsplit("/", 1)[0] if "/" in rel else ""
         for line in text.splitlines():
             line = line.strip()
             if not line or line.startswith("#"):
@@ -291,6 +301,13 @@ class MusicPlayer:
             e = re.sub(r"/{2,}", "/", e).lstrip("/")
             if not e:
                 continue
+            if re.match(r"https?://", e):
+                tracks.append(e)
+                continue
+            # Eintraege sind relativ zum Playlist-Ordner (wie lokal in
+            # _parse_playlist mit base=os.path.dirname(m3u)).
+            if pl_dir and not e.startswith(pl_dir + "/"):
+                e = pl_dir + "/" + e
             tracks.append(self._music_url(e))
         return tracks[:500]
 
