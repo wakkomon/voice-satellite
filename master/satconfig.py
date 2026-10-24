@@ -45,18 +45,20 @@ EDITABLE_KEYS = (
     "OPENHAB_URL", "OPENHAB_TOKEN", "OPENHAB_CACHE_TTL",
     "DEFAULT_IMAGE_URL",
     "MUSIC_ROOT", "BRIDGE_HOST", "BRIDGE_PORT",
+    "MASTER_MUSIC_PROXY_URL",
     "MEMORY_DB", "MEMORY_MAX_TOKENS",
     "MIC_DEVICE", "DISPLAY", "FB_DEVICE", "FB_WIDTH", "FB_HEIGHT",
     "ALSA_DEVICE", "ALSA_VOLUME", "ALSA_MUTE",
     "WOL_MAC", "SCHEDULE_FILE", "RULES_FILE",
 )
 
-# Secrets: nur global, nie per Satellite; Proxy injiziert sie in Requests.
+# Secrets: nur global, nie pro Satellite; Proxy injiziert sie in Requests.
 SECRET_KEYS = frozenset({
     "TTS_TOKEN", "STT_TOKEN", "LLM_TOKEN", "OPENHAB_TOKEN",
 })
 
-GLOBAL_ONLY_KEYS = ()
+# Nur global verwaltbar (Satelliten erben sie, können sie nicht überschreiben).
+GLOBAL_ONLY_KEYS = ("MASTER_MUSIC_AUTH",)
 
 UI_KEYS = EDITABLE_KEYS + GLOBAL_ONLY_KEYS
 

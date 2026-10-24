@@ -269,7 +269,7 @@ MASTER_POLL_SEC = int(_env("MASTER_POLL_SEC", "300"))  # Index-Polling-Intervall
 # direkt vom Master-Share — der Satellit braucht dafuer keinen Fileserver-Mount
 # (/m) mehr. Optionaler Authorization-Header-Wert (z.B. "Bearer <token>") fuer
 # einen evtl. auth-geschuetzten Master. Leer = Proxy aus (nur lokaler Mount).
-MASTER_MUSIC_PROXY_URL = _env("MASTER_MUSIC_PROXY_URL", "").strip().rstrip("/")
+MASTER_MUSIC_PROXY_URL = _env("MASTER_MUSIC_PROXY_URL", MASTER_URL).strip().rstrip("/")
 MASTER_MUSIC_AUTH      = _env("MASTER_MUSIC_AUTH", "").strip()
 
 # ── Satellite Identifikation ──────────────────────────────────

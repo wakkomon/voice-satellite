@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import threading
+import time
 
 from . import config, display, playback, volume
 
@@ -147,7 +148,7 @@ def try_play_playlist(text: str) -> tuple[bool, str | None]:
     name = name.replace(" ab", "").replace(" auf", "").rstrip()
 
     root = config.MUSIC_ROOT
-    if not os.path.isdir(root):
+    if not os.path.isdir(root) and not playback.player._proxy_base():
         return True, f"Musikordner nicht erreichbar: {root}"
 
     match = _find_m3u_in_root(name, root)
@@ -184,6 +185,7 @@ def _load_radio_stations() -> list[dict]:
     mtime-Werten aller Dateien.
     """
     tv_dir = os.path.join(config.MUSIC_ROOT, "TV")
+    proxy_base = playback.player._proxy_base()
     mtimes = {}
     for fname in _M3U_MOUNTS:
         p = os.path.join(tv_dir, fname)
@@ -192,7 +194,12 @@ def _load_radio_stations() -> list[dict]:
         except OSError:
             mtimes[fname] = None
 
-    cache_key = tuple(sorted(mtimes.items()))
+    if proxy_base and all(v is None for v in mtimes.values()):
+        # Kein lokaler TV-Ordner (Satellit ohne Share-Mount): Radiolisten
+        # ueber den Master-Musik-Proxy laden, Cache dann zeitbasiert (10 min).
+        cache_key = ("proxy", int(time.time() // 600))
+    else:
+        cache_key = tuple(sorted(mtimes.items()))
     with _radio_lock:
         if _radio_cache and _radio_cache.get("key") == cache_key:
             return _radio_cache["stations"]
@@ -201,12 +208,19 @@ def _load_radio_stations() -> list[dict]:
     seen: set[tuple[str, str]] = set()
     for fname in _M3U_MOUNTS:
         p = os.path.join(tv_dir, fname)
-        if mtimes.get(fname) is None:
-            continue
-        try:
-            with open(p, "r", encoding="utf-8-sig", errors="replace") as f:
-                raw = f.read()
-        except OSError:
+        raw = None
+        if mtimes.get(fname) is not None:
+            try:
+                with open(p, "r", encoding="utf-8-sig", errors="replace") as f:
+                    raw = f.read()
+            except OSError:
+                raw = None
+        if raw is None and proxy_base:
+            st, body = playback.player._http_get(
+                f"{proxy_base}/proxy/music/TV/{fname}", timeout=15)
+            if st == 200 and body:
+                raw = body.decode("utf-8-sig", errors="replace")
+        if raw is None:
             continue
         current_name = None
         for line in raw.splitlines():
@@ -292,10 +306,12 @@ def try_play_music(text: str) -> tuple[bool, str | None]:
         if re.search(r"\b(an|abspielen|spiele|Mach|mach|starte|kannst du|magst du|könntest du|würdest du|bitte)\b", t):
             # Suche nach M3U-Playlists im mp3-Verzeichnis
             mp3_dir = os.path.join(config.MUSIC_ROOT, "mp3")
-            if not os.path.isdir(mp3_dir):
+            if not os.path.isdir(mp3_dir) and not playback.player._proxy_base():
                 return True, "MP3-Ordner nicht erreichbar."
             with _lock:
                 playlists = list(_m3u_all or [])
+            if not playlists and playback.player._proxy_base():
+                return True, "Keine Musik gefunden (Master-Index noch leer)."
             if playlists:
                 import random as _rand
                 selected = _rand.choice(playlists)
