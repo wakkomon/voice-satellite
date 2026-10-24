@@ -15,6 +15,7 @@ services:
     volumes:
       - /media/fileserver:/m:ro
       - index-data:/data
+      - config-data:/data/config
       # Master-SSH-Key für Pi-Verwaltung (Key-Only, BatchMode)
       - /home/hermes/.ssh/vs_master_ed25519:/home/master/.ssh/vs_master_ed25519:ro
 
@@ -52,7 +53,11 @@ services:
       # (gelb „unknown"), bis der erste Heartbeat eintrifft
       SATELLITES: "192.168.1.32;192.168.1.26"
       SSH_USER: "pi"
+      # Persistente zentrale Config (satellites.json) – überlebt Rebuilds
+      VS_CONFIG_DIR: "/data/config"
 
 volumes:
   index-data:
     name: voice-satellite-index-data
+  config-data:
+    name: voice-satellite-config-data

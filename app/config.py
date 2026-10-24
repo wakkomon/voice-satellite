@@ -3,8 +3,11 @@
 Werte ohne ENV-Default sind die Legacy-Werte aus dem Rhasspy-Setup.
 Secrets gehören in eine .env-Datei (siehe .env.example), nicht in den Code.
 """
+import json
+import logging
 import os
 import sys
+import time
 
 def _load_dotenv(path):
     """Minimaler .env-Parser (KEIN python-dotenv): KEY=WERT, # Kommentare.
@@ -262,6 +265,13 @@ LOG_LEVEL       = _env("LOG_LEVEL", "INFO")
 MASTER_URL      = _env("MASTER_URL", "http://192.168.1.24:8791")
 MASTER_POLL_SEC = int(_env("MASTER_POLL_SEC", "300"))  # Index-Polling-Intervall
 
+# Zentraler Musik-Stream: /proxy/music?path=<relativ> liefert Musikdateien
+# direkt vom Master-Share — der Satellit braucht dafuer keinen Fileserver-Mount
+# (/m) mehr. Optionaler Authorization-Header-Wert (z.B. "Bearer <token>") fuer
+# einen evtl. auth-geschuetzten Master. Leer = Proxy aus (nur lokaler Mount).
+MASTER_MUSIC_PROXY_URL = _env("MASTER_MUSIC_PROXY_URL", "").strip().rstrip("/")
+MASTER_MUSIC_AUTH      = _env("MASTER_MUSIC_AUTH", "").strip()
+
 # ── Satellite Identifikation ──────────────────────────────────
 SATELLITE_MAC = _env("SATELLITE_MAC", "").strip() or "00:00:00:00:00:00"
 
@@ -274,7 +284,66 @@ HEARTBEAT_SEC     = int(_env("HEARTBEAT_SEC", "30"))
 # config_version wird bei jedem apply_override erhöht. Der Heartbeat
 # pollt GET /api/config/apply?mac=… und wendet Änderungen ohne
 # Neustart an (dynamische Config-Konsum in tts.py/stt.py/router.py).
+#
+# Persistenz: Jedes erfolgreich angewendete Config-Snapshot landet in
+# SATELLITE_CONFIG_DIR/master_config.json. Startet der Container und
+# ist der Master gerade nicht erreichbar, werden die zuletzt
+# angewendeten Values als Fallback geladen (load_local_config).
 _CONFIG_VERSION = 0
+
+# Lokales Fallback-Snapshot der letzten Master-Config (persistiert).
+SATELLITE_CONFIG_DIR = _env("SATELLITE_CONFIG_DIR", "/data/config")
+_LOCAL_CONFIG_PATH = os.path.join(SATELLITE_CONFIG_DIR, "master_config.json")
+
+
+def load_local_config() -> None:
+    """Liest das lokal gesicherte Master-Config-Snapshot und wendet es an.
+
+    Startet der Satellit, bevor der Master antwortet (z.B. Master noch
+    nicht erreichbar), werden die zuletzt bekannten Values aus der
+    Datei übernommen, damit TTS/STT/LLM/OPENHAB mit Proxy-URLs arbeiten
+    können statt mit leeren/Default-Werten.
+    """
+    global _CONFIG_VERSION
+    try:
+        with open(_LOCAL_CONFIG_PATH, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError) as e:
+        logging.warning("local_config: kein/ungültiges Snapshot (%s): %s",
+                        _LOCAL_CONFIG_PATH, e)
+        return
+    overrides = data.get("overrides") or {}
+    if not overrides:
+        return
+    applied, ignored = apply_overrides(overrides)
+    if applied:
+        _CONFIG_VERSION += 1
+        logging.info(
+            "local_config: %d Werte aus %s geladen (Master-Config v%s vom %s)",
+            len(applied), _LOCAL_CONFIG_PATH,
+            data.get("version"), data.get("saved_at", "?"),
+        )
+
+
+def save_local_config(overrides: dict, master_version: int) -> None:
+    """Speichert ein angewendetes Master-Config-Snapshot lokal (atomar)."""
+    try:
+        os.makedirs(SATELLITE_CONFIG_DIR, exist_ok=True)
+    except OSError as e:
+        logging.warning("local_config: Verzeichnis nicht anlegbar: %s", e)
+        return
+    payload = {
+        "version": master_version,
+        "saved_at": time.time(),
+        "overrides": overrides,
+    }
+    tmp = _LOCAL_CONFIG_PATH + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, ensure_ascii=False, indent=2)
+        os.replace(tmp, _LOCAL_CONFIG_PATH)
+    except OSError as e:
+        logging.warning("local_config: Persistenz fehlgeschlagen: %s", e)
 
 
 def bump_config_version() -> None:
@@ -332,6 +401,7 @@ _OVERWRITABLE = {
     "STT_URL", "STT_MODEL", "STT_LANGUAGE",
     "LLM_URL", "LLM_MODEL", "LLM_HAS_TOOLS", "LLM_ENABLE_THINKING",
     "OPENHAB_URL", "MUSIC_ROOT", "BRIDGE_HOST", "BRIDGE_PORT",
+    "MASTER_MUSIC_PROXY_URL", "MASTER_MUSIC_AUTH",
     # Globale Settings (Timeouts, Limits, Defaults):
     "STT_TIMEOUT", "TTS_TIMEOUT", "LLM_TIMEOUT",
     "LLM_MAX_TOKENS", "OPENHAB_CACHE_TTL",

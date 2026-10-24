@@ -31,7 +31,7 @@ log = logging.getLogger(__name__)
 
 # ── System-Identifikation (einmalig beim Start) ────────────────
 _HOSTNAME = socket.gethostname() or config._env("HOSTNAME", "unknown")
-_MAC = config._env("SAT_MAC", "") or ""
+_MAC = config._env("SAT_MAC", "") or config._env("SATELLITE_MAC", "") or ""
 
 def _read_mac_from_sys(name: str) -> str:
     """MAC aus /sys/class/net/<name>/address (kein ip-Tool nötig)."""
@@ -164,6 +164,9 @@ def pull_and_apply_config() -> bool:
     applied, ignored = config.apply_overrides(overrides)
     if applied:
         config.bump_config_version()
+        # Lokales Snapshot persistieren (Fallback, wenn Master beim
+        # nächsten Start nicht erreichbar ist).
+        config.save_local_config(overrides, _last_master_version)
         log.info(
             "Config vom Master angewendet: %s (ignoriert: %s) → version %d",
             ", ".join(sorted(applied)),
@@ -209,6 +212,10 @@ def _heartbeat_loop(pipeline) -> None:
     """Periodischer Heartbeat-POST im Thread."""
     log.info("Heartbeat-Thread gestartet (alle %ds, Master %s)",
              config.HEARTBEAT_SEC, config.MASTER_URL)
+    # Lokales Config-Snapshot laden (Fallback, falls Master nicht
+    # erreichbar ist) – vor dem ersten Pull, damit die Proxy-URLs
+    # sofort verfügbar sind.
+    config.load_local_config()
     # Config einmalig beim Start vom Master ziehen
     pull_and_apply_config()
     while not _stop_event.is_set():

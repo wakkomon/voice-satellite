@@ -118,16 +118,16 @@ async def proxy_tts(req: Request) -> Response:
     if not url:
         return JSONResponse({"error": "TTS_URL nicht konfiguriert"}, status_code=502)
     body = await req.body()
-    resp = None
+    client = httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=300.0, write=10.0, pool=10.0))
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
-            resp = await client.send(
-                httpx.Request("POST", url, content=body,
-                              headers=_headers(token, req,
-                                               {"Content-Type": "application/json"})),
-                stream=True)
+        resp = await client.send(
+            httpx.Request("POST", url, content=body,
+                          headers=_headers(token, req,
+                                           {"Content-Type": "application/json"})),
+            stream=True)
     except httpx.HTTPError as e:
         log.warning("TTS-Proxy-Fehler: %s", e)
+        await client.aclose()
         return JSONResponse({"error": f"tts upstream: {e}"}, status_code=502)
 
     async def gen():
@@ -142,6 +142,7 @@ async def proxy_tts(req: Request) -> Response:
                 yield buf
         finally:
             await resp.aclose()
+            await client.aclose()
 
     return StreamingResponse(gen(), media_type="audio/wav")
 

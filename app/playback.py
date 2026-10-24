@@ -1,7 +1,14 @@
-"""Musik-Player: MP3/Playlists vom SMB-Share + Radio-Streams, via mpg123.
+"""Musik-Player: MP3/Playlisten + Radio-Streams, via mpg123.
 
 Angestossen von aussen (POST /play, /stop – Agent oder Webui). Der Player
 läuft in einem eigenen Thread.
+
+Musik-Transportzentrale: Mit konfiguriertem MASTER_MUSIC_PROXY_URL
+(Satelliten ohne lokalen Share-Mount) liegen alle Dateien/Playlisten auf dem
+Master-Share. play_path/Queue spielen rel_share-Items direkt als HTTP-Stream
+über den Master-Proxy (/proxy/music?path=...); Playliste werden zentral vom
+Master gelesen. Ohne Master-Proxy (oder bei Master-Fehler) fällt alles auf den
+lokalen MUSIC_ROOT zurück.
 
 Transport: mpg123 dekodiert nach stdout (Pipe), aplay schreibt rohen PCM an
 die Soundkarte – das umgeht das kaputte ALSA-Ausgabemodul des Container-
@@ -59,7 +66,24 @@ class MusicPlayer:
         # Shuffle- und Radio-Fallback-Zustand
         self._shuffle_on = False         # True = Zufallswiedergabe aktiv
         self._last_playlist = None       # (items, source, title) der letzten Playlist
-        self._current_item = None        # absoluter Pfad des aktuellen Stuecks
+        self._current_item = None        # absoluter Pfad/URL des aktuellen Stuecks
+        self._rel_cache = {}             # rel_share-Pfad -> Proxy-URL (pro Wiedergabe)
+
+    # ── Master-Musik-Proxy ─────────────────────────────────────
+    def _proxy_base(self):
+        """Basis-URL des zentralen Musik-Streams, '' = kein Master-Proxy
+        (dann alles lokal ueber MUSIC_ROOT)."""
+        return (getattr(config, "MASTER_MUSIC_PROXY_URL", "") or "").rstrip("/")
+
+    def _music_url(self, relpath):
+        """Stream-URL eines Share-relativen Pfads ueber den Master-Proxy
+        (/proxy/music/<rel>), oder lokale Datei wenn kein Proxy konfiguriert."""
+        import urllib.parse
+        rel = (relpath or "").replace("\\", "/").lstrip("/")
+        base = self._proxy_base()
+        if not base:
+            return self._play_rel_local(rel) or rel
+        return f"{base}/proxy/music/{urllib.parse.quote(rel)}"
 
     # ── Status ─────────────────────────────────────────────────
     def is_playing(self):
@@ -93,11 +117,56 @@ class MusicPlayer:
 
     # ── Steuerung ──────────────────────────────────────────────
     def play_path(self, relpath):
-        """Datei oder Playliste, RELATIV zu MUSIC_ROOT. Fehlerstring oder None
-        (None = armiert; Start sobald das Geraet frei ist)."""
+        """Datei oder Playliste, RELATIV zum Musik-Share (Master-Index). Fehlerstring
+        oder None (None = armiert; Start sobald das Geraet frei ist). Mit
+        Master-Proxy laeuft alles ueber dessen /music-Stream – dafuer braucht der
+        Satellit keinen lokalen Share-Mount. Ohne Proxy/als Fallback lokal."""
+        rel = (relpath or "").replace("\\", "/").lstrip("/")
+        if not rel:
+            return "Kein Pfad angegeben."
+        if self._proxy_base():
+            return self._play_rel_proxy(rel)
+        return self._play_rel_local(rel)
+
+    def _play_rel_proxy(self, rel):
+        """play_path-Variante komplett ueber den Master: Playlisten-Tracks
+        liefert der Master per /music/tree, Dateien/Ordner werden als
+        HTTP-Stream gespielt. Existenzpruefung gegen den synchronisierten
+        Master-Index; sonst lokaler Fallback (alter Mount-Betrieb)."""
+        if rel.lower().endswith((".m3u8", ".m3u", ".pls")):
+            if not self._indexed(rel):
+                return "Nicht gefunden: " + rel
+            tracks = self._proxy_playlist(rel)
+            if tracks is None:
+                # Master kann die Playliste nicht liefern -> lokal versuchen
+                err = self._play_rel_local(rel)
+                return err if err else None
+            if not tracks:
+                return "Playliste leer oder nicht lesbar."
+            name = os.path.splitext(os.path.basename(rel))[0]
+            self._arm(tracks, "playlist", f"Playliste {name}")
+            return None
+        if self._indexed(rel):
+            if os.path.splitext(rel)[1]:
+                # einzelne Datei: direkt als Stream
+                self._arm([self._music_url(rel)], "file",
+                          os.path.splitext(os.path.basename(rel))[0])
+                return None
+            # Ordner: Trackliste aus dem zentralen Index, Streams
+            tracks = self._proxy_folder(rel)
+            if not tracks:
+                return "Keine Audio-Dateien in: " + rel
+            self._arm(tracks, "dir", os.path.basename(rel.rstrip("/")))
+            return None
+        # nicht im Master-Index: lokaler Fallback (alter Mount-Betrieb)
+        return self._play_rel_local(rel)
+
+    def _play_rel_local(self, relpath):
+        """Lokaler Abspiel-Pfad unter MUSIC_ROOT (Fallback ohne Proxy)."""
         root = os.path.abspath(config.MUSIC_ROOT)
         if not os.path.isdir(root):
-            return f"Musikordner nicht erreichbar: {root}"
+            return (f"Musikordner nicht erreichbar: {root} – und kein "
+                    "Master-Musik-Proxy konfiguriert.")
         target = self._safe_join(root, relpath)
         if target is None:
             return "Pfad liegt nicht im Musikordner."
@@ -126,6 +195,104 @@ class MusicPlayer:
             self._arm(found, "dir", os.path.basename(target.rstrip("/")))
             return None
         return "Nicht gefunden: " + relpath
+
+    # ── Master-Index-Prüfung & Playliste über den Master ──────
+    def _indexed(self, rel):
+        """Existiert rel (Datei oder Ordner) im zentralen Master-Index?
+        True/False, None = Index noch nie uebernommen (dann optimistisch)."""
+        try:
+            from . import intent
+            with intent._lock:
+                mp3 = intent._mp3_index
+                m3u = intent._m3u_index
+                dirs = intent._dir_index
+        except Exception:
+            return None
+        if mp3 is None and m3u is None and dirs is None:
+            return None
+        rel_n = rel.strip("/")
+        for idx in (mp3, m3u):
+            if idx:
+                for paths in idx.values():
+                    if rel_n in paths:
+                        return True
+        if dirs:
+            for paths in dirs.values():
+                for p in paths:
+                    if p.rstrip("/") == rel_n:
+                        return True
+        return False
+
+    def _proxy_folder(self, rel):
+        """Alle Audiodateien eines Share-Ordners als Stream-URLs (sortiert),
+        rein aus dem zentralen Index — kein lokaler Mount noetig."""
+        try:
+            from . import intent
+            with intent._lock:
+                mp3 = intent._mp3_index
+        except Exception:
+            mp3 = None
+        if not mp3:
+            return []
+        prefix = rel.strip("/") + "/"
+        exts = {".mp3", ".m4a", ".ogg", ".oga", ".flac", ".opus", ".wav"}
+        found = sorted(p for paths in mp3.values() for p in paths
+                       if p.startswith(prefix)
+                       and os.path.splitext(p)[1].lower() in exts)
+        return [self._music_url(p) for p in found]
+
+    def _proxy_headers(self):
+        """Headers fuer Master-Proxy-Requests (optionaler Auth-Header)."""
+        auth = (getattr(config, "MASTER_MUSIC_AUTH", "") or "").strip()
+        if auth:
+            if not auth.lower().startswith("bearer "):
+                auth = "Bearer " + auth
+            return {"Authorization": auth}
+        return {}
+
+    def _http_get(self, url, timeout=10):
+        """HTTP GET -> (status, bytes), (None, None) bei Fehler."""
+        import urllib.error
+        import urllib.request
+        try:
+            req = urllib.request.Request(url, headers=self._proxy_headers())
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                if r.status != 200:
+                    return r.status, None
+                return 200, r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, None
+        except Exception:
+            return None, None
+
+    def _proxy_playlist(self, rel):
+        """Tracks einer Playliste zentral vom Master lesen (Playliste-Datei
+        selbst wird ueber den Musik-Stream geholt und geparst). Gibt Liste von
+        Stream-URLs zurueck, None wenn der Master sie nicht liefern kann."""
+        st, body = self._http_get(self._music_url(rel), timeout=15)
+        if st != 200 or body is None:
+            return None
+        text = None
+        for enc in ("utf-16", "utf-8-sig", "latin-1"):
+            try:
+                text = body.decode(enc)
+                break
+            except (UnicodeDecodeError, ValueError):
+                continue
+        if text is None:
+            return []
+        tracks = []
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            e = line.replace("\\", "/")
+            e = re.sub(r"^[A-Za-z]:/+", "", e)   # Laufwerksbuchstaben abziehen
+            e = re.sub(r"/{2,}", "/", e).lstrip("/")
+            if not e:
+                continue
+            tracks.append(self._music_url(e))
+        return tracks[:500]
 
     def play_url(self, url, title=""):
         """Radio-Stream (http/https). Fehlerstring oder None."""
@@ -472,7 +639,13 @@ class MusicPlayer:
         c = None
         if item.startswith(("http://", "https://")):
             dec += ["-"]
-            curl = ["curl", "-sSL", "-m", "86400", "--no-progress-meter", item]
+            curl = ["curl", "-sSL", "-m", "86400", "--no-progress-meter"]
+            auth = (getattr(config, "MASTER_MUSIC_AUTH", "") or "").strip()
+            if auth and self._proxy_base() and item.startswith(self._proxy_base()):
+                if not auth.lower().startswith("bearer "):
+                    auth = "Bearer " + auth
+                curl += ["-H", f"Authorization: {auth}"]
+            curl += [item]
             c = subprocess.Popen(curl, stdout=subprocess.PIPE,
                                  stderr=subprocess.DEVNULL, preexec_fn=_setsid)
             dec_stdin = c.stdout

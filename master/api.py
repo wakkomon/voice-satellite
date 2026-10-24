@@ -410,7 +410,8 @@ routes = [
     Route("/proxy/stt", proxy.proxy_stt, methods=["GET", "HEAD", "POST"]),
     Route("/proxy/llm", proxy.proxy_llm, methods=["GET", "HEAD", "POST"]),
     Route("/proxy/openhab/{subpath:path}", proxy.proxy_openhab, methods=["GET", "POST", "PUT", "DELETE"]),
-    Route("/proxy/music", proxy.proxy_music),
+    Route("/proxy/music/{subpath:path}", proxy.proxy_music,
+          methods=["GET", "HEAD"]),
     # (d) Zentrales MCP-Gateway (Tools aller Satelliten)
     Route("/mcp/tools", mcp_gateway.mcp_tools_all),
     Route("/mcp/tools/{mac}", mcp_gateway.mcp_tools_one),
