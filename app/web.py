@@ -10,6 +10,8 @@ POST /speak         -> {"text": "..."}  (antwortet direkt per TTS)
 POST /intent        -> {"text": "..."}  (Router testen, ohne Mikrofon)
 POST /volume        -> {"volume": 0..100} und/oder {"muted": true|false}
 POST /tone          -> {"tone": "alarm"}  (Alarm-/Klingelton abspielen)
+GET  /config/export -> Konfig-Datei (JSON) zum Download
+POST /config/import -> Konfig-Datei importieren (Merge + Master-Push)
 """
 import json
 import logging
@@ -32,6 +34,16 @@ class Handler(BaseHTTPRequestHandler):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_download(self, obj, filename):
+        """JSON-Objekt als Datei-Download (Content-Disposition)."""
+        body = json.dumps(obj, ensure_ascii=False, indent=2).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -171,6 +183,11 @@ class Handler(BaseHTTPRequestHandler):
             info["_config_version"] = str(config.config_version())
             info["_master_url"] = config.MASTER_URL or "Nicht konfiguriert"
             self._send(200, {"config": info})
+        elif path in ("/config/export", "/api/config/export"):
+            # Konfig-Datei (effektive Werte) als JSON-Download
+            mac = config.SATELLITE_MAC.replace(":", "-").lower() or "satellite"
+            fname = "voice-satellite-config-" + mac + "-" + time.strftime("%Y%m%d-%H%M") + ".json"
+            self._send_download(config.export_config(), fname)
         elif path == "/events":
             self._sse()
         elif path == "/volume":
@@ -241,6 +258,23 @@ class Handler(BaseHTTPRequestHandler):
                 "ignored": sorted(ignored),
                 "config_version": config.config_version(),
             })
+        if self.path in ("/config/import", "/api/config/import"):
+            # Konfig-Datei (Master-/Satellite-Export, flaches Dict) importieren.
+            # Wirksam ohne Neustart; bestmöglich zusätzlich beim Master
+            # persistiert, damit ein Config-Pull die Werte nicht zurücksetzt.
+            if not data:
+                return self._send(400, {"error": "JSON-Body fehlt"})
+            overrides, unknown = config.parse_import(data)
+            if not overrides:
+                return self._send(400, {"error": "keine importierbaren Keys",
+                                        "unknown": unknown})
+            res = config.import_config(overrides)
+            res["unknown"] = unknown
+            self._ev(f"Config-Import: {len(res['applied'])} Keys übernommen"
+                     f"{' (Master aktualisiert)' if res['pushed_to_master'] else ' (Master NICHT aktualisiert)'}")
+            log.info("Config-Import: applied=%s ignored=%s pushed=%s unknown=%s",
+                     res["applied"], res["ignored"], res["pushed_to_master"], unknown)
+            return self._send(200, {"ok": True, **res})
         if self.path == "/intent":
             if not text:
                 return self._send(400, {"error": "text fehlt"})

@@ -429,3 +429,130 @@ def apply_overrides(d: dict) -> tuple[list[str], list[str]]:
         setattr(sys.modules[__name__], k, v)
         applied.append(k)
     return applied, ignored
+
+
+# ── Import / Export (Satellite-seitig) ────────────────────────
+# Identitäts-Keys gehören NICHT in eine Konfig-Datei: SATELLITE_MAC
+# identifiziert den Satelliten, MASTER_URL ist seine Umgebung.
+_IDENTITY_KEYS = frozenset({"SATELLITE_MAC", "MASTER_URL"})
+
+
+def export_config() -> dict:
+    """Aktuelle (effektive) Konfiguration des Satelliten als portables JSON.
+
+    Alle überreibbaren Keys im aktiven Zustand (Defaults + ENV +
+    Master-Overrides). Der Export ist direkt in den Master importierbar:
+    dort landet er im SAT_ENTRY des Satelliten (per MAC) oder global.
+    """
+    out: dict = {}
+    for k in sorted(_OVERWRITABLE):
+        if k in _IDENTITY_KEYS:
+            continue
+        v = globals().get(k)
+        if v is None or v == "":
+            continue
+        out[k] = str(v)
+    return {
+        "app": "voice-satellite",
+        "kind": "config",
+        "format": 1,
+        "source": "satellite",
+        "exported_at": int(time.time()),
+        "mac": SATELLITE_MAC,
+        "master_url": MASTER_URL,
+        "config_version": config_version(),
+        "overrides": out,
+    }
+
+
+def parse_import(payload: dict) -> tuple[dict, list[str]]:
+    """Import-Datei (Master-/Satellite-Export oder flaches Dict) zerlegen.
+
+    Liefert (overrides, unknown). Nur _OVERWRITABLE-Keys kommen durch;
+    Identitäts-Keys werden aussortiert. Aus Master-Dateien wird nur der
+    eigener MAC-Abschnitt übernommen – der global-Abschnitt des Masters
+    wird ignoriert (z.B. MEMORY_DB zeigt auf das Master-Filesystem und
+    würde den Satelliten kaputt machen).
+    """
+    if not isinstance(payload, dict):
+        return {}, ["Datei muss ein JSON-Objekt sein"]
+    has_sections = any(k in payload for k in ("global", "satellites", "overrides"))
+    section: dict = {}
+    unknown: list[str] = []
+    if not has_sections:
+        section = payload  # flaches {KEY: Wert}-Dict
+    elif payload.get("source") == "satellite":
+        section = payload.get("overrides") or {}
+    else:
+        # Master-Export: nur eigener MAC-Abschnitt
+        own = SATELLITE_MAC.strip().lower()
+        sats = payload.get("satellites") or {}
+        if not isinstance(sats, dict):
+            sats = {}
+        section = sats.get(own) if own else {}
+        if not isinstance(section, dict):
+            section = {}
+        if not own or not isinstance(sats.get(own), dict):
+            unknown.append("kein Override-Eintrag für diese MAC im File – "
+                           "global-Sektion bewusst ignoriert")
+    ov = {k: v for k, v in (section or {}).items()
+          if k in _OVERWRITABLE and k not in _IDENTITY_KEYS and v is not None}
+    skipped = [k for k in (section or {}) if k not in ov]
+    unknown.extend(sorted(set(skipped) - set(ov)))
+    return ov, sorted(set(unknown))
+
+
+def import_config(overrides: dict) -> dict:
+    """Import-Overrides lokal anwenden + (bestmöglich) beim Master sichern.
+
+    Lokal: apply_overrides + lokales Fallback-Snapshot (startet der
+    Container neu ohne Master, bleiben die importierten Werte erhalten).
+    Beim Master: die editable Teilmenge wird in sein SAT_ENTRY geschrieben,
+    damit ein nächster Config-Pull nicht die alten Werte zurücksetzt.
+    Master unerreichbar → lokal wirksam, pushed_to_master=False.
+    """
+    applied, ignored = apply_overrides(overrides)
+    result = {
+        "applied": applied,
+        "ignored": ignored,
+        "pushed_to_master": False,
+        "master_error": None,
+    }
+    if not applied:
+        return result
+    bump_config_version()
+    # Fallback-Snapshot: bisherige + importierte Werte (Master-Format)
+    try:
+        try:
+            with open(_LOCAL_CONFIG_PATH, "r", encoding="utf-8") as fh:
+                local = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            local = {}
+        merged = dict(local.get("overrides") or {})
+        merged.update({k: overrides[k] for k in applied})
+        save_local_config(merged, config_version())
+    except Exception as e:  # noqa: BLE001 – Import soll trotz Snapshot-Fehler wirken
+        logging.warning("import_config: lokales Snapshot fehlgeschlagen: %s", e)
+    # Beim Master persistieren (nur Keys, die der Master erlaubt)
+    master_ok = False
+    master_err: str | None = None
+    if MASTER_URL:
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                MASTER_URL.rstrip("/") + "/api/config",
+                data=json.dumps(
+                    {"satellites": {SATELLITE_MAC: {k: overrides[k] for k in applied}}}
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="PUT",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                resp.read()
+            master_ok = True
+        except Exception as e:  # noqa: BLE001
+            master_err = str(e)
+    result["pushed_to_master"] = master_ok
+    result["master_error"] = master_err
+    result["config_version"] = config_version()
+    return result

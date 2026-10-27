@@ -232,6 +232,40 @@ async def _config_put(req: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "version": version})
 
 
+async def _config_export(req: Request) -> Response:
+    """GET /api/config/export → Konfig-Datei als JSON-Download.
+
+    Query: secrets=0 → Secrets weglassen (weitergabefähiges Backup).
+    Default: alle Werte inkl. Secrets (echtes Backup/Transfer-Format).
+    """
+    include_secrets = req.query_params.get("secrets", "1") not in ("0", "false", "no")
+    payload = config_store.export_payload(include_secrets=include_secrets)
+    body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+    fname = time.strftime("voice-satellite-config-%Y%m%d-%H%M%S.json")
+    headers = {"Content-Disposition": f'attachment; filename="{fname}"'}
+    return Response(body, media_type="application/json; charset=utf-8", headers=headers)
+
+
+async def _config_import(req: Request) -> JSONResponse:
+    """POST /api/config/import → Konfig-Datei (JSON) in den Store mergen.
+
+    Body: Master-/Satellite-Export oder flaches {KEY: Wert}-Dict.
+    """
+    try:
+        data = await req.json()
+    except (json.JSONDecodeError, ValueError):
+        return JSONResponse({"error": "invalid json"}, status_code=400)
+    try:
+        stats = config_store.import_payload(data)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    version = config_store.version()
+    log.info("Config-Import: global=%d sats=%s unknown=%s (version=%d)",
+             stats["global_applied"], stats["satellites_applied"],
+             stats["unknown_keys"], version)
+    return JSONResponse({"ok": True, "version": version, **stats})
+
+
 async def _config_sat_get(req: Request) -> JSONResponse:
     """GET /api/config/satellite/{mac} → gültige (merged) Konfiguration."""
     mac = req.path_params["mac"].lower()
@@ -404,6 +438,8 @@ routes = [
     Route("/api/config", _config_get),
     Route("/api/config", _config_put, methods=["PUT"]),
     Route("/api/config/apply", _config_apply_get, methods=["GET"]),
+    Route("/api/config/export", _config_export),
+    Route("/api/config/import", _config_import, methods=["POST"]),
     Route("/api/config/satellite/{mac}", _config_sat_get),
     # (c) Zentrale API-Proxy-Endpunkte (TTS/STT/LLM)
     Route("/proxy/tts", proxy.proxy_tts, methods=["GET", "HEAD", "POST"]),

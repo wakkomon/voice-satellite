@@ -253,6 +253,12 @@ input[type=range] { width:auto; flex:1; padding:0; margin:0;
     <h2>📋 Konfiguration (vom Master)</h2>
     <div id="config-loading">Lädt…</div>
     <table id="config-table" style="display:none"></table>
+    <div style="display:flex;gap:8px;margin-top:10px">
+      <button class="close-btn" id="b-cfg-export" title="Konfiguration als JSON-Datei exportieren">⬇ Export</button>
+      <button class="close-btn" id="b-cfg-import" title="Konfig-Datei (Master-/Satellite-Export) importieren">⬆ Import</button>
+      <input type="file" id="cfg-import-file" accept="application/json,.json" hidden>
+    </div>
+    <div id="cfg-import-status" style="margin-top:6px"></div>
     <button class="close-btn" id="b-config-close">Schließen</button>
   </div>
 </div>
@@ -289,6 +295,62 @@ $("b-config-info").addEventListener("click", () => {
 
 $("b-config-close").addEventListener("click", () => {
   $cfgModal.classList.remove("open");
+});
+
+// ── Config Import / Export (Satellite) ────────────────────────
+$("b-cfg-export").addEventListener("click", async () => {
+  try {
+    const r = await fetch("/config/export");
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const blob = await r.blob();
+    let fname = "voice-satellite-config.json";
+    const cd = r.headers.get("Content-Disposition") || "";
+    const m = cd.match(/filename="?([^";]+)"?/);
+    if (m) fname = m[1];
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = fname;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    const st = $("cfg-import-status");
+    st.textContent = "Export: " + fname;
+    st.style.color = "var(--ok, #4c9)";
+  } catch (e) {
+    $("cfg-import-status").textContent = "Export fehlgeschlagen: " + e.message;
+  }
+});
+
+$("b-cfg-import").addEventListener("click", () => {
+  $("cfg-import-file").click();
+});
+
+$("cfg-import-file").addEventListener("change", async (ev) => {
+  const file = ev.target.files && ev.target.files[0];
+  ev.target.value = "";
+  if (!file) return;
+  const st = $("cfg-import-status");
+  try {
+    const payload = JSON.parse(await file.text());
+    const r = await fetch("/config/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || "HTTP " + r.status);
+    let msg = "Import: " + (j.applied || []).length + " Keys übernommen" +
+      (j.ignored && j.ignored.length ? ", ignoriert: " + j.ignored.join(", ") : "");
+    if (!j.pushed_to_master) msg += " – Master NICHT aktualisiert (unerreichbar oder offline)";
+    st.textContent = msg;
+    st.style.color = j.pushed_to_master ? "var(--ok, #4c9)" : "#e6a13b";
+    loadConfigInfo();
+  } catch (e) {
+    st.textContent = "Import fehlgeschlagen: " + e.message;
+    st.style.color = "var(--bad, #e55)";
+  }
 });
 
 $cfgModal.addEventListener("click", (ev) => {

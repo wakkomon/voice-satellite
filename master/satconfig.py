@@ -47,9 +47,11 @@ EDITABLE_KEYS = (
     "MUSIC_ROOT", "BRIDGE_HOST", "BRIDGE_PORT",
     "MASTER_MUSIC_PROXY_URL",
     "MEMORY_DB", "MEMORY_MAX_TOKENS",
-    "MIC_DEVICE", "DISPLAY", "FB_DEVICE", "FB_WIDTH", "FB_HEIGHT",
+    "MIC_DEVICE", "SPEAKER_DEVICE", "DISPLAY", "FB_DEVICE", "FB_WIDTH", "FB_HEIGHT",
     "ALSA_DEVICE", "ALSA_VOLUME", "ALSA_MUTE",
     "WOL_MAC", "SCHEDULE_FILE", "RULES_FILE",
+    "WAKE_WORD", "WAKE_SENS", "VAD_MODE", "VAD_THRESHOLD", "SILENCE_SEC",
+    "LOG_LEVEL", "MASTER_POLL_SEC", "LLM_SYSTEM_PROMPT",
 )
 
 # Secrets: nur global, nie pro Satellite; Proxy injiziert sie in Requests.
@@ -196,6 +198,106 @@ class ConfigStore:
             self._sats.pop(mac, None)
         self._set(_m)
         return self._version
+
+    # ── Import / Export ────────────────────────────────────────
+
+    def export_payload(self, include_secrets: bool = True) -> dict:
+        """Komplette Konfiguration als portables JSON (Backup/Transfer).
+
+        Enthält nur explizit gespeicherte Werte (Global + per-Satellite-
+        Overrides) – unveränderte Defaults werden nicht exportiert und
+        damit nicht festgeschrieben. include_secrets=False lässt die
+        Secret-Keys komplett weg (Datei dann sicher weitergebbar).
+        """
+        with self._lock:
+            g: dict = {}
+            for k, v in self._global.items():
+                if v is None or v == "":
+                    continue
+                if not include_secrets and k in SECRET_KEYS:
+                    continue
+                g[k] = v
+            sats = {
+                mac: {k: v for k, v in (ov or {}).items() if v is not None}
+                for mac, ov in self._sats.items()
+            }
+            sats = {m: ov for m, ov in sats.items() if ov}
+            version = self._version
+        return {
+            "app": "voice-satellite",
+            "kind": "config",
+            "format": 1,
+            "source": "master",
+            "exported_at": int(time.time()),
+            "version": version,
+            "global": g,
+            "satellites": sats,
+        }
+
+    def import_payload(self, data: dict) -> dict:
+        """Konfig-Datei (export_payload-Format) in den Store importieren.
+
+        Semantik: Merge (bestehende Werte bleiben, gleiche Keys überschreiben).
+        Akzeptiert Master-Export, Satellite-Export (die Overrides werden dem
+        MAC-Eintrag des Satelliten zugeordnet) oder ein flaches
+        {KEY: Wert}-Dict (→ global). Maskierungs-Platzhalter 'gesetzt'
+        werden übersprungen. Nicht erlaubte Keys landen in unknown_keys.
+        """
+        if not isinstance(data, dict):
+            raise ValueError("Import-Datei muss ein JSON-Objekt sein")
+        g_allowed = set(EDITABLE_KEYS) | set(GLOBAL_ONLY_KEYS) | set(SECRET_KEYS)
+        global_in = data.get("global") if isinstance(data.get("global"), dict) else {}
+        sats_in = {str(m).lower(): ov
+                   for m, ov in (data.get("satellites") or {}).items()
+                   if isinstance(ov, dict)}
+        # Satellite-Export: eigene Overrides → Eintrag seiner MAC (oder global)
+        ov_sat = data.get("overrides")
+        if isinstance(ov_sat, dict) and ov_sat:
+            mac = str(data.get("mac") or "").lower()
+            if mac:
+                merged = dict(sats_in.get(mac) or {})
+                merged.update({k: v for k, v in ov_sat.items() if k in EDITABLE_KEYS})
+                sats_in[mac] = merged
+            else:
+                merged_g = dict(global_in)
+                merged_g.update(ov_sat)
+                global_in = merged_g
+        # Flaches Dict (keine Sektionen) → globale Overrides
+        if not global_in and not sats_in:
+            flat = {k: v for k, v in data.items()
+                    if k in g_allowed and k not in ("app", "kind", "format")}
+            if flat:
+                global_in = flat
+        unknown: list[str] = []
+        g: dict = {}
+        for k, v in global_in.items():
+            if k not in g_allowed:
+                unknown.append(k)
+            elif k in SECRET_KEYS and v == "gesetzt":
+                continue  # Maskierungs-Platzhalter, echtes Secret bleibt
+            else:
+                g[k] = v
+        sats: dict[str, dict] = {}
+        for mac, ov in sats_in.items():
+            clean: dict = {}
+            for k, v in ov.items():
+                if k not in EDITABLE_KEYS:
+                    unknown.append(f"{mac}:{k}")
+                elif v == "gesetzt":
+                    continue
+                else:
+                    clean[k] = v
+            if clean:
+                sats[mac] = clean
+        if g:
+            self.set_global(g)
+        for mac, ov in sats.items():
+            self.set_satellite(mac, ov)
+        return {
+            "global_applied": len(g),
+            "satellites_applied": {m: len(ov) for m, ov in sats.items()},
+            "unknown_keys": sorted(set(unknown)),
+        }
 
 
 # Prozessweites Singleton (von api/proxy/manager genutzt).
