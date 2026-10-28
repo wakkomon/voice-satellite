@@ -449,6 +449,10 @@ def main():
     _setup_logging()
     os.makedirs(os.path.dirname(config.MEMORY_DB) or ".", exist_ok=True)
     signal.signal(signal.SIGTERM, lambda *a: sys.exit(0))
+    # Fallback-Snapshot ZUERST laden: bei nicht erreichbarem Master arbeiten
+    # die Pipeline-Threads sofort mit den zuletzt bekannten Master-Werten
+    # (Proxy-URLs, Token …) statt mit leeren Defaults.
+    config.load_local_config()
     p = Pipeline()
     web.start(p)                    # Debug-/Health-HTTP im Hintergrundthread
     _start_mcp_server()              # MCP-Remote-Steuerung
@@ -460,6 +464,8 @@ def main():
             applied, ignored = config.apply_overrides(overrides)
             if applied:
                 config.bump_config_version()
+                # Snapshot persistieren – Fallback für nächsten Offline-Start.
+                config.save_local_config(overrides, config.config_version())
                 log.info("Satellite: Config applied (%d keys, version=%d)", len(applied), config.config_version())
             elif ignored:
                 log.warning("Satellite: Config ignored keys: %s", ignored)
