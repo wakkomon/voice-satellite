@@ -1,5 +1,10 @@
 # voice-satellite
 
+> **Hinweis:** Dieses Projekt wurde teilweise KI-generiert — wesentliche Teile des
+> Quellcodes (Master- und Satellite-Module, Deploy-Skripte) wurden von einem
+> KI-Agenten (Hermes Agent, Nous Research) in Zusammenarbeit mit dem Betreiber
+> erstellt und getestet.
+
 Erweiterter Pi 3 B+ Satellite (Rhasspy-2.0-Image, Python 3.11) für:
 
 - **TTS (Qwen3-TTS) via REST API** (tts-Container, Port 7811)
