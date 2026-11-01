@@ -8,6 +8,7 @@ import logging
 import os
 import sys
 import time
+from urllib.parse import urlparse
 
 def _load_dotenv(path):
     """Minimaler .env-Parser (KEIN python-dotenv): KEY=WERT, # Kommentare.
@@ -272,6 +273,45 @@ MASTER_POLL_SEC = int(_env("MASTER_POLL_SEC", "300"))  # Index-Polling-Intervall
 MASTER_MUSIC_PROXY_URL = _env("MASTER_MUSIC_PROXY_URL", MASTER_URL).strip().rstrip("/")
 MASTER_MUSIC_AUTH      = _env("MASTER_MUSIC_AUTH", "").strip()
 
+# API-Zugriffe sollen IMMER ueber den Master laufen (Proxy), nie direkt am
+# Backend (LiteLLM/piper/Gateway) – so bleiben Tokens zentral am Master und
+# der Master behaelt die Kontrolle ueber Modelle/Model-Wechsel.
+# FORCE_MASTER_PROXY=0 laesst abweichende (direkte) URLs zu.
+FORCE_MASTER_PROXY    = int(_env("FORCE_MASTER_PROXY", "1"))
+
+# Key -> Proxy-Endpunkt am Master.
+# tts/stt/llm: der Proxy-Endpunkt IST der komplette Upstream-Endpunkt, das
+#   Original-Pfad-Suffix (/v1/audio/speech, ...) faellt weg.
+# openhab: /proxy/openhab/{subpath} – Sub-Pfad = alles hinter /rest (der
+#   Master haengt ihn an die openHAB-REST-Basis an).
+PROXY_PATHS = {"TTS_URL": "tts", "STT_URL": "stt", "LLM_URL": "llm",
+               "OPENHAB_URL": "openhab"}
+_KEEP_SUFFIX = frozenset({"openhab"})
+
+
+def proxy_url(key: str, value: str) -> str:
+    """URL-Override -> Master-Proxy-Adresse umbiegen.
+
+    Zeigt der Wert bereits auf diesen Master, bleibt er unveraendert.
+    Sonst: {MASTER_URL}/proxy/<endpunkt> (bei openhab plus offener
+    REST-Subpfad). Fuer Keys ohne Proxy-Endpunkt oder ohne MASTER_URL
+    wird der Wert durchgereicht.
+    """
+    path = PROXY_PATHS.get(key)
+    base = MASTER_URL.strip().rstrip("/")
+    if not path or not base or not value:
+        return value
+    try:
+        p = urlparse(value)
+    except Exception:
+        return value
+    if p.netloc == urlparse(base).netloc and p.path.startswith(f"/proxy/{path}"):
+        return value  # already the master proxy
+    if path in _KEEP_SUFFIX:
+        suffix = "/" + p.path.split("/rest/", 1)[-1].lstrip("/") if "/rest/" in p.path else ""
+        return f"{base}/proxy/{path}{suffix}"
+    return f"{base}/proxy/{path}"
+
 # ── Satellite Identifikation ──────────────────────────────────
 SATELLITE_MAC = _env("SATELLITE_MAC", "").strip() or "00:00:00:00:00:00"
 
@@ -426,6 +466,11 @@ def apply_overrides(d: dict) -> tuple[list[str], list[str]]:
             v = ""
         elif isinstance(v, str) and v.lstrip("-").isdigit():
             v = int(v)
+        elif isinstance(v, str) and FORCE_MASTER_PROXY and k in PROXY_PATHS:
+            new = proxy_url(k, v)
+            if new != v:
+                logging.info("apply_overrides: %s -> Master-Proxy (%s)", k, new)
+            v = new
         setattr(sys.modules[__name__], k, v)
         applied.append(k)
     return applied, ignored
