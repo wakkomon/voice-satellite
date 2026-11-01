@@ -300,9 +300,26 @@ def try_volume(text):
     amixer auf allen Karten (deterministisch, ohne LLM-Runde).
     None, wenn es kein Lautstärke-Kommando ist."""
     t = _normalize(text)
+    # Duck-WAECHTER: waehrend einer laufenden Unterhaltung mit Musik steht
+    # die Hardware-Lautstaerke auf dem Duck-Level. 'lauter'/'leiser' (und
+    # 'Lautstaerke auf X') wuerden sonst vom gedaempften Wert aus rechnen
+    # und beim naechsten duck_again()/exit_() wieder weggebuegelt. Der
+    # Schritt gilt deshalb auf der gemerkten Nutzer-Grundlage.
+    duck = None
+    try:
+        from . import duck as _duck  # spaeter Import: main.py importiert router
+        duck = _duck
+        ducking = duck.active()
+    except Exception:
+        ducking = False
     if re.search(r"\b(lauter|leiser)\b", t):
+        delta = config.VOLUME_STEP if "lauter" in t else -config.VOLUME_STEP
         try:
-            new, old = volume.step(config.VOLUME_STEP if "lauter" in t else -config.VOLUME_STEP)
+            res = duck.adjust_user_volume(delta) if duck and ducking else None
+            if res is not None:
+                new, old = res
+                return f"Lautstärke von {old[0]} auf {new} Prozent."
+            new, old = volume.step(delta)
         except Exception as e:
             return f"Lautstärke geht nicht: {e}"
         o_v, o_m = old
@@ -318,7 +335,7 @@ def try_volume(text):
     num = n or n2
     if not num:
         try:
-            st = volume.get()
+            st = duck.effective_volume() if (duck and ducking) else volume.get()
         except Exception:
             st = None
         if st is None:
@@ -330,6 +347,9 @@ def try_volume(text):
         pct = int(num.group(1))
         if not 0 <= pct <= 100:
             return "Lautstärke muss zwischen 0 und 100 Prozent liegen."
+        res = duck.set_user_volume(pct) if duck and ducking else None
+        if res is not None:
+            return f"Lautstärke von {res[0]} auf {pct} Prozent."
         old = volume.get()
         o_v = old[0] if old else -1
         volume.set_volume(pct)
