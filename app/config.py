@@ -418,10 +418,21 @@ _OVERWRITABLE = {
     "STT_MODEL", "STT_LANGUAGE",
     "LLM_MODEL", "LLM_HAS_TOOLS", "LLM_ENABLE_THINKING",
     "MUSIC_ROOT", "BRIDGE_HOST", "BRIDGE_PORT",
+    "DEFAULT_IMAGE_URL",
     # Globale Settings (Timeouts, Limits, Defaults):
     "STT_TIMEOUT", "TTS_TIMEOUT", "LLM_TIMEOUT",
     "LLM_MAX_TOKENS", "OPENHAB_CACHE_TTL",
 }
+
+# API-Config-Keys werden am Master gepflegt. Die Satellite-Info zeigt sie
+# nicht mehr — dort sind nur Master-URL (Proxy) und lokale Werte sichtbar.
+# Sie werden weiterhin dynamisch angewendet (Proxy-Payloads nutzen sie).
+API_KEYS = frozenset({
+    "TTS_MODEL", "TTS_VOICE", "TTS_LANGUAGE", "TTS_TIMEOUT",
+    "STT_MODEL", "STT_LANGUAGE", "STT_TIMEOUT",
+    "LLM_MODEL", "LLM_HAS_TOOLS", "LLM_ENABLE_THINKING",
+    "LLM_MAX_TOKENS", "OPENHAB_CACHE_TTL",
+})
 
 # Ältere Master-Konfigurationen können diese Keys noch mitschicken
 # (Backend-Adressen/Tokens, Proxy-Schalter). Sie wirken hier nicht mehr und

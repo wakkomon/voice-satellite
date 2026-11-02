@@ -159,13 +159,13 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/":
             self._send_html()
         elif path == "/api/config/info":
-            # Config-Anzeige fuer Info-Button (ohne Secret-Values)
-            # Nur ueberschreibbare Keys aus _OVERWRITABLE (eine Quelle, kein
-            # Doppel der Key-Liste). Backend-URLs/Tokens gibt es hier nicht
-            # mehr — sichtbar ist nur, wohin die Proxy-Endpunkte zeigen.
+            # Config-Anzeige fuer Info-Button (ohne Secret-Values).
+            # API-Config-Keys (TTS_/STT_/LLM_/OPENHAB_) werden am Master
+            # gepflegt und hier nicht mehr angezeigt; sichtbar sind nur die
+            # lokalen Werte und die abgeleiteten Proxy-Endpunkte am Master.
             overwritable = set(config._OVERWRITABLE)
             info = {}
-            for k in overwritable:
+            for k in sorted(overwritable - config.API_KEYS):
                 v = getattr(config, k, None)
                 if v is not None:
                     info[k] = str(v)
