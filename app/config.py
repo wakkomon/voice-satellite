@@ -431,7 +431,7 @@ API_KEYS = frozenset({
     "TTS_MODEL", "TTS_VOICE", "TTS_LANGUAGE", "TTS_TIMEOUT",
     "STT_MODEL", "STT_LANGUAGE", "STT_TIMEOUT",
     "LLM_MODEL", "LLM_HAS_TOOLS", "LLM_ENABLE_THINKING",
-    "LLM_MAX_TOKENS", "OPENHAB_CACHE_TTL",
+    "LLM_MAX_TOKENS", "LLM_TIMEOUT", "OPENHAB_CACHE_TTL",
 })
 
 # Ältere Master-Konfigurationen können diese Keys noch mitschicken
