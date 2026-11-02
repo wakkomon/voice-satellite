@@ -21,6 +21,15 @@ from typing import Any
 
 log = logging.getLogger("master.manager")
 
+
+def _log_safe(msg, limit: int = 300) -> str:
+    """Fremdtext logtauglich machen: eine Zeile, keine Steuerzeichen.
+
+    Die Satelliten-Eventtexte enthalten erkannte Sprache – ohne das hier
+    koennte ein Satellit Zeilen in mein Live-Log schmuggeln."""
+    s = " ".join(str(msg or "").split())
+    return s[:limit] + "…" if len(s) > limit else s
+
 # ── SSH-Konfiguration ──────────────────────────────────────────
 SSH_USER     = os.environ.get("SSH_USER", "pi")
 SSH_PKEY     = os.path.expanduser(os.environ.get(
@@ -51,6 +60,8 @@ class SatManager:
         self._monitor_thread: threading.Thread | None = None
         self._key_local: str | None = None
         self._status_cb = None  # Callable[[str, Satellite], None] – bei Status-Wechsel
+        # hochste je gesehene Pipeline-seq pro Satellit (Live-Log-Dedupe)
+        self._event_seqs: dict[str, int] = {}
         self._ensure_ssh_key()
 
     def set_status_callback(self, cb) -> None:
@@ -165,6 +176,44 @@ class SatManager:
             if s.ip == ip:
                 return key
         return None
+
+    def record_events(self, mac: str, events: list, reset: bool = False) -> int:
+        """Pipeline-Events eines Satelliten übernehmen (Live-Log-Parität).
+
+        Der Satellite meldet im Heartbeat genau die Einträge, die seine
+        Live-Log-Seite (/events, SSE) zeigt — dieselben Einträge führe ich
+        hier unter dem Satellitennamen im Master-Live-Log und in den
+        Container-Logs, damit Master und Satellite identisch zeigen.
+
+        Dupes (Netzwerk-Retry, doppelter Heartbeat) filtere ich über die
+        laufende seq des Satelliten. Startet der Satellite neu, zählt seq
+        wieder bei 1; er kennzeichnet den ersten Heartbeat danach mit
+        reset=True, dann fängt die Zählung hier ebenfalls von vorn an."""
+        if not events:
+            return 0
+        fresh = [e for e in events if isinstance(e, dict)]
+        if not fresh:
+            return 0
+        with self._lock:
+            sat = self.satellites.get(mac) or self.satellites.get(mac.lower())
+            name = (sat.hostname if sat and sat.hostname else mac)[:24]
+            last_seq = 0 if reset else self._event_seqs.get(mac, 0)
+            out = []
+            for ev in fresh:
+                try:
+                    seq = int(ev.get("seq") or 0)
+                except (TypeError, ValueError):
+                    seq = 0
+                if seq and seq <= last_seq:
+                    continue
+                out.append((seq, str(ev.get("ts") or "")[:8], ev.get("msg")))
+            if not out:
+                return 0
+            hi = max(s for s, _, _ in out)
+            self._event_seqs[mac] = max(hi, 0 if reset else last_seq)
+        for seq, ts, msg in sorted(out):
+            log.info("[%s] %s %s", name, ts, _log_safe(msg))
+        return len(out)
 
     def record_heartbeat(self, mac: str, data: dict) -> None:
         """Herzschlag empfangen (von Satellite-API).

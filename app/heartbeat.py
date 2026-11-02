@@ -181,18 +181,48 @@ def pull_and_apply_config() -> bool:
 _running = False
 _heartbeat_thread: threading.Thread | None = None
 _stop_event = threading.Event()
+# seq des zuletzt gemeldeten Pipeline-Events: der Live-Log des Masters soll
+# genau die Events zeigen, die auch im Live-Log des Satelliten (SSE) stehen
+_last_event_seq = 0
+
+
+def _fresh_events(pipeline, limit: int = 40) -> list:
+    """Pipeline-Events, die der Master noch nicht bekommen hat.
+
+    Es sind genau die Eintraege, die der Satellit in seinem Live-Log
+    (SSE /events) zeigt; der Master fuehrt sie unter seinem Satellitennamen
+    ebenfalls im Live-Log. Mit der laufenden seq wird nichts doppelt
+    gemeldet, nach einem Satelliten-Neustart zaehlt seq wieder bei 1."""
+    if not pipeline:
+        return []
+    evs = [e for e in getattr(pipeline, "events", [])
+           if e.get("seq", 0) > _last_event_seq]
+    return evs[-limit:] if len(evs) > limit else evs
 
 
 def _do_heartbeat(pipeline) -> None:
-    """Einmaliger Heartbeat-POST an den Master (stdlib)."""
+    """Einmaliger Heartbeat-POST an den Master (stdlib).
+
+    Die neuen Pipeline-Events haengen wir direkt ans Heartbeat-Payload
+    ('events') – ein Request statt zwei, und der Master legt sie in seinem
+    Live-Log ab, bevor er den Status speichert."""
+    global _last_event_seq
     if not config.MASTER_URL or not config.HEARTBEAT_ENABLED:
         return
     if not _MAC:
         log.debug("Kein MAC gefunden – Heartbeat übersprungen")
         return
     payload = {}
+    evs: list = []
     try:
         payload = get_satellite_info(pipeline)
+        evs = _fresh_events(pipeline)
+        if evs:
+            payload["events"] = evs
+            if _last_event_seq == 0:
+                # erster Event-Bericht seit (Neu-)Start des Satelliten: der
+                # Master setzt seine seq-Zaehlung fuer uns zurueck
+                payload["events_reset"] = True
         url = f"{config.MASTER_URL.rstrip('/')}/api/satellite/{payload['mac']}/heartbeat"
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
@@ -201,7 +231,10 @@ def _do_heartbeat(pipeline) -> None:
         )
         with urllib.request.urlopen(req, timeout=5) as resp:
             if resp.status == 200:
-                log.debug("Heartbeat OK (%s)", payload.get("hostname", "?"))
+                if evs:
+                    _last_event_seq = max(e.get("seq", 0) for e in evs)
+                log.debug("Heartbeat OK (%s, %d Events)",
+                          payload.get("hostname", "?"), len(evs))
             else:
                 log.warning("Heartbeat-Antwort %d", resp.status)
     except Exception as e:

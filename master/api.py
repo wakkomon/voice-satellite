@@ -177,8 +177,16 @@ async def _sat_heartbeat(req: Request) -> JSONResponse:
     # Die echte Host-IP (von NAT) statt der Container-IP aus dem Payload
     if req.client:
         payload["ip"] = req.client.host
+    # Live-Log-Events des Satelliten: vorher herausloesen, damit sie nicht im
+    # Status-Objekt (UI/Config-Export) landen. Der Master loggt sie erst nach
+    # dem Heartbeat, damit sein Satellitenname schon bekannt ist.
+    events = payload.pop("events", None)
+    events_reset = bool(payload.pop("events_reset", False))
     manager.record_heartbeat(mac, payload)
-    return JSONResponse({"ok": True})
+    n = 0
+    if isinstance(events, list):
+        n = manager.record_events(mac, events, events_reset)
+    return JSONResponse({"ok": True, "events_stored": n})
 
 
 # ── Zentrale Konfigurationsverwaltung (b) ──────────────────────
