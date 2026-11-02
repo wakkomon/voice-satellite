@@ -445,7 +445,9 @@ routes = [
     Route("/proxy/tts", proxy.proxy_tts, methods=["GET", "HEAD", "POST"]),
     Route("/proxy/stt", proxy.proxy_stt, methods=["GET", "HEAD", "POST"]),
     Route("/proxy/llm", proxy.proxy_llm, methods=["GET", "HEAD", "POST"]),
+    Route("/proxy/openhab", proxy.proxy_openhab, methods=["GET", "POST", "PUT", "DELETE"]),
     Route("/proxy/openhab/{subpath:path}", proxy.proxy_openhab, methods=["GET", "POST", "PUT", "DELETE"]),
+    Route("/proxy/music", proxy.proxy_music, methods=["GET", "HEAD"]),
     Route("/proxy/music/{subpath:path}", proxy.proxy_music,
           methods=["GET", "HEAD"]),
     # (d) Zentrales MCP-Gateway (Tools aller Satelliten)

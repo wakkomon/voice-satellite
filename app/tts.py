@@ -1,4 +1,4 @@
-"""TTS: Text -> Audio über die TTS-API (.31:7811), direkt nach aplay gestreamt."""
+"""TTS: Text -> Audio ueber den Master-Proxy (/proxy/tts), nach aplay gestreamt."""
 import logging
 
 from . import config, http
@@ -25,7 +25,7 @@ def synthesize(text, retries: int = 2) -> bytes:
         chunks = []
         try:
             for chunk in http.post_stream(config.TTS_URL, payload,
-                                          token=config.TTS_TOKEN,
+                                          token=config.MASTER_TOKEN,
                                           timeout=config.TTS_TIMEOUT):
                 chunks.append(chunk)
             wav = b"".join(chunks)

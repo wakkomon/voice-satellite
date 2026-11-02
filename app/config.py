@@ -64,15 +64,17 @@ MAX_REC_SEC     = float(_env("MAX_REC_SEC", "27"))
 PREROLL_SEC     = float(_env("PREROLL_SEC", "0.3"))    # Vorlauf, damit der Satzanfang nicht fehlt
 WAKE_SKIP_SEC   = float(_env("WAKE_SKIP_SEC", "0.15")) # Rest des Codeworts verwerfen (verkürzt für schnellere Reaktion)
 
-# ── STT (Whisper auf .31) ─────────────────────────────────────
-STT_URL         = _env("STT_URL", "")
+# ── STT (Whisper) ─────────────────────────────────────────────
+# Die Endpunkte TTS_URL/STT_URL/LLM_URL/OPENHAB_URL sind hier nicht per ENV
+# lesbar: sie haengen ausnahmslos an MASTER_URL (Master-Proxy, siehe
+# Master-Block unten). Backends und deren Tokens kennt nur der Master.
 STT_MODEL       = _env("STT_MODEL", "")
 STT_LANGUAGE    = _env("STT_LANGUAGE", "de")   # fest Deutsch vorgeben, sonst rät Whisper und liefert Englisch
 STT_TIMEOUT     = float(_env("STT_TIMEOUT", "30"))
 
 # ── openHAB Rules ─────────────────────────────────────────────
-OPENHAB_URL     = _env("OPENHAB_URL", "")
-OPENHAB_TOKEN   = _env("OPENHAB_TOKEN", "")
+# openHAB-Endpunkt liegt im Master-Block (Proxy), Zugriff dort regelt der
+# Master. RULES_FILE nur noch fuer synonyme Eigennamen.
 RULES_FILE      = _env("RULES_FILE", "")
 CACHE_TTL       = float(_env("OPENHAB_CACHE_TTL", "300"))  # Item-Liste cachen (s); numerisch -> Default muss bleiben (crashed sonst beim Start)
 
@@ -82,9 +84,8 @@ CACHE_TTL       = float(_env("OPENHAB_CACHE_TTL", "300"))  # Item-Liste cachen (
 # unterstuetzt: mit enable_thinking=false antworten sie schnell; die Antwort
 # kann in content oder reasoning_content liegen -> router.ask_llm liest beide.
 LLM_ENABLE_THINKING = _env("LLM_ENABLE_THINKING", "false") == "true"
-LLM_URL         = _env("LLM_URL", "",
-                       fallback_empty=True)
-LLM_TOKEN       = _env("LLM_TOKEN", "")            # Gateway: Client-Secret; Ollama: leer
+# LLM-Endpunkt + Zugriff: siehe Master-Block (Proxy) – der Satellit kennt
+# weder das Backend noch ein Gateway-Secret.
 LLM_MODEL       = _env("LLM_MODEL", "",  # Hermes-Gateway-Agent
                        fallback_empty=True)
 LLM_TIMEOUT     = float(_env("LLM_TIMEOUT", "180", fallback_empty=True))  # Kaltstart (Gateway-Agent braucht länger); numerisch -> Default muss bleiben (crashed sonst beim Start)
@@ -112,8 +113,9 @@ def llm_has_tools():
         return True
     if v in ("false", "0", "no"):
         return False
-    # auto: Gateway-URL oder Agent-Modell => Werkzeug-Modus
-    return "8642" in LLM_URL or "hermes" in LLM_MODEL.lower()
+    # auto: Agent-Modell => Werkzeug-Modus. Der Endpunkt ist immer der
+    # Master-Proxy, ein Port-Rueckschluss ist dort nicht mehr moeglich.
+    return "hermes" in LLM_MODEL.lower() or "agent" in LLM_MODEL.lower()
 
 AGENT_SYSTEM_PROMPT = _env(
     "AGENT_SYSTEM_PROMPT",
@@ -163,9 +165,8 @@ MEMORY_EXTRACT_PROMPT = (
     "Gespräch:\nNutzer: {user}\nDu: {assistant}"
 )
 
-# ── TTS (Qwen3-TTS auf .31:7811) ──────────────────────────────
-TTS_URL         = _env("TTS_URL", "", fallback_empty=True)
-TTS_TOKEN       = _env("TTS_TOKEN", "")
+# ── TTS (Qwen3-TTS) ────────────────────────────────────────────
+# TTS_URL liegt im Master-Block (Proxy), Zugang laeuft ueber MASTER_TOKEN.
 TTS_MODEL       = _env("TTS_MODEL", "")
 TTS_VOICE       = _env("TTS_VOICE", "")
 # Sprache der Synthese (API-Feld "language"); leer = Server-Default.
@@ -257,60 +258,34 @@ MCP_PORT        = int(_env("MCP_PORT", "8780"))
 
 LOG_LEVEL       = _env("LOG_LEVEL", "INFO")
 
-# ── Master (2.0.0alpha) ─────────────────────────────────────────
-# Indexing wandert in den Master-Container (dev-server, x86): er
-# scannert CIFS und liefert den fertigen Index per HTTP. Der
-# Satellite scannt CIFS nur noch als Fallback, wenn MASTER_URL
-# leer ist oder der Master nicht erreichbar.
-# Beispiel: MASTER_URL=http://192.168.1.24:8791
-MASTER_URL      = _env("MASTER_URL", "http://192.168.1.24:8791")
+# ── Master (zentraler Proxy) ───────────────────────────────────
+# Der Master-Container indexiert das Musik-Archiv, führt sämtliche APIs
+# (TTS/STT/LLM/openHAB) aus und verwaltet die Konfiguration. Der Satellit
+# kennt dafür ausschließlich die Basisadresse:
+#   MASTER_URL=http://192.168.1.24:8791
+# Adressen oder Tokens der Backends (LiteLLM/TTS/Gateway/openHAB) haben in
+# diesem Programm nichts mehr zu suchen – die stehen nur im Master.
+MASTER_URL      = _env("MASTER_URL", "http://192.168.1.24:8791").strip().rstrip("/")
+MASTER_TOKEN    = _env("MASTER_TOKEN", "").strip()   # Authorization am Master (optional)
 MASTER_POLL_SEC = int(_env("MASTER_POLL_SEC", "300"))  # Index-Polling-Intervall
 
 # Zentraler Musik-Stream: /proxy/music?path=<relativ> liefert Musikdateien
 # direkt vom Master-Share — der Satellit braucht dafuer keinen Fileserver-Mount
-# (/m) mehr. Optionaler Authorization-Header-Wert (z.B. "Bearer <token>") fuer
-# einen evtl. auth-geschuetzten Master. Leer = Proxy aus (nur lokaler Mount).
-MASTER_MUSIC_PROXY_URL = _env("MASTER_MUSIC_PROXY_URL", MASTER_URL).strip().rstrip("/")
-MASTER_MUSIC_AUTH      = _env("MASTER_MUSIC_AUTH", "").strip()
+# (/m) mehr. Autorisierung ueber MASTER_TOKEN.
+MASTER_MUSIC_PROXY_URL = MASTER_URL
+MASTER_MUSIC_AUTH      = f"Bearer {MASTER_TOKEN}" if MASTER_TOKEN else ""
 
-# API-Zugriffe sollen IMMER ueber den Master laufen (Proxy), nie direkt am
-# Backend (LiteLLM/piper/Gateway) – so bleiben Tokens zentral am Master und
-# der Master behaelt die Kontrolle ueber Modelle/Model-Wechsel.
-# FORCE_MASTER_PROXY=0 laesst abweichende (direkte) URLs zu.
-FORCE_MASTER_PROXY    = int(_env("FORCE_MASTER_PROXY", "1"))
-
-# Key -> Proxy-Endpunkt am Master.
-# tts/stt/llm: der Proxy-Endpunkt IST der komplette Upstream-Endpunkt, das
-#   Original-Pfad-Suffix (/v1/audio/speech, ...) faellt weg.
-# openhab: /proxy/openhab/{subpath} – Sub-Pfad = alles hinter /rest (der
-#   Master haengt ihn an die openHAB-REST-Basis an).
-PROXY_PATHS = {"TTS_URL": "tts", "STT_URL": "stt", "LLM_URL": "llm",
-               "OPENHAB_URL": "openhab"}
-_KEEP_SUFFIX = frozenset({"openhab"})
-
-
-def proxy_url(key: str, value: str) -> str:
-    """URL-Override -> Master-Proxy-Adresse umbiegen.
-
-    Zeigt der Wert bereits auf diesen Master, bleibt er unveraendert.
-    Sonst: {MASTER_URL}/proxy/<endpunkt> (bei openhab plus offener
-    REST-Subpfad). Fuer Keys ohne Proxy-Endpunkt oder ohne MASTER_URL
-    wird der Wert durchgereicht.
-    """
-    path = PROXY_PATHS.get(key)
-    base = MASTER_URL.strip().rstrip("/")
-    if not path or not base or not value:
-        return value
-    try:
-        p = urlparse(value)
-    except Exception:
-        return value
-    if p.netloc == urlparse(base).netloc and p.path.startswith(f"/proxy/{path}"):
-        return value  # already the master proxy
-    if path in _KEEP_SUFFIX:
-        suffix = "/" + p.path.split("/rest/", 1)[-1].lstrip("/") if "/rest/" in p.path else ""
-        return f"{base}/proxy/{path}{suffix}"
-    return f"{base}/proxy/{path}"
+# ── API-Endpunkte: ausnahmslos ueber den Master-Proxy ─────────
+# TTS/STT/LLM: der Proxy-Endpunkt IST der komplette Upstream (der OpenAI-Pfad
+#   /v1/... faellt weg, den kennt der Master).
+# openHAB: /proxy/openhab/<pfad> – der Master haengt <pfad> (Item-Name,
+#   /state, Commands, ?recursive=...) an seine openHAB-REST-Basis an.
+_MB = MASTER_URL
+TTS_URL       = f"{_MB}/proxy/tts" if _MB else ""
+STT_URL       = f"{_MB}/proxy/stt" if _MB else ""
+LLM_URL       = f"{_MB}/proxy/llm" if _MB else ""
+OPENHAB_URL   = f"{_MB}/proxy/openhab" if _MB else ""
+del _MB
 
 # ── Satellite Identifikation ──────────────────────────────────
 SATELLITE_MAC = _env("SATELLITE_MAC", "").strip() or "00:00:00:00:00:00"
@@ -436,16 +411,27 @@ def _pull_config_from_master(mac: str, version: int) -> dict:
 # wie MIC_DEVICE/FB_DEVICE). Die 7 "globalen" Keys (Timeouts, Limits,
 # Defaults) sollen nicht pro Container gesetzt werden, sondern zentral
 # über den Master verwaltet werden.
+# Backend-URLs und Tokens sind hier nicht mehr dabei: der Satellit erreicht
+# jede API ausschliesslich ueber den Master-Proxy (MASTER_URL).
 _OVERWRITABLE = {
-    "TTS_URL", "TTS_MODEL", "TTS_VOICE", "TTS_LANGUAGE",
-    "STT_URL", "STT_MODEL", "STT_LANGUAGE",
-    "LLM_URL", "LLM_MODEL", "LLM_HAS_TOOLS", "LLM_ENABLE_THINKING",
-    "OPENHAB_URL", "MUSIC_ROOT", "BRIDGE_HOST", "BRIDGE_PORT",
-    "MASTER_MUSIC_PROXY_URL", "MASTER_MUSIC_AUTH",
+    "TTS_MODEL", "TTS_VOICE", "TTS_LANGUAGE",
+    "STT_MODEL", "STT_LANGUAGE",
+    "LLM_MODEL", "LLM_HAS_TOOLS", "LLM_ENABLE_THINKING",
+    "MUSIC_ROOT", "BRIDGE_HOST", "BRIDGE_PORT",
     # Globale Settings (Timeouts, Limits, Defaults):
     "STT_TIMEOUT", "TTS_TIMEOUT", "LLM_TIMEOUT",
     "LLM_MAX_TOKENS", "OPENHAB_CACHE_TTL",
 }
+
+# Ältere Master-Konfigurationen können diese Keys noch mitschicken
+# (Backend-Adressen/Tokens, Proxy-Schalter). Sie wirken hier nicht mehr und
+# erscheinen deshalb nicht als "ignoriert" im Log.
+_LEGACY_API_KEYS = frozenset({
+    "TTS_URL", "STT_URL", "LLM_URL", "OPENHAB_URL",
+    "TTS_TOKEN", "STT_TOKEN", "LLM_TOKEN", "OPENHAB_TOKEN",
+    "FORCE_MASTER_PROXY", "PROXY_PATHS",
+    "MASTER_MUSIC_PROXY_URL", "MASTER_MUSIC_AUTH",
+})
 
 
 def apply_overrides(d: dict) -> tuple[list[str], list[str]]:
@@ -454,9 +440,10 @@ def apply_overrides(d: dict) -> tuple[list[str], list[str]]:
     Gibt (applied_keys, ignored_keys) zurück. Nur Keys aus _OVERWRITABLE
     werden gesetzt; bools werden aus "true"/"false"/1/0 konvertiert.
     """
-    import types  # noqa: F401  (nur für Typ-Hinweise; wird nicht gebraucht)
     applied, ignored = [], []
     for k, v in (d or {}).items():
+        if k in _LEGACY_API_KEYS:
+            continue
         if k not in _OVERWRITABLE:
             ignored.append(k)
             continue
@@ -466,11 +453,6 @@ def apply_overrides(d: dict) -> tuple[list[str], list[str]]:
             v = ""
         elif isinstance(v, str) and v.lstrip("-").isdigit():
             v = int(v)
-        elif isinstance(v, str) and FORCE_MASTER_PROXY and k in PROXY_PATHS:
-            new = proxy_url(k, v)
-            if new != v:
-                logging.info("apply_overrides: %s -> Master-Proxy (%s)", k, new)
-            v = new
         setattr(sys.modules[__name__], k, v)
         applied.append(k)
     return applied, ignored

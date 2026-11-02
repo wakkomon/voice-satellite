@@ -35,17 +35,21 @@ CONFIG_PATH = os.path.join(CONFIG_DIR, "satellites.json")
 # Müssen exakt app/config.py::_OVERWRITABLE abdecken (sonst ignoriert der
 # Satellite sie). Tokens sind MASTER-SEITIG (Proxy injiziert sie) und werden
 # nur GLOBAL gespeichert, nie pro-Satellite – im Snapshot maskiert.
+# Backend-URLs (TTS_URL, STT_URL, LLM_URL, OPENHAB_URL) sind hier nicht mehr
+# editierbar: Satelliten sprechen ausschliesslich den Master-Proxy an, die
+# echten Ziele kennt nur der Master (ENV TTS_BACKEND_URL/... bzw.
+# OPENHAB_BACKEND_URL). Tokens bleiben als SECRET_KEYS verwaltbar, der Proxy
+# injiziert sie.
 EDITABLE_KEYS = (
-    "TTS_URL", "TTS_MODEL", "TTS_VOICE", "TTS_LANGUAGE",
-    "TTS_TOKEN", "TTS_TIMEOUT",
-    "STT_URL", "STT_MODEL", "STT_LANGUAGE",
-    "STT_TOKEN", "STT_TIMEOUT",
-    "LLM_URL", "LLM_MODEL", "LLM_HAS_TOOLS", "LLM_ENABLE_THINKING",
-    "LLM_TOKEN", "LLM_TIMEOUT", "LLM_MAX_TOKENS",
-    "OPENHAB_URL", "OPENHAB_TOKEN", "OPENHAB_CACHE_TTL",
+    "TTS_MODEL", "TTS_VOICE", "TTS_LANGUAGE",
+    "TTS_TIMEOUT",
+    "STT_MODEL", "STT_LANGUAGE",
+    "STT_TIMEOUT",
+    "LLM_MODEL", "LLM_HAS_TOOLS", "LLM_ENABLE_THINKING",
+    "LLM_TIMEOUT", "LLM_MAX_TOKENS",
+    "OPENHAB_CACHE_TTL",
     "DEFAULT_IMAGE_URL",
     "MUSIC_ROOT", "BRIDGE_HOST", "BRIDGE_PORT",
-    "MASTER_MUSIC_PROXY_URL",
     "MEMORY_DB", "MEMORY_MAX_TOKENS",
     "MIC_DEVICE", "SPEAKER_DEVICE", "DISPLAY", "FB_DEVICE", "FB_WIDTH", "FB_HEIGHT",
     "ALSA_DEVICE", "ALSA_VOLUME", "ALSA_MUTE",
@@ -63,6 +67,48 @@ SECRET_KEYS = frozenset({
 GLOBAL_ONLY_KEYS = ("MASTER_MUSIC_AUTH",)
 
 UI_KEYS = EDITABLE_KEYS + GLOBAL_ONLY_KEYS
+
+# ── URL-Modell (Konzept-Punkt 1/2) ──────────────────────────────────────
+# Der Satellit kennt als API-Ziel ausschliesslich den Master-Proxy; die
+# echten Backend-Ziele (LiteLLM/Piper/STT/openHAB) kennt nur der Master.
+URL_KEYS = ["LLM_URL", "STT_URL", "TTS_URL", "OPENHAB_URL"]
+URL_MODEL = {
+    "satellite_keys": URL_KEYS,
+    "satellite_value": "<MASTER_URL>/proxy/<llm|stt|tts|openhab>",
+    "master_keys": [k.replace("_URL", "_BACKEND_URL") for k in URL_KEYS],
+    "master_source": "ENV/.env.master bzw. Master-UI (PROXY_BACKENDS)",
+    "satellite_sends_token": False,
+    "token_home": "nur Master (SECRET_KEYS, Proxy injiziert Authorization)",
+}
+# Master-seitige Backend-Ziele: die echten Endpunkte, nie ein Proxy-Pfad.
+BACKEND_KEYS = [k.replace("_URL", "_BACKEND_URL") for k in URL_KEYS]
+
+
+def backend_loop_reject(key: str, value) -> str | None:
+    """Zyklus-Schutz: eine URL, die auf den Master-Proxy zurueckzeigt, ware
+    eine Endlosschleife (Proxy -> Master -> Proxy ...).
+
+    Regel A: ein Backend-Ziel (*_BACKEND_URL) muss das echte Backend nennen,
+             nie einen /proxy/-Pfad.
+    Regel B: keine URL (auch kein Satelliten-Override) darf auf
+             localhost/127.0.0.1 mit dem Master-eigenen Port zeigen — der
+             Satellit erreicht das localhost des Masters gar nicht, und der
+             Master rueber sich sich selbst.
+
+    Rueckgabe: Ablehnungsgrund oder None.
+    """
+    if not key.endswith("_URL") or not isinstance(value, str) or not value.strip():
+        return None
+    low = value.strip().lower()
+    host = low.split("://", 1)[-1].partition("/")[0].rsplit("@")[-1]
+    host_only, _, port = host.partition(":")
+    if key.endswith("_BACKEND_URL") and ("/proxy/" in low or low.endswith("/proxy")):
+        return ("%s muss das echte Backend nennen, nicht den Master-Proxy (%s)"
+                % (key, value))
+    own = str(os.environ.get("MASTER_PORT", "8791"))
+    if host_only in ("localhost", "127.0.0.1", "0.0.0.0", "::1") and port == own:
+        return ("%s zeigt auf den Master selbst (%s) — Zyklus" % (key, value))
+    return None
 
 
 class ConfigStore:
@@ -174,8 +220,13 @@ class ConfigStore:
         allowed = set(EDITABLE_KEYS) | set(GLOBAL_ONLY_KEYS) | SECRET_KEYS
         def _m() -> None:
             for k, v in (overrides or {}).items():
-                if k in allowed:
-                    self._global[k] = v
+                if k not in allowed:
+                    continue
+                why = backend_loop_reject(k, v)
+                if why:
+                    log.warning("Zentrale Konfig abgelehnt: %s", why)
+                    continue
+                self._global[k] = v
         self._set(_m)
         return self._version
 

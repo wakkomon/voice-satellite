@@ -594,15 +594,26 @@ def try_set_volume(text: str) -> tuple[bool, str | None]:
         return False, None
 
     step = int(m.group(1))
-    if not (0 <= step <= 5):
-        return True, "Lautstärke muss 0-5 sein"
+    if step not in _VOLUME_STEPS:
+        # Kein Stufenwert (0-5): dem Prozent-Pfad in router.try_volume
+        # ueberlassen – 'Lautstärke 30' sind 30 Prozent, kein Fehler.
+        return False, None
 
     if step == 0:
         volume.set_volume(muted=True)
         return True, "Stumm"
 
     pct, unmute = _VOLUME_STEPS[step]
-    volume.set_volume(pct, muted=unmute)
+    # Duck-WAECHTER: 'Lautstärke <Stufe>' meint die Nutzerstufe. Ohne duck
+    # .set_user() wuerde der Wert ins Duck-Level geschrieben und waere nach
+    # dem Ducking wieder weg.
+    try:
+        from . import duck as _duck
+        res = _duck.set_user_volume(pct)
+    except Exception:
+        res = None
+    if res is None:
+        volume.set_volume(pct, muted=unmute)
     return True, f"Lautstärke auf Stufe {step} ({pct}%) gesetzt"
 
 

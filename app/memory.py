@@ -103,7 +103,7 @@ def extract_facts(user_msg: str, assistant_msg: str):
         "max_tokens": 300,
     }
     try:
-        data = http.post_json(config.LLM_URL, payload, token=config.LLM_TOKEN, timeout=60)
+        data = http.post_json(config.LLM_URL, payload, token=config.MASTER_TOKEN, timeout=60)
         raw = data["choices"][0]["message"]["content"].strip()
         m = re.search(r"\[.*?\]", raw, re.DOTALL)
         if m:

@@ -225,6 +225,11 @@ async def proxy_openhab(req: Request) -> Response:
     except Exception:
         sub_path = ""
     target = base_url.rstrip("/") + (("/" + sub_path) if sub_path else "")
+    # Query-Parameter durchreichen (Item-Liste: ?recursive=false, &type=...).
+    # Ohne sie liefert openHAB die Liste verschachtelt und die
+    # Geräte-Zuordnung im Satellit funktioniert nicht.
+    if req.url.query:
+        target += "?" + req.url.query
     method = req.method
     body = await req.body()
     try:

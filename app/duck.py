@@ -71,6 +71,7 @@ def exit_():
         vol, muted = _prev
         _active = False
         _prev = None
+    muted = _current_muted(muted)
     try:
         volume.set_volume(vol, muted=muted)
         log.info("Ducking zurück: Musik wieder auf %d%%", vol)
@@ -94,6 +95,18 @@ def effective_volume():
     return volume.get()
 
 
+def _current_muted(fallback):
+    """Aktueller Stumm-Schalter der Hardware. Der Nutzer kann waehrend des
+    Duckens stummgeschaltet (oder entstummt) haben; jeder Pfad, der dann die
+    Lautstaerke setzt, muss den JETZT geltenden Schalter verwenden — sonst
+    entstuemmt z.B. restore_for_tts() ein bewusst stummgeschaltetes Geraet."""
+    try:
+        st = volume.get()
+    except Exception:
+        return fallback
+    return fallback if st is None else st[1]
+
+
 def adjust_user_volume(delta):
     """'lauter'/'leiser' WAHREND des Duckings: der Schritt gilt auf der
     gemerkten Nutzer-Grundlage (_prev), nicht auf dem Duck-Level —
@@ -102,15 +115,17 @@ def adjust_user_volume(delta):
     wie beim normalen Ducking). Gibt (neu, alt) auf Nutzerbasis zurueck
     oder None, wenn kein Ducking aktiv ist (Aufrufer faellt auf
     volume.step() zurueck)."""
+    muted_now = _current_muted(None)
     global _prev
     with _lock:
         if not _active or _prev is None:
             return None
         old_vol, old_muted = _prev
         new = max(0, min(100, old_vol + int(delta)))
-        _prev = (new, old_muted)
+        muted = old_muted if muted_now is None else muted_now
+        _prev = (new, muted)
         duck_level = _duck_level(new)
-    volume.set_volume(duck_level, muted=old_muted)
+    volume.set_volume(duck_level, muted=muted)
     log.info("Ducking: Nutzer-Lautstaere von %d%% auf %d%% "
              "(Duck-Level %d%%)", old_vol, new, duck_level)
     return new, (old_vol, old_muted)
@@ -120,14 +135,16 @@ def set_user_volume(pct):
     """'Lautstaerke auf X' WAHREND des Duckings: setzt die gemerkte
     Nutzer-Grundlage und leitet den Duck-Level neu ab (X - Duck-Abstand).
     Gibt (alt_pct, neu_pct) zurueck oder None ohne aktives Ducking."""
+    muted_now = _current_muted(None)
     global _prev
     with _lock:
         if not _active or _prev is None:
             return None
         old_vol, old_muted = _prev
-        _prev = (int(pct), old_muted)
+        muted = old_muted if muted_now is None else muted_now
+        _prev = (int(pct), muted)
         duck_level = _duck_level(int(pct))
-    volume.set_volume(duck_level, muted=old_muted)
+    volume.set_volume(duck_level, muted=muted)
     log.info("Ducking: Nutzer-Lautstaere auf %d%% gesetzt (Duck-Level %d%%)",
              int(pct), duck_level)
     return old_vol, int(pct)
@@ -137,11 +154,17 @@ def restore_for_tts():
     """Temporäre Lautstärke-Rücksetzung für die TTS-Antwort: stellt die
     gemerkte Pre-Duck-Lautstärke wieder her, damit die Sprachausgabe im
     Normalpegel erklingt und nicht auf dem leisen Duck-Level.
-    Nur wirksam, wenn Ducking aktiv ist; ändert _active/_prev nicht."""
+    Nur wirksam, wenn Ducking aktiv ist; die Nutzer-Grundlage bleibt erhalten
+    (nur der aktuelle Stumm-Schalter wird nachgezogen)."""
+    global _prev
+    muted_now = _current_muted(None)
     with _lock:
         if not _active or _prev is None:
             return
         vol, muted = _prev
+        if muted_now is not None:
+            muted = muted_now
+            _prev = (vol, muted)
         try:
             volume.set_volume(vol, muted=muted)
             log.info("TTS: Lautstärke zurück auf %d%%", vol)
@@ -155,13 +178,16 @@ def duck_again():
     (ggf. während der Session geänderten) Nutzerstufe ab, nicht vom
     festen DUCK_VOLUME.
     Nur wirksam, wenn Ducking aktiv ist."""
+    global _prev
+    muted_now = _current_muted(None)
     with _lock:
         if not _active or _prev is None:
             return
         level = _duck_level(_prev[0])
-        prev_muted = _prev[1]
+        muted = _prev[1] if muted_now is None else muted_now
+        _prev = (_prev[0], muted)
     try:
-        volume.set_volume(level, muted=prev_muted)
+        volume.set_volume(level, muted=muted)
         log.info("TTS fertig: zurück auf Duck-Level %d%%", level)
     except Exception as e:
         log.warning("Duck-Zurück nicht möglich: %s", e)

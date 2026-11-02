@@ -160,25 +160,21 @@ class Handler(BaseHTTPRequestHandler):
             self._send_html()
         elif path == "/api/config/info":
             # Config-Anzeige fuer Info-Button (ohne Secret-Values)
-            # Nur ueberschreibbare Keys aus _OVERWRITABLE, Secrets = ROT maskiert
-            overwritable = {
-                "TTS_URL", "TTS_MODEL", "TTS_VOICE", "TTS_LANGUAGE",
-                "STT_URL", "STT_MODEL", "STT_LANGUAGE",
-                "LLM_URL", "LLM_MODEL", "LLM_HAS_TOOLS", "LLM_ENABLE_THINKING",
-                "OPENHAB_URL", "MUSIC_ROOT", "BRIDGE_HOST", "BRIDGE_PORT",
-                "STT_TIMEOUT", "TTS_TIMEOUT", "LLM_TIMEOUT",
-                "LLM_MAX_TOKENS", "OPENHAB_CACHE_TTL",
-                "DEFAULT_IMAGE_URL",
-            }
-            secret_keys = {
-                "TTS_API_KEY", "STT_API_KEY", "LLM_API_KEY",
-                "OPENHAB_TOKEN", "MEMORY_DB", "SCHEDULE_FILE",
-            }
+            # Nur ueberschreibbare Keys aus _OVERWRITABLE (eine Quelle, kein
+            # Doppel der Key-Liste). Backend-URLs/Tokens gibt es hier nicht
+            # mehr — sichtbar ist nur, wohin die Proxy-Endpunkte zeigen.
+            overwritable = set(config._OVERWRITABLE)
             info = {}
             for k in overwritable:
                 v = getattr(config, k, None)
                 if v is not None:
                     info[k] = str(v)
+            # Read-only: die vier API-Endpunkte sind fest abgeleitete
+            # Master-Proxy-Adressen, nicht editierbar.
+            info["_api_endpunkte"] = ", ".join(
+                f"{n}={getattr(config, a) or '(kein Master)'}"
+                for n, a in (("TTS", "TTS_URL"), ("STT", "STT_URL"),
+                             ("LLM", "LLM_URL"), ("openHAB", "OPENHAB_URL")))
             # Config-Version + Heartbeat-URL anzeigen
             info["_config_version"] = str(config.config_version())
             info["_master_url"] = config.MASTER_URL or "Nicht konfiguriert"
@@ -232,7 +228,10 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/speak":
             if not text:
                 return self._send(400, {"error": "text fehlt"})
-            self._ev(f"Web: \"{text[:60]}\" (TTS direkt)")
+            # Beschriftung statt "TTS direkt": der Text geht ohne
+            # Intent/LLM-Pipeline direkt in die Sprachausgabe — der
+            # TTS-Aufruf selbst laeuft wie alles ueber den Master-Proxy.
+            self._ev(f"Web: \"{text[:60]}\" (Speak ohne Pipeline, TTS via Master)")
             wav = tts.synthesize(text)
             if not wav:
                 return self._send(502, {"error": "TTS leer"})

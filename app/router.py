@@ -57,7 +57,7 @@ class ItemCache:
         if self._items is None or now - self._ts > config.CACHE_TTL:
             try:
                 data = http.get_json(f"{config.OPENHAB_URL}?recursive=false",
-                                     token=config.OPENHAB_TOKEN, timeout=15)
+                                     token=config.MASTER_TOKEN, timeout=15)
                 self._items = data
                 self._ts = now
             except Exception as e:
@@ -128,19 +128,21 @@ def _is_state_question(t):
 
 
 def _smarthome_proxy_path(item_name: str, state_endpoint: bool = False) -> str:
-    """Master-Proxy-Pfad für SmartHome-Aufrufe.
+    """openHAB-Pfad über den Master-Proxy: {MASTER_URL}/proxy/openhab/<item>[/state].
 
-    Geht über den Master (/proxy/openhab), nicht direkt nach OpenHAB.
+    Einen direkten Draht nach openHAB gibt es nicht mehr. Ohne MASTER_URL ist
+    der Pfad leer; der Aufruf bricht dann sichtbar ab statt lokal weiter zu
+    raten.
     """
-    master = getattr(config, "MASTER_URL", "")
-    if not master:
-        # Fallback: direkter Aufruf (nur wenn kein Master konfiguriert)
-        return f"{config.OPENHAB_URL}/{quote(item_name, safe='')}" + (
-            "/state" if state_endpoint else ""
-        )
-    # Master-Proxy: {MASTER_URL}/proxy/openhab/{encoded_item}[/state]
-    base = f"{master}/proxy/openhab/{quote(item_name, safe='')}"
+    if not config.OPENHAB_URL:
+        return ""
+    base = f"{config.OPENHAB_URL}/{quote(item_name, safe='')}"
     return base + ("/state" if state_endpoint else "")
+
+
+def _openhab_unreachable() -> str:
+    log.error("openHAB nicht erreichbar (MASTER_URL nicht konfiguriert)")
+    return "Bei der Verbindung zum Smarthome ist ein fehler aufgetreten."
 
 
 def try_openhab(text):
@@ -164,19 +166,24 @@ def try_openhab(text):
     if not item_name:
         log.warning("Item ohne Namen – nicht schaltbar: %r", item.get("label"))
         return None
-    # Master-Proxy-Pfad (oder Fallback direkt zu OpenHAB)
+    # Master-Proxy-Pfad – offenHAB ist nur über den Master erreichbar
     if value is None:
         # Gerät erkannt aber kein Zustand -> Status abfragen
+        url = _smarthome_proxy_path(item_name, state_endpoint=True)
+        if not url:
+            return _openhab_unreachable()
         try:
-            st = http.get_text(_smarthome_proxy_path(item_name, state_endpoint=True),
-                               token="", timeout=10)
+            st = http.get_text(url, token=config.MASTER_TOKEN, timeout=10)
             st = {"ON": "an", "OFF": "aus"}.get(st, st)
             return f"{label} ist {st}."
         except Exception as e:
             log.error("openHAB-Status fehlgeschlagen: %s", e)
             return "Bei der Verbindung zum Smarthome ist ein fehler aufgetreten."
+    url = _smarthome_proxy_path(item_name)
+    if not url:
+        return _openhab_unreachable()
     try:
-        ok = http.post_raw(_smarthome_proxy_path(item_name), value, token="", timeout=10)
+        ok = http.post_raw(url, value, token=config.MASTER_TOKEN, timeout=10)
         if ok:
             if value in ("ON", "OFF"):
                 return f"{label} ist {'an' if value == 'ON' else 'aus'}."
@@ -223,12 +230,12 @@ def ask_llm(text, channel="voice"):
         return (m.get("content") or m.get("reasoning_content") or "").strip()
 
     try:
-        data = http.post_json(config.LLM_URL, payload, token=config.LLM_TOKEN,
+        data = http.post_json(config.LLM_URL, payload, token=config.MASTER_TOKEN,
                               timeout=config.LLM_TIMEOUT, retries=0)
         out = remove_emojis(_extract(data))
         if not out:
             log.warning("LLM lieferte leeren Inhalt (Thinking-Modell?); 2. Versuch")
-            data = http.post_json(config.LLM_URL, payload, token=config.LLM_TOKEN,
+            data = http.post_json(config.LLM_URL, payload, token=config.MASTER_TOKEN,
                                   timeout=config.LLM_TIMEOUT, retries=0)
             out = remove_emojis(_extract(data))
         if not out:
@@ -263,7 +270,7 @@ def warm_async():
                 "model": config.LLM_MODEL,
                 "messages": [{"role": "user", "content": "ok"}],
                 "max_tokens": 4, "stream": False, "keep_alive": "30m"},
-                token=config.LLM_TOKEN, timeout=config.LLM_TIMEOUT, retries=0)
+                token=config.MASTER_TOKEN, timeout=config.LLM_TIMEOUT, retries=0)
             log.info("LLM warm: %s", config.LLM_MODEL)
         except Exception as e:
             log.warning("LLM-Warmup fehlgeschlagen: %s", e)

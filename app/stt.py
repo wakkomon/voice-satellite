@@ -21,6 +21,7 @@ def transcribe(wav_data: bytes) -> str:
             content_type="audio/wav",
             body=wav_data,
             fields={"model": config.STT_MODEL, "language": config.STT_LANGUAGE},
+            token=config.MASTER_TOKEN,
             timeout=config.STT_TIMEOUT,
         )
         return (data.get("text") or "").strip()
