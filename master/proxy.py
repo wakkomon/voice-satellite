@@ -51,6 +51,24 @@ ENV_OPENHAB_TOKEN = os.environ.get("OPENHAB_TOKEN", "")
 AUTH_TOKEN = os.environ.get("AUTH_TOKEN", "")  # leer = Auth aus
 
 
+def _master_token() -> str:
+    """Zentrales Satelliten-Access-Token (UI-Secret, ENV-Fallback)."""
+    tok = config_store.get_secret("MASTER_TOKEN")
+    if tok:
+        return str(tok).strip()
+    return os.environ.get("MASTER_TOKEN", "").strip()
+
+
+def auth_tokens() -> list:
+    """Gueltige Tokens fuer Satelliten->Master (AUTH_TOKEN + MASTER_TOKEN)."""
+    out = []
+    for t in (AUTH_TOKEN, _master_token()):
+        t = str(t or "").strip()
+        if t and t not in out:
+            out.append(t)
+    return out
+
+
 def _is_self_proxy(url: str) -> bool:
     """True, wenn url auf einen /proxy/-Endpoint dieses Masters zeigt
     (Schutz gegen up-to-proxy-Schleifen bei falscher ENV-Konfiguration)."""
@@ -82,10 +100,17 @@ def _upstream_token(key_token: str, env_token: str) -> str:
 
 
 def _authorized(req: Request) -> bool:
-    if not AUTH_TOKEN:
+    """Zugriff erlaubt, wenn kein Token gesetzt ist oder der Bearer-Token
+    einem der gueltigen Tokens entspricht (AUTH_TOKEN oder MASTER_TOKEN)."""
+    toks = auth_tokens()
+    if not toks:
         return True
     auth = req.headers.get("authorization", "")
-    return auth == f"Bearer {AUTH_TOKEN}"
+    import hmac
+    for t in toks:
+        if hmac.compare_digest(auth, f"Bearer {t}"):
+            return True
+    return False
 
 
 def _auth_error(req: Request) -> Response | None:

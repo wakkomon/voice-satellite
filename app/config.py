@@ -391,6 +391,8 @@ def _pull_config_from_master(mac: str, version: int) -> dict:
     
     try:
         req = urllib.request.Request(url)
+        if MASTER_TOKEN:
+            req.add_header("Authorization", f"Bearer {MASTER_TOKEN}")
         with urllib.request.urlopen(req, timeout=10) as resp:
             if resp.status == 200:
                 data = json.loads(resp.read())

@@ -159,6 +159,46 @@ async def _sat_unpause(req: Request) -> JSONResponse:
     return JSONResponse(result)
 
 
+# ── Satelliten-Zugriff (MASTER_TOKEN) ──────────────────────────
+
+_reject_logged: dict = {}
+
+
+def _sat_token() -> str:
+    """Token, mit dem Satelliten den Master ansprechen (Heartbeat, Config-Pull).
+
+    Quelle: zentrales Secret MASTER_TOKEN (UI-Bereich Secrets) mit ENV-Fallback
+    MASTER_TOKEN. Leer = offen (abwaertskompatibel zu aelteren Satelliten)."""
+    tok = config_store.get_secret("MASTER_TOKEN")
+    if tok:
+        return str(tok).strip()
+    import os
+    return os.environ.get("MASTER_TOKEN", "").strip()
+
+
+def _sat_auth_ok(req: Request, who: str) -> bool:
+    """Satelliten-Zugriff pruefen (Bearer MASTER_TOKEN).
+
+    Ohne gesetztes MASTER_TOKEN bleibt der Zugang offen (wie bisher). Pro
+    Satellit und 5 Minuten eine Warnung ins Live-Log, damit ein falsch
+    konfigurierter Satellit das Log nicht zuspamt."""
+    tok = _sat_token()
+    if not tok:
+        return True
+    got = req.headers.get("authorization", "") or req.headers.get("x-master-token", "")
+    if got.startswith("Bearer "):
+        got = got[7:]
+    import hmac
+    if got and hmac.compare_digest(str(got), tok):
+        return True
+    now = time.time()
+    if now - _reject_logged.get(who, 0.0) > 300:
+        _reject_logged[who] = now
+        log.warning("Satelliten-Zugriff abgelehnt (%s): MASTER_TOKEN fehlt oder falsch",
+                    who)
+    return False
+
+
 # ── Satellite-Heartbeat (Push von den Satelliten) ──────────────
 
 async def _sat_heartbeat(req: Request) -> JSONResponse:
@@ -168,6 +208,10 @@ async def _sat_heartbeat(req: Request) -> JSONResponse:
     Der Master aktualisiert last_seen, Hostname, IP, Pipeline-/Komponenten-Info.
     """
     mac = req.path_params["mac"].lower()
+    if not _sat_auth_ok(req, mac):
+        return JSONResponse({"error": "unauthorized",
+                             "detail": "MASTER_TOKEN fehlt oder falsch"},
+                            status_code=401)
     try:
         payload = await req.json()
     except (json.JSONDecodeError, ValueError):
@@ -283,6 +327,10 @@ async def _config_sat_get(req: Request) -> JSONResponse:
 async def _config_apply_get(req: Request) -> JSONResponse:
     """GET /api/config/apply?mac=...&version=... → Satellite-Pull."""
     mac = req.query_params.get("mac", "").lower()
+    if not _sat_auth_ok(req, mac):
+        return JSONResponse({"error": "unauthorized",
+                             "detail": "MASTER_TOKEN fehlt oder falsch"},
+                            status_code=401)
     try:
         client_ver = int(req.query_params.get("version", "0"))
     except ValueError:

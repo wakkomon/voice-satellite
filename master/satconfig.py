@@ -61,6 +61,10 @@ EDITABLE_KEYS = (
 # Secrets: nur global, nie pro Satellite; Proxy injiziert sie in Requests.
 SECRET_KEYS = frozenset({
     "TTS_TOKEN", "STT_TOKEN", "LLM_TOKEN", "OPENHAB_TOKEN",
+    # MASTER_TOKEN: Zugang der Satelliten zum Master (Heartbeat, Config-Pull).
+    # Auf der Satellitenseite dieselbe Value als ENV MASTER_TOKEN (neben
+    # MASTER_URL); hier im Store editierbar (UI-Bereich Secrets).
+    "MASTER_TOKEN",
 })
 
 # Nur global verwaltbar (Satelliten erben sie, können sie nicht überschreiben).
@@ -184,6 +188,11 @@ class ConfigStore:
             g = dict(self._global)
             for k in SECRET_KEYS:
                 g[k] = "gesetzt" if (g.get(k) or "") else ""
+            # MASTER_TOKEN kann auch nur per ENV gesetzt sein (Deploy-Fallback);
+            # die UI soll es dann trotzdem als "gesetzt" zeigen.
+            if not (g.get("MASTER_TOKEN") or "") and os.environ.get(
+                    "MASTER_TOKEN", "").strip():
+                g["MASTER_TOKEN"] = "gesetzt"
             return {
                 "version": self._version,
                 "global": g,

@@ -148,7 +148,7 @@ def pull_and_apply_config() -> bool:
         + urllib.parse.urlencode({"mac": _MAC, "version": _last_master_version})
     )
     try:
-        data = http.get_json(url, timeout=5)
+        data = http.get_json(url, timeout=5, token=config.MASTER_TOKEN or None)
     except Exception as e:
         log.debug("Config-Apply-Abfrage fehlgeschlagen: %s", e)
         return False
@@ -225,9 +225,11 @@ def _do_heartbeat(pipeline) -> None:
                 payload["events_reset"] = True
         url = f"{config.MASTER_URL.rstrip('/')}/api/satellite/{payload['mac']}/heartbeat"
         data = json.dumps(payload).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        if config.MASTER_TOKEN:
+            headers["Authorization"] = f"Bearer {config.MASTER_TOKEN}"
         req = urllib.request.Request(
-            url, data=data,
-            headers={"Content-Type": "application/json"}, method="POST",
+            url, data=data, headers=headers, method="POST",
         )
         with urllib.request.urlopen(req, timeout=5) as resp:
             if resp.status == 200:
