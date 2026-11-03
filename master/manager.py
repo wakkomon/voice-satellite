@@ -135,12 +135,13 @@ class SatManager:
             for ip, mac in self._known_sats().items():
                 key = mac or ip
                 if key not in self.satellites:
-                    self.satellites[key] = Satellite(
+                    sat = Satellite(
                         mac=key, ip=ip,
                         hostname=f"sat-{ip.rsplit('.', 1)[-1]}",
                         status="unknown", is_known=True,
                     )
-                    log.info("Satellit registriert (wartet auf Heartbeat): %s", ip)
+                    self.satellites[key] = sat
+                    log.info("Satellit %s: registriert (wartet auf Heartbeat)", sat.hostname)
 
     # ── Heartbeat ──────────────────────────────────────────────
 
@@ -162,11 +163,11 @@ class SatManager:
                     age = time.time() - sat.last_seen
                     if age > interval * max_missed and sat.status != "offline":
                         sat.status = "offline"
-                        log.warning("Satellit offline: %s (%.0f s)", sat.hostname, age)
+                        log.warning("Satellit %s: offline (%.0f s)", sat.hostname, age)
                         self._notify(mac, sat)
                     elif age < interval * 2 and sat.status == "offline":
                         sat.status = "online"
-                        log.info("Satellit wieder online: %s", sat.hostname)
+                        log.info("Satellit %s: wieder online", sat.hostname)
                         self._notify(mac, sat)
             time.sleep(interval)
 
@@ -214,13 +215,15 @@ class SatManager:
                 msg = ev.get("msg")
                 if not (isinstance(msg, str) and msg.strip()):
                     continue    # leere Events wirft das Live-Log sonst blanke Zeilen
-                out.append((seq, str(ev.get("ts") or "")[:8], msg))
+                out.append((seq, msg))
             if not out:
                 return 0
-            hi = max(s for s, _, _ in out)
+            hi = max(s for s, _ in out)
             self._event_seqs[ident] = max(hi, 0 if reset else last_seq)
-        for seq, ts, msg in sorted(out):
-            log.info("[%s] %s %s", name, ts, _log_safe(msg))
+        for seq, msg in sorted(out):
+            # Zeit vorn (Master-Log-Format), Satellitenname als Label —
+            # wie bei lokalen Eintraegen, damit das UI einheitlich rendert.
+            log.info("Satellit %s: %s", name, _log_safe(msg))
         return len(out)
 
     def record_heartbeat(self, mac: str, data: dict) -> None:
@@ -252,8 +255,8 @@ class SatManager:
                     self._event_seqs[existing] = max(
                         self._event_seqs.get(existing, 0),
                         self._event_seqs.get(key, 0))
-                    log.info("Satellit-Duplikat zusammengefuehrt: %s -> %s",
-                             key, existing)
+                    log.info("Satellit %s: Duplikat zusammengefuehrt (aus %s)",
+                             existing, key)
                 key = existing
             elif key not in self.satellites:
                 self.satellites[key] = Satellite(
@@ -267,7 +270,7 @@ class SatManager:
             sat = self.satellites[key]
             if ip and sat.ip != ip:
                 sat.ip = ip
-                log.debug("Satellite %s: IP aktualisiert auf %s (NAT-Quelle)", key, ip)
+                log.debug("Satellit %s: IP aktualisiert auf %s (NAT-Quelle)", key, ip)
             mac_known = key
             if data.get("hostname") and data["hostname"] != sat.hostname:
                 sat.hostname = data["hostname"]

@@ -14,6 +14,24 @@ Erweiterter Pi 3 B+ Satellite (Rhasspy-2.0-Image, Python 3.11) für:
 - **Framebuffer-Display** (LLM-Antworten als Text direkt auf `/dev/fb1`)
 - **Pi-Bridge** (RTSP-Relay + Kamera-Snapshot, Port 8790)
 
+## Architektur: Master + Satelliten (2.0)
+
+Das System besteht aus zwei Seiten:
+
+- **Satellite** (Pi 3 B+, Rhasspy-Image) – das Sprach-Endgerät. Audio
+  rein/raus, Wake-Word, VAD, deterministische Intents, Display, Töne.
+  Die Backends (TTS/STT/LLM/openHAB) erreicht er **ausschließlich über den
+  zentralen Proxy des Masters** – in der Satellite-Konfiguration stehen
+  daher **nur** `MASTER_URL` + `MASTER_TOKEN`.
+- **Master** (x86-Server, Container `voice-satellite-master`, Port 8791) –
+  zentraler API-Proxy, Medien-Indexer, Konfigurations-Store,
+  Live-Dashboard/MCP. Die echten Backend-Ziele und **alle** API-Tokens
+  liegen nur hier (ENV `.env.master` bzw. Config-Store in der Master-WebUI).
+
+Die genaue Trennung (wer was wo konfiguriert) steht unter
+[Master/Satellite-Trennung](#mastersatellite-trennung-und-konfiguration) und
+[Master-ENV](#master-env-variablen-master-container).
+
 ## Features
 
 - **Deterministische Intents ohne LLM** – Musik, Radio, Lautstärke,
@@ -76,15 +94,50 @@ per TTS und optional mit Display-Text.
 
 ## Installation (frisches Gerät)
 
+### Satellite (Pi)
+
 ```bash
 git clone https://github.com/wakkomon/voice-satellite.git
 cd voice-satellite
 python3 scripts/make_env.py   # erzeugt .env mit Defaults (nur fehlende Keys)
-nano .env                     # Secrets/Tokens eintragen: OPENHAB_TOKEN, TTS_TOKEN, LLM_TOKEN, RTSP_*
+nano .env                     # MASTER_URL/MASTER_TOKEN + lokale Secrets (RTSP_*) eintragen
 ./deploy.sh
 ```
 
 **Update:** `git pull && ./deploy.sh`
+
+Wichtig für die Trennung: Der Satellite kennt **weder** die Backend-URLs
+(TTS/STT/LLM/openHAB) **noch** deren Tokens – in der Satellite-`.env` stehen
+dazu nur `MASTER_URL` (Basisadresse des Masters) und `MASTER_TOKEN`
+(Zugang zum Master, derselbe Wert wie im Master-Config-Store, Bereich
+„Secrets"). Die 1.x-Variablen `TTS_URL`/`STT_URL`/`LLM_URL`/`OPENHAB_URL`
+und `TTS_TOKEN`/`STT_TOKEN`/`LLM_TOKEN`/`OPENHAB_TOKEN` werden vom Satellite
+**nicht mehr gelesen** – sie sind nur noch Legacy-Einträge in `.env`/
+`docker-compose.yml` und haben keine Wirkung.
+
+### Master (dev-server)
+
+Der Master läuft einmalig zentral (Standard: dev-server, Container
+`voice-satellite-master`, Port 8791). Deploy:
+
+```bash
+git clone https://github.com/wakkomon/voice-satellite.git
+cd voice-satellite
+nano .env.master.example       # Backend-URLs, MASTER_TOKEN eintragen
+./deploy-master.sh [ssh_host]  # Default-Ziel: 192.168.1.24
+```
+
+`deploy-master.sh` baut das Master-Image (`Dockerfile.master`), kopiert
+`.env.master.example` als `.env.master` + `docker-compose.master.yml` auf den
+Ziel-Server und startet den Container per `docker compose up -d`. Die zentrale Satelliten-Konfig
+liegt im Master-Volume unter `/data/config/satellites.json`
+(`VS_CONFIG_DIR`) und überlebt Rebuilds.
+
+Alle Satellite-Werte, die nicht geräte-lokal sind (TTS-Modell/Stimme,
+LLM-Modell, Timeouts, Musik-Root, Display-URL, …), gehören **nicht** in die
+`.env` des Pi, sondern in den **Master-Config-Store** (Master-WebUI:
+globale Werte + per-Satellite-Overrides). Die Satelliten ziehen die Werte
+per Heartbeat (`GET /api/config/apply`) und wenden sie **ohne Neustart** an.
 
 `deploy.sh` ist idempotent: Es baut das Image neu (`--no-cache`), entfernt den
 alten Container (Name bleibt `voice-satellite`) und startet ihn mit `--env-file .env`.
@@ -97,22 +150,27 @@ gleiche Mounts/Volumes wie `deploy.sh`).
 
 ### Deploy via Portainer (Stack aus Repository)
 
-Die `docker-compose.yml` referenziert **kein** `.env`-File — alle 72
+Die `docker-compose.yml` referenziert **kein** `.env`-File — alle
 Konfigurations-Keys aus `app/config.py` liegen als `${VAR:-…}`-Interpolationen
-in der `environment`-Liste, default mit den Pi-Live-Werten. So deployt man den
-Stack:
+in der `environment`-Liste, default mit den Pi-Live-Werten. So deployt man
+den Stack:
 
 1. Portainer → **Stacks → Add stack → Web editor** → Repository-URL
    `https://<user>:<token>@github.com/wakkomon/voice-satellite.git`
    (Private-Repo: GitHub-Personal-Access-Token mit `repo`-Scope).
-2. In der Stack-Ansicht unter **Variables** die Werte für das Gerät setzen:
-   Pflicht sind die Secrets `OPENHAB_TOKEN`, `TTS_TOKEN`, `LLM_TOKEN`,
-   `RTSP_USER`, `RTSP_PASS` — **default leer** (lokale APIs ohne Token),
-   leer lassen = Feature ohne Auth/deaktiviert. Jeder weitere Key
-   (`TTS_URL`, `TTS_MODEL`, `STT_URL`, `LLM_URL`, `WAKE_PPN`, …) lässt sich
+2. In der Stack-Ansicht unter **Variables** die Werte für das Gerät setzen.
+   In 2.0 sind das die **Satellite-seitigen** Keys – insbesondere
+   `MASTER_URL` + `MASTER_TOKEN` (Zugang zum Master) und die lokalen
+   Secrets `RTSP_USER`/`RTSP_PASS`. Die 1.x-Keys `TTS_URL`/`STT_URL`/
+   `LLM_URL`/`OPENHAB_URL` und `TTS_TOKEN`/`STT_TOKEN`/`LLM_TOKEN`/
+   `OPENHAB_TOKEN` stehen zwar noch in der Liste (Interpolation), werden vom
+   Code aber **nicht mehr gelesen** – Backend-URLs und Tokens werden zentral
+   am Master gepflegt (siehe [Master-ENV](#master-env-variablen-master-container)).
+   Jeder weitere Key (`TTS_MODEL`, `TTS_VOICE`, `WAKE_PPN`, …) lässt sich
    dort genauso überschreiben, Defaults gelten sonst unverändert.
-   Beispiel Piper-TTS: `TTS_MODEL=piper`, `TTS_VOICE=kitt`,
-   `TTS_URL=http://192.168.1.33:5000/v1/audio/speech`, `TTS_LANGUAGE=de`.
+   (Empfehlung: TTS-/LLM-Modelle etc. lieber im Master-Config-Store statt
+   pro Stack setzen – die Overrides wirken dann auf alle Satelliten und
+   ohne Rebuild.)
 3. **Build and deploy** — Portainer baut das Image selbst (entspricht
    `deploy.sh` minus Health-Check-Output).
 
@@ -146,20 +204,68 @@ genau eine Stufe** (`VOLUME_STEP`, Default 10 %) — kein Absolutwert.
 ## Netzwerk
 
 ```
-Satellite: 192.168.1.32 (Container voice-satellite, hostnet)
-  ├─ openHAB      http://192.168.1.33:8080/rest
-  ├─ TTS Qwen3    http://192.168.1.31:7811/v1/audio/speech
-  ├─ STT Whisper  http://192.168.1.31:9000/v1/audio/transcriptions
-  ├─ LLM (Hermes-Gateway) http://192.168.1.33:8642/v1/chat/completions
-  └─ Pi-Bridge    http://192.168.1.32:8790
+Satellite (Pi, hostnet)
+  └─ MASTER_URL  http://192.168.1.24:8791   → Master (Port 8791, Container-Netz)
+                                                        │
+Master-Proxy (jeder Call mit Bearer `MASTER_TOKEN`)      ▼
+  ├─ /proxy/tts     → TTS-Backend    http://192.168.1.31:7811/v1/audio/speech
+  ├─ /proxy/stt     → STT-Backend    http://192.168.1.31:9000/v1/audio/transcriptions
+  ├─ /proxy/llm     → LLM (Hermes-Gateway) http://192.168.1.33:8642/v1/chat/completions
+  ├─ /proxy/openhab → openHAB       http://192.168.1.33:8080/rest
+  └─ /proxy/music   → Musik-Dateien (CIFS-Share, Range-Requests)
+
+Satellite-own (direkt, ohne Master):
+  ├─ Web-UI/MCP     http://<pi>:8770 / http://<pi>:8780
+  └─ Pi-Bridge      http://192.168.1.32:8790  (RTSP-Relay + Kamera-Snapshot)
 ```
 
-## ENV-Variablen (Vollreferenz)
+Der Satellite spricht also **einzig** die Basisadresse `MASTER_URL` an –
+die echten Backend-Adressen kennen nur der Master (ENV `*_BACKEND_URL` in
+`.env.master`). `MASTER_TOKEN` (identisch auf beiden Seiten) ist der **einzige**
+Token, den der Satellite hält: er sichert **alle** `/proxy/*`-Calls, Heartbeat,
+Config-Pull und Medien-Stream. Der Proxy ersetzt ihn bei jedem Aufruf durch den
+jeweiligen Backend-Token (Reihenfolge Config-Store → ENV) und gibt ihn erst dann
+an das Backend weiter – dieser landet nie auf dem Satellite.
 
-Jede Variable wird in `app/config.py` gelesen; hier der Wert, der greift, wenn
-die Variable in `.env` **nicht** gesetzt ist. `.env.example` ist die
-maschinenlesbare Vorlage mit den gleichen Defaults. Alle Variablen,
-gruppiert:
+## Master/Satellite-Trennung und Konfiguration
+
+2.0-Regel: **Der Satellite kennt keine Backends und keine Backend-Tokens.**
+Für TTS/STT/LLM/openHAB und Musik spricht er ausschließlich den
+Master-Proxy unter `MASTER_URL` an; der Proxy injiziert die Backend-Tokens,
+damit sie nie auf dem Satellite landen.
+
+| Ebene | Inhalt | Konfiguriert in |
+|---|---|---|
+| **Satellite – ENV** | Hardware, Audio, Wake/VAD, Töne, Display, Bridge, lokale Pfade, Identität (`SATELLITE_MAC`, `SAT_NAME`), Master-Zugang (`MASTER_URL`, `MASTER_TOKEN`), Heartbeat-Schalter | `.env` des Pi (gelesen von `app/config.py`) |
+| **Master – ENV** | Server (`API_PORT`, …), Medien-Index (`MUSIC_ROOT`, `CACHE_DIR`), Heartbeat-Grenzen, **echte Backend-Ziele** (`TTS_BACKEND_URL`, `STT_BACKEND_URL`, `LLM_BACKEND_URL`, `OPENHAB_BACKEND_URL`), **Backend-Tokens** (`TTS_TOKEN`, `STT_TOKEN`, `LLM_TOKEN`, `OPENHAB_TOKEN`), `MASTER_TOKEN` (ENV-Fallback) | `.env.master` am Master (gelesen von `master/config.py` / `master/proxy.py`) |
+| **Zentrale Satellite-Konfig (Config-Store)** | Alle „weichen" Satellite-Werte: TTS-Modell/-Stimme/-Sprache, STT-Modell/-Sprache, LLM-Modell/-Timeouts, `MUSIC_ROOT`, `BRIDGE_*`, `DEFAULT_IMAGE_URL`, `MEMORY_DB`, Geräte-/Display-Keys, `RULES_FILE`, … – global + per-Satellite-Override (nach MAC) | Master-WebUI (Bereich „Config"); die Satelliten ziehen die Werte per `GET /api/config/apply` beim Heartbeat und wenden sie **ohne Neustart** an |
+
+Daraus folgt:
+
+- `TTS_URL`, `STT_URL`, `LLM_URL`, `OPENHAB_URL` existieren **nicht mehr als
+  Satellite-ENV**: `app/config.py` leitet sie aus `MASTER_URL` ab
+  (`…/proxy/tts`, `…/proxy/stt`, `…/proxy/llm`, `…/proxy/openhab`).
+  1.x-Werte, die noch in `.env` oder `docker-compose.yml` stehen, werden
+  **ignoriert** (Legacy-Keys, keine Wirkung).
+- `TTS_TOKEN`, `STT_TOKEN`, `LLM_TOKEN`, `OPENHAB_TOKEN` gehören **nur zum
+  Master** (ENV-Fallback oder Config-Store, Bereich „Secrets"); der Proxy
+  injiziert sie. Im Satellite sind sie wirkungslos.
+- Der **einzige** Token auf beiden Seiten ist `MASTER_TOKEN` – auf dem
+  Satellite als ENV, auf dem Master im Config-Store (Priorität) bzw.
+  `.env.master` (Fallback). Gleicher Wert, zwei Orte.
+- Identitäts-Keys (`SATELLITE_MAC`, `MASTER_URL`) kann der
+  Config-Store bewusst nicht überschreiben.
+
+## ENV-Variablen — Satellite (`.env` des Pi)
+
+Jede Variable wird in `app/config.py` gelesen; die Spalte **Default** zeigt
+den in `app/config.py` hinterlegten Wert, der greift, wenn die Variable in
+`.env` **nicht** gesetzt ist. Viele „weiche" Werte (TTS-/STT-/LLM-Modell,
+Stimme, Sprache, `RULES_FILE`, …) sind dort bewusst **leer**, weil der Master
+sie über den **Config-Store** zentral setzt und der Satellite sie per Heartbeat
+übernimmt. Die im Live-System tatsächlich eingesetzten Werte stehen in der
+Klammer als *Live:*. `.env.example` ist die maschinenlesbare Vorlage.
+Alle Variablen, gruppiert:
 
 ### Audio (ALSA)
 
@@ -188,27 +294,25 @@ gruppiert:
 
 | Variable | Default | Bedeutung |
 |---|---|---|
-| `STT_URL` | `http://192.168.1.31:9000/v1/audio/transcriptions` | Whisper-Transkriptions-Endpunkt |
-| `STT_MODEL` | `whisper-1` | Whisper-Modell-Name |
-| `STT_LANGUAGE` | `de` | fest Deutsch, sonst rät Whisper → Englisch |
+| `STT_URL` | **abgeleitet, nicht lesbar** | 2.0: wird aus `MASTER_URL` gebaut (`/proxy/stt`); gesetzte 1.x-Werte ignoriert. Echter STT-Endpunkt + `STT_TOKEN`: **nur am Master** (`STT_BACKEND_URL`, Config-Store) |
+| `STT_MODEL` | *leer* (Live: `SenseVoiceSmall`) | SenseVoice: `SenseVoiceSmall`, `SenseVoice` (542M), `SenseVoiceLarge`; OpenAI-kompatibel: `whisper-1`, `gpt-4o-transcribe` … |
+| `STT_LANGUAGE` | `de` | Sprache fürs Sprachmodell. OpenAI: `auto`, `de`, `en`, …; Qwen: `chinese`, `german`, `english`, `multilingual` |
 | `STT_TIMEOUT` | `30` | Timeout in s |
 
 ### openHAB & Regeln
 
 | Variable | Default | Bedeutung |
 |---|---|---|
-| `OPENHAB_URL` | `http://192.168.1.33:8080/rest/items` | REST-API-Basis |
-| `OPENHAB_TOKEN` | *(leer)* | Bearer-Token (Secret) |
+| `OPENHAB_URL` | **abgeleitet, nicht lesbar** | 2.0: wird aus `MASTER_URL` gebaut (`/proxy/openhab`); gesetzte 1.x-Werte ignoriert. Echter openHAB-Endpunkt + `OPENHAB_TOKEN`: **nur am Master** (`OPENHAB_BACKEND_URL`, Config-Store) |
 | `OPENHAB_CACHE_TTL` | `300` | Item-Liste cachen (s) |
-| `RULES_FILE` | `/data/rules.yaml` | Pfad zur lokalen Regelungsdatei |
+| `RULES_FILE` | *leer* (Live: `/data/rules.yaml`) | Pfad zur lokalen Regelungsdatei |
 
 ### LLM
 
 | Variable | Default | Bedeutung |
 |---|---|---|
-| `LLM_URL` | `http://192.168.1.33:8642/v1/chat/completions` | Chat-Completions-Endpunkt (Hermes-Gateway) |
-| `LLM_TOKEN` | *(leer)* | API-Key (Gateway/Agent); Ollama leer |
-| `LLM_MODEL` | `hermes-agent` | Modell (Hermes-Gateway-Agent mit Terminal) |
+| `LLM_URL` | **abgeleitet, nicht lesbar** | 2.0: wird aus `MASTER_URL` gebaut (`/proxy/llm`); gesetzte 1.x-Werte ignoriert. Echter Chat-Endpunkt + `LLM_TOKEN`: **nur am Master** (`LLM_BACKEND_URL`, Config-Store) |
+| `LLM_MODEL` | *leer* (Live: `hermes-agent`) | Modell (Hermes-Gateway-Agent mit Terminal) |
 | `LLM_TIMEOUT` | `180` | Timeout (Gateway-Agent braucht länger) |
 | `LLM_MAX_TOKENS` | `1024` | max. Antwort-Tokens (mit Thinking-aus reicht 1024) |
 | `LLM_ENABLE_THINKING` | `false` | Reine Chat-Endpunkte: aus = schneller |
@@ -226,26 +330,30 @@ gruppiert:
 
 | Variable | Default | Bedeutung |
 |---|---|---|
-| `TTS_URL` | `http://192.168.1.31:7811/v1/audio/speech` | Speech-Endpunkt (OpenAI-kompatibel) |
-| `TTS_TOKEN` | *(leer)* | Zugriffstoken des TTS-Servers (Secret) |
-| `TTS_MODEL` | `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` | TTS-Modell |
-| `TTS_VOICE` | `Uncle_fu` | Stimme |
+| `TTS_URL` | **abgeleitet, nicht lesbar** | 2.0: wird aus `MASTER_URL` gebaut (`/proxy/tts`); gesetzte 1.x-Werte ignoriert. Echter TTS-Endpunkt + `TTS_TOKEN`: **nur am Master** (`TTS_BACKEND_URL`, Config-Store) |
+| `TTS_MODEL` | *leer* (Live: `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice`) | TTS-Modell |
+| `TTS_VOICE` | *leer* (Live: `Uncle_fu`) | Stimme |
 | `TTS_LANGUAGE` | `German` | Sprache; leer = Server-Default |
 | `TTS_TIMEOUT` | `60` | Timeout in s |
 
 #### Alternative: Piper TTS
 
-Statt Qwen3-TTS kann der Satellite alternativ auf einen [Piper](https://github.com/OHF-Voice/piper1-gpl)-Server
-zugreifen. In der `.env` die folgenden Werte setzen (gleiche Variablennamen):
+Statt Qwen3-TTS kann der Satellite alternativ einen [Piper](https://github.com/OHF-Voice/piper1-gpl)-Server
+nutzen. `TTS_MODEL`/`TTS_VOICE`/`TTS_LANGUAGE` setzt man wie bei Qwen — im
+Master-Config-Store (global oder per Satellite):
 
 ```env
 TTS_MODEL=piper
 TTS_VOICE=kitt
-TTS_URL=http://192.168.1.33:5000/v1/audio/speech
 TTS_LANGUAGE=de
 ```
 
-`TTS_LANGUAGE` wird dann als `language`-Feld in den Piper-Request übergeben
+Die Piper-**URL** selbst ist ein Master-Backend: dort in
+`.env.master` als `TTS_BACKEND_URL=http://<piper>:5000/v1/audio/speech`
+setzen (bzw. Config-Store → „Secrets"/Proxy). Der Satellite selbst bekommt
+diese Adresse nicht.
+
+`TTS_LANGUAGE` wird als `language`-Feld in den TTS-Request übergeben
 (leer = Server-Default).
 
 ### Töne / Alarm
@@ -376,3 +484,90 @@ optionaler Label-Text), `get_tones`.
 
 Das erkannte STT-Text liegt in der Konsole/Log als **Volltext** (`STT: …`)
 ohne Kürzung; der Debug-Log `STT erkannt: …` ist ebenfalls ungeschnitten.
+
+## ENV-Variablen — Master (`.env.master`, Master-Container)
+
+Der Master-Container (`voice-satellite-master`, Port 8791) liest seine ENV
+aus `.env.master` (via `docker-compose.master.yml`). Gelesen werden sie von
+`master/config.py` (Server, Indexer, Limits), `master/satconfig.py`
+(Config-Store) und `master/proxy.py` (Backend-Ziele/-Tokens).
+
+### Master-Betrieb (`master/config.py`, `satconfig.py`, `api.py`)
+
+| Variable | Default | Bedeutung |
+|---|---|---|
+| `API_HOST` | `0.0.0.0` | Bind-Adresse des Master-APIs |
+| `API_PORT` | `8791` | HTTP-Port (Proxy + Config-Store + WebUI + Heartbeat + Medien-Stream) |
+| `LOG_LEVEL` | `INFO` | Log-Level am Master |
+| `MUSIC_ROOT` | `/m` | Musik-Root am Master (CIFS-Mount); `/proxy/music` liefert daraus die Dateien |
+| `CACHE_DIR` | `/data/vs-index` | Ordner für Musik-/Poster-Index |
+| `INDEX_RESCAN_SEC` | `21600` | Abstand automatischer Re-Scans des Musikordners (s) |
+| `VS_CONFIG_DIR` | `<repo>/data` | Config-Store-Verzeichnis; enthält `satellites.json` |
+| `MASTER_TOKEN` | leer | ENV-Fallback; **Vorrang hat der Wert im Config-Store** (WebUI „Secrets") – identischer Wert in jeder Satellite-`.env` |
+| `AUTH_TOKEN` | leer | *optional*: eigener Zugangs-Token nur für die Proxy-Endpunkte (`/proxy/*`); leer = Proxy offen |
+
+Das Volume `/data` (bzw. `VS_CONFIG_DIR`) hält `satellites.json` – den zentralen
+Config-Store. Musik liegt am Master unter `MUSIC_ROOT` (Standard `/m`), nicht
+unter einem `DATA_DIR`; eine Variable `DATA_DIR` liest der Master-Code **nicht**.
+
+Herzschlag-Parameter kommen **nicht** aus festen ENV-Defaults, sondern sind pro
+Satellit im Config-Store editierbar; ENV (`master/manager.py`) liefert nur den
+Global-Default: `SATELLITE_HEARTBEAT_SEC` (Standard `60`) und
+`SATELLITE_MAX_MISSED` (Standard `5`). Ebenso ist `MAX_SAT_ELAPSED_SEC`,
+`HEARTBEAT_DROP_SEC`, `HEARTBEAT_TIMEOUT_SEC`, `MAX_INDEX_SIZE` und
+`INDEX_REBUILD_MIN_SEC` **veraltet** – diese Namen existieren im aktuellen Code
+nicht mehr.
+
+`master/manager.py` (Deploy-Fernsteuerung der Pi3) liest zusätzlich:
+`SATELLITES` (Semikolon-getrennte Hosts), `SSH_USER` (Standard `pi`), `SSH_PKEY`.
+
+### Backend-Ziele (`master/proxy.py`) — nur am Master
+
+Der Proxy stellt den eigentlichen Upstream fest. Der Satellite sieht davon nichts.
+
+| Proxy-Endpunkt | Ziel (ENV-Priorität) | Built-in-Fallback | Token (Reihenfolge) |
+|---|---|---|---|
+| `/proxy/tts` | `TTS_BACKEND_URL` → `TTS_URL` | `…:7811/v1/audio/speech` | Store → `TTS_BACKEND_TOKEN` → `TTS_TOKEN` |
+| `/proxy/stt` | `STT_BACKEND_URL` → `STT_URL` | *(keiner → 502 wenn ungesetzt)* | Store → `STT_BACKEND_TOKEN` → `STT_TOKEN` |
+| `/proxy/llm` | `LLM_BACKEND_URL` → `LLM_URL` | *(keiner → 502 wenn ungesetzt)* | Store → `LLM_BACKEND_TOKEN` → `LLM_TOKEN` |
+| `/proxy/openhab` | `OPENHAB_BACKEND_URL` → `OPENHAB_URL` | *(keiner → 502 wenn ungesetzt)* | Store → `OPENHAB_TOKEN` |
+| `/proxy/music` | `MUSIC_ROOT` (Dateisystem) | – | `MASTER_TOKEN` |
+
+- **URL vs. Backend-URL (Loop-Guard):** Im Config-Store bezeichnet `TTS_URL`
+  (etc.) die **Proxy-Adresse** `…/proxy/tts`, die an die Satelliten verteilt
+  wird. Der **Proxy selbst** darf dort sein eigenes Ziel nicht lesen – er würde
+  sich sonst selbst anrufen. Darum liest der Proxy sein Ziel ausschließlich aus
+  `TTS_BACKEND_URL` (bzw. ENV-`TTS_URL`), **nie** aus dem Store-Wert. Ein
+  Config-Store-Wert `*_URL`, der auf den eigenen Master zeigt, wird aktiv
+  abgelehnt (`backend_loop_reject`). `*_BACKEND_URL` existiert daher bewusst nur
+  in `.env.master`.
+- **Token-Injektion:** Der Proxy hängt den Backend-Token selbst als
+  `Authorization: Bearer …` an den Upstream. Reihenfolge: Config-Store-Secret
+  („Secrets") → ENV `*_BACKEND_TOKEN` → ENV `*_TOKEN`. Auf dem Satelliten
+  landen Backend-Tokens **nie**.
+- Der Master macht **keine** eigenen TTS/STT/LLM/openHAB-Calls – er ist reiner
+  Proxy (außer `POST /index/rebuild` auf den eigenen Indexer).
+- **Nicht** überschreiben: `MCP_ENABLED`, `MCP_HOST`, `MCP_PORT`, `WEB_PORT` –
+  das sind Satellite-Keys, sie werden vom Master nicht gelesen.
+
+> **Tipp:** Im Config-Store („Secrets", pro Satellit editierbar) lassen sich
+> Backend-Tokens/-URLs gezielt pro Satellit überschreiben, ohne `.env.master`
+> zu berühren – so fährt der Master mehrere Backends pro Satelliten-Gruppe.
+
+## Satellite-Zugang zum Master (Kurzfassung)
+
+Ein Satellite braucht in der `.env` exakt zwei Master-Keys:
+
+```env
+MASTER_URL=http://192.168.1.24:8791   # Basisadresse des Master-APIs
+MASTER_TOKEN=<gleicher Wert wie im Master-Config-Store „Secrets">
+```
+
+Daraus leitet der Satellite ab: `TTS_URL=$MASTER_URL/proxy/tts`,
+`STT_URL=$MASTER_URL/proxy/stt`, `LLM_URL=$MASTER_URL/proxy/llm`,
+`OPENHAB_URL=$MASTER_URL/proxy/openhab`, Medien-Stream
+`$MASTER_URL/api/satellites/{mac}/stream`. Heartbeat + Config-Pull laufen
+über `$MASTER_URL/api/heartbeat` bzw. `/api/config/apply` (Token als
+`Authorization: Bearer`). `SATELLITE_MAC` (MAC des Pi, `XX:XX:XX:XX:XX:XX`)
+identifiziert den Satellite beim Master; `SAT_NAME` (optional) ist der
+Anzeige-/Alias-Name.

@@ -22,6 +22,9 @@ class _MasterLogSink(logging.Handler):
     def __init__(self) -> None:
         super().__init__()
         self.setLevel(logging.DEBUG)
+        # Einheitliches Format fuer den Live-Log (UI parsed Zeit + Level + Logger).
+        self.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)s %(name)s: %(message)s", "%H:%M:%S"))
 
     def emit(self, record: logging.LogRecord) -> None:
         try:

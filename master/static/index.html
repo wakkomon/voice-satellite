@@ -35,6 +35,13 @@ button.warn { background:var(--warn); }
 button:disabled { opacity:0.4; cursor:default; }
 .log { font-family:ui-monospace,Menlo,monospace; font-size:0.78rem; max-height:320px; overflow-y:auto; background:#0d0f14; border-radius:8px; padding:10px; color:#9fd49f; }
 .log .t { color:var(--dim); margin-right:8px; }
+.log .lv { font-weight:600; margin-right:6px; }
+.log .src { color:var(--dim); }
+.log .sat { color:var(--acc); font-weight:600; }
+.log .lv-DEBUG { color:var(--dim); }
+.log .lv-INFO { color:var(--ok); }
+.log .lv-WARNING { color:var(--warn); }
+.log .lv-ERROR { color:var(--err); }
 .num { font-variant-numeric:tabular-nums; }
 a { color:var(--acc); text-decoration:none; }
 footer { margin-top:24px; color:var(--dim); font-size:0.78rem; }
@@ -488,10 +495,34 @@ async function act(mac, action) {
   setTimeout(refresh, 2500);
 }
 
-function logEvent(event, data) {
+const LEVELS = {DEBUG:'var(--dim)', INFO:'var(--ok)', WARNING:'var(--warn)', ERROR:'var(--err)'};
+
+// Einzeile einheitlich: Zeit vorn, Level farbig, Satellitenname hervorgehoben.
+// bodyHtml ist bereits escaped.
+function renderLine(t, level, bodyHtml) {
   const logEl = $('live-log');
   if (!logEl) return;
-  const t = new Date().toLocaleTimeString('de-DE');
+  logEl.insertAdjacentHTML('afterbegin',
+    `<div><span class="t">${esc(t)}</span> <span class="lv lv-${level}" style="color:${LEVELS[level]}">${level}</span> ${bodyHtml}</div>`);
+  while (logEl.children.length > 200) logEl.lastChild.remove();
+}
+
+// Backend-Logzeile: "HH:MM:SS LEVEL logger: message" (Sink-Formatter in main.py)
+// -> Zeit vorn, Level farbig; "Satellit <name>:" als Label hervorgehoben.
+function renderRawLine(line) {
+  const m = line.match(/^(\d{2}:\d{2}:\d{2}) (\w+) ([\w.]+): (.*)$/);
+  if (m) renderLine(m[1], m[2], `<span class="src">[${m[3]}]</span> ${satHi(esc(m[4]))}`);
+  else renderLine(new Date().toTimeString().slice(0, 8), 'INFO', satHi(esc(line)));
+}
+
+function satHi(escapedMsg) {
+  return escapedMsg.replace(/^Satellit (\S+):/, '<span class="sat">Satellit $1</span>:');
+}
+
+function logEvent(event, data) {
+  let level = 'INFO';
+  if (event === 'index_error') level = 'ERROR';
+  else if (event === 'sat_status' && data.status && data.status !== 'online') level = 'WARNING';
   let msg;
   if (event === 'index_done') msg = `Index fertig (${data.ts ? fmtTs(data.ts) : ''}${data.elapsed ? `, ${Math.round(data.elapsed)}s` : ''})`;
   else if (event === 'index_error') msg = 'Index-Fehler!';
@@ -499,8 +530,7 @@ function logEvent(event, data) {
   else if (event === 'sat_action') msg = `Aktion ${data.action} → ${data.mac}: ${data.result||'…'}`;
   else if (event === 'index_rebuild') msg = `Index-Neubau: ${data.result||'gestartet'}`;
   else msg = `${event}: ${JSON.stringify(data)}`;
-  logEl.insertAdjacentHTML('afterbegin', `<div><span class="t">${t}</span>${msg}</div>`);
-  while (logEl.children.length > 200) logEl.lastChild.remove();
+  renderLine(new Date().toLocaleTimeString('de-DE'), level, satHi(esc(msg)));
 }
 
 function connectSSE() {
@@ -519,11 +549,9 @@ function connectLiveLog() {
   if (!logEl) return;
   const es = new EventSource('/logs');
   es.addEventListener('message', e => {
-    const line = e.data;
     // EventSource sendet initial alle gepufferten Zeilen als "message" events.
-    // Danach kommen neue Zeilen live.
-    logEl.insertAdjacentHTML('afterbegin', `<div>${line}</div>`);
-    while (logEl.children.length > 200) logEl.lastChild.remove();
+    // Danach kommen neue Zeilen live. Einheitlich rendern wie eigene Eintraege.
+    renderRawLine(e.data);
   });
   es.onerror = () => {
     logEl.innerHTML = '<div><span style="color:var(--err)">Verbindung unterbrochen, versuche erneut …</span></div>';
