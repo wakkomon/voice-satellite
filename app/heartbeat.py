@@ -30,7 +30,11 @@ from . import config, http
 log = logging.getLogger(__name__)
 
 # ── System-Identifikation (einmalig beim Start) ────────────────
-_HOSTNAME = socket.gethostname() or config._env("HOSTNAME", "unknown")
+# SAT_NAME: lesbarer Name fuer den Master (Live-Log, Satellitenliste). Ohne
+# Docker ist gethostname() der Hostname des Rechners; im Container waere er die
+# Container-ID, deshalb setzt deploy.sh SAT_NAME auf den Hostnamen des Pi.
+_HOSTNAME = (config._env("SAT_NAME", "") or socket.gethostname()
+             or config._env("HOSTNAME", "unknown"))
 _MAC = config._env("SAT_MAC", "") or config._env("SATELLITE_MAC", "") or ""
 
 def _read_mac_from_sys(name: str) -> str:

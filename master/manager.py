@@ -206,7 +206,10 @@ class SatManager:
                     seq = 0
                 if seq and seq <= last_seq:
                     continue
-                out.append((seq, str(ev.get("ts") or "")[:8], ev.get("msg")))
+                msg = ev.get("msg")
+                if not (isinstance(msg, str) and msg.strip()):
+                    continue    # leere Events wirft das Live-Log sonst blanke Zeilen
+                out.append((seq, str(ev.get("ts") or "")[:8], msg))
             if not out:
                 return 0
             hi = max(s for s, _, _ in out)
