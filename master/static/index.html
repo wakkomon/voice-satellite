@@ -33,7 +33,7 @@ button { background:var(--acc); color:#fff; border:none; border-radius:6px; padd
 button:hover { filter:brightness(1.15); }
 button.warn { background:var(--warn); }
 button:disabled { opacity:0.4; cursor:default; }
-.log { font-family:ui-monospace,Menlo,monospace; font-size:0.78rem; max-height:220px; overflow-y:auto; background:#0d0f14; border-radius:8px; padding:10px; color:#9fd49f; }
+.log { font-family:ui-monospace,Menlo,monospace; font-size:0.78rem; max-height:320px; overflow-y:auto; background:#0d0f14; border-radius:8px; padding:10px; color:#9fd49f; }
 .log .t { color:var(--dim); margin-right:8px; }
 .num { font-variant-numeric:tabular-nums; }
 a { color:var(--acc); text-decoration:none; }
@@ -88,11 +88,12 @@ footer { margin-top:24px; color:var(--dim); font-size:0.78rem; }
       <tbody id="sat-body"><tr><td colspan="5" style="color:var(--dim)">lade …</td></tr></tbody>
     </table>
   </div>
+</div>
 
-  <div class="card">
-    <h2>Live-Log</h2>
-    <div class="log" id="live-log"><div><span class="t">–</span>verbinde …</div></div>
-  </div>
+<!-- Live-Log: immer unter den beiden anderen Karten, volle Breite -->
+<div class="card" style="margin-top:16px">
+  <h2>Live-Log</h2>
+  <div class="log" id="live-log"><div><span class="t">–</span>verbinde …</div></div>
 </div>
 
 <!-- CONFIG PAGE (hidden by default) -->
