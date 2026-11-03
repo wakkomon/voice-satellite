@@ -232,19 +232,35 @@ class SatManager:
         with self._lock:
             ip = data.get("ip", "")
             key = mac or ip
-            if key not in self.satellites:
-                # Docker-Fall: MAC- oder IP-Eintrag existiert noch nicht.
-                # Versuche zuerst den bestehenden IP-Eintrag zu finden
-                # (Discovery hat ggf. einen IP-basierten Eintrag angelegt).
-                existing = self._find_by_ip(ip) if ip else None
-                if existing is not None:
-                    key = existing
-                else:
-                    self.satellites[key] = Satellite(
-                        mac=mac,
-                        ip=ip,
-                        hostname=data.get("hostname") or f"sat-{key}",
-                    )
+            # Stabiler IP-Key (aus SATELLITES-Config) hat Vorrang:
+            # Docker-Container-MACs sind bei jedem Rebuild neu. Existieren
+            # MAC- und IP-Eintrag desselben Satelliten parallel (z.B. weil
+            # eine lokale Testanfrage einen MAC-Eintrag angelegt hat),
+            # zusammenfuehren: MAC-Eintrag entfallen, Status uebernehmen.
+            existing = self._find_by_ip(ip) if ip else None
+            if existing is not None and existing != key:
+                if key in self.satellites:
+                    old_sat = self.satellites.pop(key)
+                    keep = self.satellites[existing]
+                    if old_sat.last_seen > keep.last_seen:
+                        keep.status, keep.last_seen = (
+                            old_sat.status, old_sat.last_seen)
+                    if old_sat.hostname:
+                        keep.hostname = old_sat.hostname
+                    keep.info = old_sat.info or keep.info
+                    # Event-Seq uebernehmen (Live-Log-Dupe-Filter)
+                    self._event_seqs[existing] = max(
+                        self._event_seqs.get(existing, 0),
+                        self._event_seqs.get(key, 0))
+                    log.info("Satellit-Duplikat zusammengefuehrt: %s -> %s",
+                             key, existing)
+                key = existing
+            elif key not in self.satellites:
+                self.satellites[key] = Satellite(
+                    mac=mac,
+                    ip=ip,
+                    hostname=data.get("hostname") or f"sat-{key}",
+                )
             # Merge: auch wenn der KEY bereits existiert (z.B. MAC-Eintrag),
             # aktualisiere die IP auf die echte Host-IP (NAT-Quelle), falls
             # sie vom Discovery-Eintrag abweicht.
