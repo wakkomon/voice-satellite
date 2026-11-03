@@ -119,6 +119,8 @@ def _check_component(url: str) -> str:
         return "unconfigured"
     try:
         req = urllib.request.Request(url, method="GET")
+        if config.MASTER_TOKEN and "/proxy/" in url:
+            req.add_header("Authorization", f"Bearer {config.MASTER_TOKEN}")
         with urllib.request.urlopen(req, timeout=2):
             return "ok"
     except urllib.error.HTTPError:
