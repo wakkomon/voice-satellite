@@ -1,4 +1,4 @@
-"""Master-API – httpx/uvicorn (2.0.0alpha).
+"""Master-API – httpx/uvicorn.
 
 Endpoints:
   GET    /api/heartbeat        → Status + Sat-Liste
@@ -28,6 +28,7 @@ from starlette.responses import JSONResponse, PlainTextResponse, Response, Strea
 from starlette.routing import Route
 
 from . import config as master_cfg
+from . import __version__ as MASTER_VERSION
 from . import proxy
 from . import mcp_gateway
 from .indexer import _build_media_index, load_index_cache, save_index
@@ -435,6 +436,7 @@ async def _status(req: Request) -> JSONResponse:
         "start_time": _START_TIME,
         "uptime_s": int(uptime_s),
         "uptime": _fmt_uptime(uptime_s),
+        "version": MASTER_VERSION,
     })
 
 
@@ -488,8 +490,24 @@ async def _live_log(req: Request) -> StreamingResponse:
 manager = SatManager()
 
 
+# Zuletzt an die UI gemeldeter Status pro Satellit (Live-Log-Dedupe)
+_last_status_sent: dict[str, tuple] = {}
+
+
 def _on_sat_status(mac: str, sat) -> None:
-    """Manager-Callback: Status-Wechsel per SSE an die Web-UI senden."""
+    """Manager-Callback: Status-Wechsel per SSE an die Web-UI senden.
+
+    Der Manager ruft das Callback bei JEDEM Heartbeat (und jeden
+    Monitor-Tick) – nicht nur bei echten Wechseln. Ohne Dedupe würde die
+    UI-Zeile „Satellit X: online“ alle Heartbeats (60 s) erneut im
+    Live-Log erscheinen; nur Status-Änderungen (online/offline/unknown,
+    Container-Start/Stopp) breiten wir aus. Die Satellitentabelle holt
+    sich ihre Daten ohnehin per 30-s-Poll und bleibt aktuell."""
+    prev = _last_status_sent.get(mac)
+    sig = (sat.status, bool(sat.docker_running))
+    if prev is not None and prev == sig:
+        return
+    _last_status_sent[mac] = sig
     payload = {
         "mac": mac, "ip": sat.ip, "hostname": sat.hostname,
         "status": sat.status, "docker_running": sat.docker_running,
