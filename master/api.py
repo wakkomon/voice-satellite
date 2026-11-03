@@ -43,6 +43,31 @@ _START_TIME = time.time()
 _LOG_LINES: list[str] = []
 _LOG_MAX = 500
 _log_lock = threading.Lock()
+# aktive Live-Log-SSE-Queues (GET /logs) — werden thread-sicher befüllt
+_log_clients: list[asyncio.Queue] = []
+_log_clients_lock = threading.Lock()
+# Main-Event-Loop (wird bei erster SSE-Verbindung gemerkt)
+_main_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _push_log_to_clients(msg: str) -> None:
+    """Neue Live-Log-Zeile in alle SSE-Queues stellen (aus jedem Thread sicher).
+
+    Der Log-Handler läuft in Fremd-Threads (Manager-Monitor-Thread), daher
+    immer via call_soon_threadsafe auf die im Startup gemerkte Main-Loop.
+    Volle Queue = langsamer Client: Zeile verwerfen, Stream nicht blockieren.
+    """
+    with _log_clients_lock:
+        clients = list(_log_clients)
+    if not clients or _main_loop is None or _main_loop.is_closed():
+        return
+    for q in clients:
+        try:
+            if q.full():
+                continue
+            _main_loop.call_soon_threadsafe(q.put_nowait, msg)
+        except RuntimeError:
+            pass
 
 
 def _append_log_line(msg: str) -> None:
@@ -51,6 +76,7 @@ def _append_log_line(msg: str) -> None:
         _LOG_LINES.append(msg)
         if len(_LOG_LINES) > _LOG_MAX:
             del _LOG_LINES[:_LOG_MAX]
+    _push_log_to_clients(msg)
 
 _STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
@@ -229,7 +255,8 @@ async def _sat_heartbeat(req: Request) -> JSONResponse:
     manager.record_heartbeat(mac, payload)
     n = 0
     if isinstance(events, list):
-        n = manager.record_events(mac, events, events_reset)
+        n = manager.record_events(mac, events, events_reset,
+                                  ip=str(payload.get("ip") or ""))
     return JSONResponse({"ok": True, "events_stored": n})
 
 
@@ -397,7 +424,8 @@ async def _ui(req: Request) -> Response:
     """Web-UI (Dashboard) – single-file HTML."""
     path = os.path.join(_STATIC_DIR, "index.html")
     with open(path, "rb") as f:
-        return Response(f.read(), media_type="text/html; charset=utf-8")
+        return Response(f.read(), media_type="text/html; charset=utf-8",
+                        headers={"Cache-Control": "no-cache"})
 
 
 async def _status(req: Request) -> JSONResponse:
@@ -428,25 +456,29 @@ def _fmt_uptime(seconds: float) -> str:
 
 async def _live_log(req: Request) -> StreamingResponse:
     """GET /logs → SSE-Stream der letzten Log-Zeilen + neue Einträge."""
+    global _main_loop
+    _main_loop = asyncio.get_running_loop()
     q: asyncio.Queue[str] = asyncio.Queue(maxsize=128)
+    with _log_clients_lock:
+        _log_clients.append(q)
 
     async def generator():
-        # Erst die vorhandenen Zeilen senden
-        with _log_lock:
-            snapshot = list(_LOG_LINES)
-        for line in snapshot:
-            yield f"data: {line}\n\n"
-        # Dann neue Zeilen live
         try:
+            # Erst die vorhandenen Zeilen senden
+            with _log_lock:
+                snapshot = list(_LOG_LINES)
+            for line in snapshot:
+                yield f"data: {line}\n\n"
+            # Dann neue Zeilen live (Queue wird von _append_log_line befüllt)
             while True:
                 if await req.is_disconnected():
                     break
                 msg = await q.get()
                 yield f"data: {msg}\n\n"
         finally:
-            # Cleanup: Queue aus _log_clients entfernen (hier: keine Liste nötig,
-            # da pro-Request eigener Queue + Generator endet bei Disconnect)
-            pass
+            with _log_clients_lock:
+                if q in _log_clients:
+                    _log_clients.remove(q)
 
     return StreamingResponse(generator(), media_type="text/event-stream")
 

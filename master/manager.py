@@ -177,7 +177,8 @@ class SatManager:
                 return key
         return None
 
-    def record_events(self, mac: str, events: list, reset: bool = False) -> int:
+    def record_events(self, mac: str, events: list, reset: bool = False,
+                      ip: str = "") -> int:
         """Pipeline-Events eines Satelliten übernehmen (Live-Log-Parität).
 
         Der Satellite meldet im Heartbeat genau die Einträge, die seine
@@ -196,8 +197,12 @@ class SatManager:
             return 0
         with self._lock:
             sat = self.satellites.get(mac) or self.satellites.get(mac.lower())
-            name = (sat.hostname if sat and sat.hostname else mac)[:24]
-            last_seq = 0 if reset else self._event_seqs.get(mac, 0)
+            key = mac if sat is not None else (self._find_by_ip(ip) if ip else None)
+            if key is not None:
+                sat = self.satellites.get(key)
+            ident = key or mac
+            name = (sat.hostname if sat and sat.hostname else ident)[:24]
+            last_seq = 0 if reset else self._event_seqs.get(ident, 0)
             out = []
             for ev in fresh:
                 try:
@@ -213,7 +218,7 @@ class SatManager:
             if not out:
                 return 0
             hi = max(s for s, _, _ in out)
-            self._event_seqs[mac] = max(hi, 0 if reset else last_seq)
+            self._event_seqs[ident] = max(hi, 0 if reset else last_seq)
         for seq, ts, msg in sorted(out):
             log.info("[%s] %s %s", name, ts, _log_safe(msg))
         return len(out)
