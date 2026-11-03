@@ -266,7 +266,9 @@ function renderConfigTable() {
       <td class="type-col">${typeLabel}</td>
       <td><input type="text" data-key="${esc(f.key)}" data-type="text" value="${esc(String(val))}" class="cfg-input" /></td>
     </tr>`;
-  }).join('');
+  }).join('') + (currentDomain === 'secrets'
+    ? `<tr><td colspan="3" style="font-size:12px;opacity:.72;padding:6px 8px">MASTER_TOKEN ist zugleich der Zugang aller Satelliten (Heartbeat, Config-Pull, Proxy). Nach jeder Änderung muss derselbe Wert in der <code>.env</code> jedes Satelliten stehen — sonst melden alle Satelliten-Aufrufe 401.</td></tr>`
+    : '');
 
   tbody.querySelectorAll('.cfg-input').forEach(input => {
     input.addEventListener('input', checkDirty);
