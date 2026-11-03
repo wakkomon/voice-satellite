@@ -3,6 +3,9 @@
 set -eu
 cd /home/hermes/voice-satellite
 
+# Altes Image als Rollback-Marke sichern, bevor der Tag ueberschrieben wird.
+docker tag voice-satellite-master:2.0.0alpha "voice-satellite-master:rollback-$(date -u +%Y%m%d-%H%M)" 2>/dev/null || true
+
 docker rm -f voice-satellite-master >/dev/null
 
 # Identische Parameter wie der bisherige Container (docker-run-Setup),
@@ -25,3 +28,6 @@ echo "=== Logs (letzte 20) ==="
 docker logs voice-satellite-master 2>&1 | tail -20
 echo "=== Healthcheck ==="
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8791/healthz || echo "healthz noch nicht ready"
+echo "=== Token im Container ==="
+docker exec voice-satellite-master printenv MASTER_TOKEN >/dev/null 2>&1 \
+  && echo "MASTER_TOKEN gesetzt" || echo "MASTER_TOKEN fehlt (auf .env.master pruefen)"
