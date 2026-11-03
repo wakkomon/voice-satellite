@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploy Voice-Satellite Master auf dev-server (2.0.0alpha)
+# Deploy Voice-Satellite Master auf dev-server
 # Usage: ./deploy-master.sh [ssh_host]
 #
 # ssh_host optional, sonst 192.168.1.24 (dev-server)
@@ -10,7 +10,8 @@ set -euo pipefail
 SSH_HOST="${1:-192.168.1.24}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT="voice-satellite"
-VERSION="2.0.0alpha"
+VERSION="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' "${SCRIPT_DIR}/master/__init__.py" 2>/dev/null | head -1 || true)"
+VERSION="${VERSION:-2.0.0}"
 
 echo "=== Voice-Satellite Master Deploy v${VERSION} ==="
 echo "Ziel: ${SSH_HOST}"

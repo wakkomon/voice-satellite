@@ -1,4 +1,4 @@
-"""Zentrales MCP-Gateway am Master (2.0.0alpha).
+"""Zentrales MCP-Gateway am Master
 
 Der Master bündelt die MCP-Tools aller Satelliten und stellt sie als einen
 zentralen MCP-Endpunkt bereit. Ein einzelner MCP-Client (z.B. Hermes) kann

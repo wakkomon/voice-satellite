@@ -107,13 +107,10 @@ nano .env                     # MASTER_URL/MASTER_TOKEN + lokale Secrets (RTSP_*
 **Update:** `git pull && ./deploy.sh`
 
 Wichtig für die Trennung: Der Satellite kennt **weder** die Backend-URLs
-(TTS/STT/LLM/openHAB) **noch** deren Tokens – in der Satellite-`.env` stehen
+(TTS/STT/LLM/openHAB) **noch** deren Tokens. In der Satellite-`.env` stehen
 dazu nur `MASTER_URL` (Basisadresse des Masters) und `MASTER_TOKEN`
 (Zugang zum Master, derselbe Wert wie im Master-Config-Store, Bereich
-„Secrets"). Die 1.x-Variablen `TTS_URL`/`STT_URL`/`LLM_URL`/`OPENHAB_URL`
-und `TTS_TOKEN`/`STT_TOKEN`/`LLM_TOKEN`/`OPENHAB_TOKEN` werden vom Satellite
-**nicht mehr gelesen** – sie sind nur noch Legacy-Einträge in `.env`/
-`docker-compose.yml` und haben keine Wirkung.
+„Secrets"). Backend-URLs und -Tokens liegen ausschließlich am Master.
 
 ### Master (dev-server)
 
@@ -159,15 +156,13 @@ den Stack:
    `https://<user>:<token>@github.com/wakkomon/voice-satellite.git`
    (Private-Repo: GitHub-Personal-Access-Token mit `repo`-Scope).
 2. In der Stack-Ansicht unter **Variables** die Werte für das Gerät setzen.
-   In 2.0 sind das die **Satellite-seitigen** Keys – insbesondere
+   Das sind die **Satellite-seitigen** Keys – insbesondere
    `MASTER_URL` + `MASTER_TOKEN` (Zugang zum Master) und die lokalen
-   Secrets `RTSP_USER`/`RTSP_PASS`. Die 1.x-Keys `TTS_URL`/`STT_URL`/
-   `LLM_URL`/`OPENHAB_URL` und `TTS_TOKEN`/`STT_TOKEN`/`LLM_TOKEN`/
-   `OPENHAB_TOKEN` stehen zwar noch in der Liste (Interpolation), werden vom
-   Code aber **nicht mehr gelesen** – Backend-URLs und Tokens werden zentral
-   am Master gepflegt (siehe [Master-ENV](#master-env-variablen-master-container)).
-   Jeder weitere Key (`TTS_MODEL`, `TTS_VOICE`, `WAKE_PPN`, …) lässt sich
-   dort genauso überschreiben, Defaults gelten sonst unverändert.
+   Secrets `RTSP_USER`/`RTSP_PASS`. Die Backend-URLs und -Tokens stehen dort
+   **nicht**; sie werden zentral am Master gepflegt (siehe
+   [Master-ENV](#master-env-variablen-master-container)). Jeder weitere Key
+   (`TTS_MODEL`, `TTS_VOICE`, `WAKE_PPN`, …) lässt sich dort genauso
+   überschreiben, Defaults gelten sonst unverändert.
    (Empfehlung: TTS-/LLM-Modelle etc. lieber im Master-Config-Store statt
    pro Stack setzen – die Overrides wirken dann auf alle Satelliten und
    ohne Rebuild.)
@@ -240,21 +235,20 @@ damit sie nie auf dem Satellite landen.
 | **Master – ENV** | Server (`API_PORT`, …), Medien-Index (`MUSIC_ROOT`, `CACHE_DIR`), Heartbeat-Grenzen, **echte Backend-Ziele** (`TTS_BACKEND_URL`, `STT_BACKEND_URL`, `LLM_BACKEND_URL`, `OPENHAB_BACKEND_URL`), **Backend-Tokens** (`TTS_TOKEN`, `STT_TOKEN`, `LLM_TOKEN`, `OPENHAB_TOKEN`), `MASTER_TOKEN` (ENV-Fallback) | `.env.master` am Master (gelesen von `master/config.py` / `master/proxy.py`) |
 | **Zentrale Satellite-Konfig (Config-Store)** | Alle „weichen" Satellite-Werte: TTS-Modell/-Stimme/-Sprache, STT-Modell/-Sprache, LLM-Modell/-Timeouts, `MUSIC_ROOT`, `BRIDGE_*`, `DEFAULT_IMAGE_URL`, `MEMORY_DB`, Geräte-/Display-Keys, `RULES_FILE`, … – global + per-Satellite-Override (nach MAC) | Master-WebUI (Bereich „Config"); die Satelliten ziehen die Werte per `GET /api/config/apply` beim Heartbeat und wenden sie **ohne Neustart** an |
 
-Daraus folgt:
+Konsequenzen:
 
-- `TTS_URL`, `STT_URL`, `LLM_URL`, `OPENHAB_URL` existieren **nicht mehr als
-  Satellite-ENV**: `app/config.py` leitet sie aus `MASTER_URL` ab
-  (`…/proxy/tts`, `…/proxy/stt`, `…/proxy/llm`, `…/proxy/openhab`).
-  1.x-Werte, die noch in `.env` oder `docker-compose.yml` stehen, werden
-  **ignoriert** (Legacy-Keys, keine Wirkung).
-- `TTS_TOKEN`, `STT_TOKEN`, `LLM_TOKEN`, `OPENHAB_TOKEN` gehören **nur zum
-  Master** (ENV-Fallback oder Config-Store, Bereich „Secrets"); der Proxy
-  injiziert sie. Im Satellite sind sie wirkungslos.
+- Die API-Adressen `TTS_URL`, `STT_URL`, `LLM_URL`, `OPENHAB_URL` sind keine
+  einstellbaren Satellite-ENV-Werte: `app/config.py` leitet sie aus
+  `MASTER_URL` ab (`…/proxy/tts`, `…/proxy/stt`, `…/proxy/llm`,
+  `…/proxy/openhab`).
+- Die Backend-Tokens `TTS_TOKEN`, `STT_TOKEN`, `LLM_TOKEN`, `OPENHAB_TOKEN`
+  gehören **nur zum Master** (Config-Store „Secrets" bzw. ENV-Fallback);
+  der Proxy injiziert sie.
 - Der **einzige** Token auf beiden Seiten ist `MASTER_TOKEN` – auf dem
   Satellite als ENV, auf dem Master im Config-Store (Priorität) bzw.
   `.env.master` (Fallback). Gleicher Wert, zwei Orte.
-- Identitäts-Keys (`SATELLITE_MAC`, `MASTER_URL`) kann der
-  Config-Store bewusst nicht überschreiben.
+- Identitäts-Keys (`SATELLITE_MAC`, `MASTER_URL`) überschreibt der
+  Config-Store nicht.
 
 ## ENV-Variablen — Satellite (`.env` des Pi)
 
@@ -294,7 +288,7 @@ Alle Variablen, gruppiert:
 
 | Variable | Default | Bedeutung |
 |---|---|---|
-| `STT_URL` | **abgeleitet, nicht lesbar** | 2.0: wird aus `MASTER_URL` gebaut (`/proxy/stt`); gesetzte 1.x-Werte ignoriert. Echter STT-Endpunkt + `STT_TOKEN`: **nur am Master** (`STT_BACKEND_URL`, Config-Store) |
+| `STT_URL` | aus `MASTER_URL` abgeleitet | wird aus `MASTER_URL` abgeleitet (`/proxy/stt`); nicht als ENV einstellbar. Echter STT-Endpunkt + `STT_TOKEN`: **nur am Master** (`STT_BACKEND_URL`, Config-Store) |
 | `STT_MODEL` | *leer* (Live: `SenseVoiceSmall`) | SenseVoice: `SenseVoiceSmall`, `SenseVoice` (542M), `SenseVoiceLarge`; OpenAI-kompatibel: `whisper-1`, `gpt-4o-transcribe` … |
 | `STT_LANGUAGE` | `de` | Sprache fürs Sprachmodell. OpenAI: `auto`, `de`, `en`, …; Qwen: `chinese`, `german`, `english`, `multilingual` |
 | `STT_TIMEOUT` | `30` | Timeout in s |
@@ -303,7 +297,7 @@ Alle Variablen, gruppiert:
 
 | Variable | Default | Bedeutung |
 |---|---|---|
-| `OPENHAB_URL` | **abgeleitet, nicht lesbar** | 2.0: wird aus `MASTER_URL` gebaut (`/proxy/openhab`); gesetzte 1.x-Werte ignoriert. Echter openHAB-Endpunkt + `OPENHAB_TOKEN`: **nur am Master** (`OPENHAB_BACKEND_URL`, Config-Store) |
+| `OPENHAB_URL` | aus `MASTER_URL` abgeleitet | wird aus `MASTER_URL` abgeleitet (`/proxy/openhab`); nicht als ENV einstellbar. Echter openHAB-Endpunkt + `OPENHAB_TOKEN`: **nur am Master** (`OPENHAB_BACKEND_URL`, Config-Store) |
 | `OPENHAB_CACHE_TTL` | `300` | Item-Liste cachen (s) |
 | `RULES_FILE` | *leer* (Live: `/data/rules.yaml`) | Pfad zur lokalen Regelungsdatei |
 
@@ -311,7 +305,7 @@ Alle Variablen, gruppiert:
 
 | Variable | Default | Bedeutung |
 |---|---|---|
-| `LLM_URL` | **abgeleitet, nicht lesbar** | 2.0: wird aus `MASTER_URL` gebaut (`/proxy/llm`); gesetzte 1.x-Werte ignoriert. Echter Chat-Endpunkt + `LLM_TOKEN`: **nur am Master** (`LLM_BACKEND_URL`, Config-Store) |
+| `LLM_URL` | aus `MASTER_URL` abgeleitet | wird aus `MASTER_URL` abgeleitet (`/proxy/llm`); nicht als ENV einstellbar. Echter Chat-Endpunkt + `LLM_TOKEN`: **nur am Master** (`LLM_BACKEND_URL`, Config-Store) |
 | `LLM_MODEL` | *leer* (Live: `hermes-agent`) | Modell (Hermes-Gateway-Agent mit Terminal) |
 | `LLM_TIMEOUT` | `180` | Timeout (Gateway-Agent braucht länger) |
 | `LLM_MAX_TOKENS` | `1024` | max. Antwort-Tokens (mit Thinking-aus reicht 1024) |
@@ -330,7 +324,7 @@ Alle Variablen, gruppiert:
 
 | Variable | Default | Bedeutung |
 |---|---|---|
-| `TTS_URL` | **abgeleitet, nicht lesbar** | 2.0: wird aus `MASTER_URL` gebaut (`/proxy/tts`); gesetzte 1.x-Werte ignoriert. Echter TTS-Endpunkt + `TTS_TOKEN`: **nur am Master** (`TTS_BACKEND_URL`, Config-Store) |
+| `TTS_URL` | aus `MASTER_URL` abgeleitet | wird aus `MASTER_URL` abgeleitet (`/proxy/tts`); nicht als ENV einstellbar. Echter TTS-Endpunkt + `TTS_TOKEN`: **nur am Master** (`TTS_BACKEND_URL`, Config-Store) |
 | `TTS_MODEL` | *leer* (Live: `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice`) | TTS-Modell |
 | `TTS_VOICE` | *leer* (Live: `Uncle_fu`) | Stimme |
 | `TTS_LANGUAGE` | `German` | Sprache; leer = Server-Default |
@@ -510,13 +504,9 @@ Das Volume `/data` (bzw. `VS_CONFIG_DIR`) hält `satellites.json` – den zentra
 Config-Store. Musik liegt am Master unter `MUSIC_ROOT` (Standard `/m`), nicht
 unter einem `DATA_DIR`; eine Variable `DATA_DIR` liest der Master-Code **nicht**.
 
-Herzschlag-Parameter kommen **nicht** aus festen ENV-Defaults, sondern sind pro
-Satellit im Config-Store editierbar; ENV (`master/manager.py`) liefert nur den
-Global-Default: `SATELLITE_HEARTBEAT_SEC` (Standard `60`) und
-`SATELLITE_MAX_MISSED` (Standard `5`). Ebenso ist `MAX_SAT_ELAPSED_SEC`,
-`HEARTBEAT_DROP_SEC`, `HEARTBEAT_TIMEOUT_SEC`, `MAX_INDEX_SIZE` und
-`INDEX_REBUILD_MIN_SEC` **veraltet** – diese Namen existieren im aktuellen Code
-nicht mehr.
+Die Herzschlag-Parameter sind pro Satellit im Config-Store editierbar; ENV
+(`master/manager.py`) liefert nur den Global-Default: `SATELLITE_HEARTBEAT_SEC`
+(Standard `60`) und `SATELLITE_MAX_MISSED` (Standard `5`).
 
 `master/manager.py` (Deploy-Fernsteuerung der Pi3) liest zusätzlich:
 `SATELLITES` (Semikolon-getrennte Hosts), `SSH_USER` (Standard `pi`), `SSH_PKEY`.

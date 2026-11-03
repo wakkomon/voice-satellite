@@ -1,4 +1,4 @@
-"""Zentrale Konfigurationsverwaltung (2.0.0alpha).
+"""Zentrale Konfigurationsverwaltung
 
 Speichert die zentrale Konfiguration (TTS/STT/LLM-URLs, Modelle, o.Ä.)
 einmalig am Master – nicht mehr ENV pro Satellite. Die Satelliten ziehen

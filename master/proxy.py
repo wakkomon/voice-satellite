@@ -1,4 +1,4 @@
-"""Zentrale API-Proxy-Endpunkte am Master (2.0.0alpha).
+"""Zentrale API-Proxy-Endpunkte am Master
 
 Der Master liegt zwischen Satelliten und den Voice-/LLM-Backends:
 

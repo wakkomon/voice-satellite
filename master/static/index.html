@@ -69,7 +69,7 @@ footer { margin-top:24px; color:var(--dim); font-size:0.78rem; }
 </style>
 </head>
 <body>
-<h1>Voice-Satellite Master <span class="v" id="version">2.0.0alpha</span>
+<h1>Voice-Satellite Master <span class="v" id="version">–</span>
   <button id="btn-open-config" style="float:right;padding:6px 14px;border:1px solid var(--dim);background:transparent;border-radius:4px;cursor:pointer;color:var(--acc);font-size:0.85rem;margin-top:4px">⚙ Konfiguration</button>
 </h1>
 <div class="sub" id="hostline">dev-Server · Port 8791</div>
@@ -433,6 +433,7 @@ async function refresh() {
       _masterStart = status.start_time || 0;
       $('master-uptime').textContent = status.uptime || '–';
       $('master-start').textContent = _masterStart ? new Date(_masterStart * 1000).toLocaleTimeString('de-DE') : '–';
+      if (status.version) $('version').textContent = status.version;
     }
 
     // Satelliten

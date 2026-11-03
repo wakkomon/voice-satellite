@@ -1,10 +1,10 @@
-# Voice-Satellite Master (2.0.0alpha)
+# Voice-Satellite Master
 # Läuft auf dev-server (x86_64, 16 CPU) – übernimmt Indexing + Raspi-Verwaltung
 version: '3.9'
 
 services:
   voice-satellite-master:
-    image: voice-satellite-master:2.0.0alpha
+    image: voice-satellite-master:2.0.0
     build:
       context: .
       dockerfile: Dockerfile.master
@@ -45,7 +45,7 @@ services:
     # ── Labels (für Docker-UI/Portainer) ──
     labels:
       - "com.voice-satellite.role=master"
-      - "com.voice-satellite.version=2.0.0alpha"
+      - "com.voice-satellite.version=2.0.0"
 
     # ── Satelliten (aktive Anmeldung via Heartbeat) ──
     environment:

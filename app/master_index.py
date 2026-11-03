@@ -1,4 +1,4 @@
-"""Master-Index-Client (2.0.0alpha).
+"""Master-Index-Client.
 
 Der Satellite holt den fertigen Medien-Index vom Master-Container per
 HTTP. Der Master (dev) ist die EINZIGE Index-Quelle: er scannt CIFS

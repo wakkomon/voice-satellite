@@ -3,13 +3,18 @@
 set -eu
 cd /home/hermes/voice-satellite
 
+# Version aus dem Repo (Einzige Quelle: master/__init__.py)
+VERSION=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' master/__init__.py | head -1)
+if [ -z "$VERSION" ]; then echo "FEHLER: __version__ in master/__init__.py nicht gefunden" >&2; exit 1; fi
+echo "Deploy Version: $VERSION"
+
 # Altes Image als Rollback-Marke sichern, bevor der Tag ueberschrieben wird.
-docker tag voice-satellite-master:2.0.0alpha "voice-satellite-master:rollback-$(date -u +%Y%m%d-%H%M)" 2>/dev/null || true
+docker tag "voice-satellite-master:${VERSION}" "voice-satellite-master:rollback-$(date -u +%Y%m%d-%H%M)" 2>/dev/null || true
 
 docker rm -f voice-satellite-master >/dev/null
 
 # Identische Parameter wie der bisherige Container (docker-run-Setup),
-# nur das neue Image 2.0.0alpha
+# nur das neue Image $VERSION
 docker run -d \
   --name voice-satellite-master \
   --restart unless-stopped \
@@ -19,7 +24,7 @@ docker run -d \
   -v /home/hermes/voice-satellite/master/m:/app/master/m \
   -v /home/hermes/voice-satellite/master/.ssh:/app/master/.ssh \
   --env-file /home/hermes/voice-satellite/.env.master \
-  voice-satellite-master:2.0.0alpha
+  "voice-satellite-master:${VERSION}"
 
 sleep 8
 echo "=== Status ==="

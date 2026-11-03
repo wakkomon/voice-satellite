@@ -1,4 +1,4 @@
-"""Master-Konfiguration (2.0.0alpha).
+"""Master-Konfiguration
 
 Nur die Variablen, die der Master wirklich braucht.
 Keine Voice/LLM/Display-Configs.

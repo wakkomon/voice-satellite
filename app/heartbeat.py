@@ -1,4 +1,4 @@
-"""Heartbeat-Modul: Push-Status an Master-Container (2.0.0alpha).
+"""Heartbeat-Modul: Push-Status an Master-Container.
 
 Sendet alle HEARTBEAT_SEC einen POST an /api/satellite/{mac}/heartbeat
 mit Pipeline-Status, System-Info, Komponenten-Health. Der Master

@@ -1,4 +1,4 @@
-"""Master-Entry-Point (2.0.0alpha).
+"""Master-Entry-Point
 
 Startet den Starlette-Server mit Indexer-HTTP-API, Raspi-Manager und
 Hintergrund-Index-Scan.

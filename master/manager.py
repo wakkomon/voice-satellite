@@ -1,4 +1,4 @@
-"""Satellite Manager – Raspi-Container verwalten per SSH (2.0.0alpha).
+"""Satellite Manager – Raspi-Container verwalten per SSH
 
 Verwaltet Docker-Container auf den Satelliten-Raspis:
   - Aktive Satelliten-Anmeldung (Heartbeat) – keine Auto-Discovery
