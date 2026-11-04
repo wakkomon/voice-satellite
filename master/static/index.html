@@ -459,13 +459,13 @@ async function refresh() {
                    : s.status !== 'online'  ? 'warn'
                    : s.docker_running       ? 'on' : 'warn';
       const dockBadge = s.docker_running
-        ? '<span class="badge ok">läuft</span>'
-        : '<span class="badge" style="color:#e5a50a">Container stopt</span>';
+        ? '<span class="badge ok">verbunden</span>'
+        : '<span class="badge" style="color:#e5a50a">offline</span>';
       const activityHtml = parts.length ? parts.join('<br>') :
         (s.status === 'offline'
           ? '<span style="color:var(--dim)">offline</span>'
           : s.status === 'online'
-            ? '<span style="color:var(--dim)">Host online, Container stopt</span>'
+            ? '<span style="color:var(--dim)">Host online, offline</span>'
             : '<span style="color:var(--dim)">Status unbekannt</span>');
 
       return `<tr>
