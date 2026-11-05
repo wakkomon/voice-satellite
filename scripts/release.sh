@@ -6,10 +6,14 @@
 #   minor:           neues Feature
 #   major:           Breaking Change
 #
-# Versionsquelle: __version__ in master/__init__.py UND app/__init__.py
-# (beide synchron hochzaehlen; nirgends sonst Version hartkodieren).
-# Das Skript:
-#   1. __version__ hochzaehlen
+# Versionsquelle: der Build-Wert aus scripts/gen_version.py (Git-Tag + Commits
+# seitdem) — er laeuft bei jedem Deploy automatisch weiter. Die Fallback-Werte
+# in master/__init__.py und app/__init__.py sind nur der Quellstand ohne Build.
+# Release setzt die Nummer auf den naechsten Wert UBER dem laufenden Build-Stand
+# und markiert ihn mit einem Tag; ab dem Tag zaehlt gen_version weiter.
+# Collisions sind damit ausgeschlossen: kein Tag nennt sich eine Nummer, die
+# ein Build schon hatte. Das Skript:
+#   1. Version hochzaehlen
 #   2. Commit "chore(release): vX.Y.Z"
 #   3. git tag vX.Y.Z
 #   4. push an origin (GitHub) und gitlab
@@ -21,12 +25,8 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 BUMP="${1:-patch}"
 
-CUR=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' master/__init__.py | head -1)
-if [ -z "$CUR" ]; then echo "FEHLER: __version__ in master/__init__.py fehlt" >&2; exit 1; fi
-APP_VER=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' app/__init__.py | head -1)
-if [ "$APP_VER" != "$CUR" ]; then
-  echo "WARN: app/__init__.py (${APP_VER}) != master/__init__.py (${CUR}) — beide werden auf die neue Version gesetzt"
-fi
+CUR="$(python3 scripts/gen_version.py --print)"
+if [ -z "$CUR" ]; then echo "FEHLER: Version nicht ermittelbar (git-Checkout noetig)" >&2; exit 1; fi
 IFS=. read -r MA MI PA <<<"$CUR"
 case "$BUMP" in
   major) MA=$((MA+1)); MI=0; PA=0 ;;
@@ -45,9 +45,11 @@ if [ -n "$(git status --porcelain)" ]; then
   exit 1
 fi
 
+# Fallback-Werte in beiden Paketen mitziehen (indentiert im except-Zweig).
 for f in master/__init__.py app/__init__.py; do
-  sed -i "s/^__version__ = \".*\"$/__version__ = \"${NEXT}\"/" "$f"
+  sed -i "s/^\([[:space:]]*\)__version__ = \".*\"$/\1__version__ = \"${NEXT}\"/" "$f"
 done
+python3 scripts/gen_version.py >/dev/null
 git add master/__init__.py app/__init__.py
 git commit -m "chore(release): ${TAG}"
 git tag "$TAG"

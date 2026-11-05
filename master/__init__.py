@@ -5,4 +5,7 @@ UI oder Deploy-Skripten hartkodieren — die lesen diesen Wert).
 Semver: Feature/Commit seit letztem Release -> mindestens Patch hochzaehlen,
 nutzer sichtbares Feature -> Minor. Release = Tag v<version> + GitHub Release.
 """
-__version__ = "2.0.0"
+try:      # Build-Artefakt (scripts/gen_version.py): laeuft automatisch mit
+    from ._version import __version__      # jedem Deploy weiter
+except ImportError:
+    __version__ = "2.0.0"                  # Quellstand ohne Build

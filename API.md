@@ -163,3 +163,56 @@ Shell-Variante mit JSON-Escaping und Fehlerbehandlung:
 - `/speak` und `/tone` blockieren nicht — der Speaker ist mit dem
   Pipeline-Audio geteilt; gleichzeitige Ausgaben werden von ALSA
   (`plughw`, SPEAKER_DEVICE) gemischt bzw. sequenziell gespielt.
+
+
+---
+
+## Master-Steuerung (openHAB / curl)
+
+Außerhalb des einzelnen Satelliten kann der **Master** alle (oder einen)
+Satelliten steuern – ideal, wenn openHAB auf dem Master läuft oder vom Master
+aus erreichbar ist. Der Master leitet die Befehle auf den Web-Dienst des
+jeweiligen Satelliten weiter (Port aus Heartbeat, sonst `8770`).
+
+`MASTER=http://<master-ip>:<master-port>` · `TOKEN=<MASTER_TOKEN>`
+
+### `POST /api/broadcast` — Durchsage (wichtigster Fall)
+{text, sat?, vol?} → spricht ohne Wake-Word/LLM. `sat` leer = **alle**
+bekannten, online Satelliten (Haus-Durchsage); sonst MAC/IP/Hostnamen.
+```bash
+# Alle Räume:
+curl -s -X POST $MASTER/api/broadcast \
+     -H "Authorization: Bearer $TOKEN" \
+     -d '{"text":"Alle ans Esszimmer, bitte!"}'
+# Ein Raum:
+curl -s -X POST $MASTER/api/broadcast \
+     -H "Authorization: Bearer $TOKEN" \
+     -d '{"sat":"wohnzimmer","text":"Essen ist fertig"}'
+```
+
+### Lautstärke
+```bash
+# Setzen (0-100) / stummschalten:
+curl -s -X POST $MASTER/api/satellite/wohnzimmer/volume \
+     -H "Authorization: Bearer $TOKEN" -d '{"volume":40}'
+curl -s -X POST $MASTER/api/satellite/wohnzimmer/volume \
+     -H "Authorization: Bearer $TOKEN" -d '{"volume":0,"muted":true}'
+# Abfragen:
+curl -s $MASTER/api/satellite/wohnzimmer/volume -H "Authorization: Bearer $TOKEN"
+```
+
+### Audio-Ausgabe (Gerät)
+```bash
+# Umschalten:
+curl -s -X POST $MASTER/api/satellite/wohnzimmer/output \
+     -H "Authorization: Bearer $TOKEN" -d '{"out":"plughw:1,0"}'
+# Aktuelle + verfügbare Geräte:
+curl -s $MASTER/api/satellite/wohnzimmer/output -H "Authorization: Bearer $TOKEN"
+```
+
+### Automatische Versionsnummer
+`scripts/gen_version.py` leitet bei jedem Build aus dem letzten Git-Tag
+(`vMA.MI.PA`) + Anzahl der Commits seitdem die laufende Patch-Nummer ab
+(`v2.0.0` + 12 Commits → `2.0.12`) und schreibt sie in `app/_version.py` /
+`master/_version.py` (Build-Artefakt, in `.gitignore`). `deploy.sh`,
+`deploy-master.sh` und `scripts/release.sh` rufen es automatisch auf.

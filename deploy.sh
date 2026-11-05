@@ -132,6 +132,14 @@ fi
 #    (für Geräte, deren Build-Netzwerk während langer apt/pip-Steps abbricht;
 #    z.B. Pi 2 display02: dhcpcd-Default-Route über veth bricht Docker-Build-Net
 #    nach ein paar Minuten weg. Image von display01 bauen + save/load übertragen.)
+# Build-Version: Patch-Stand seit dem letzten Git-Tag laeuft automatisch mit
+# (scripts/gen_version.py -> app/_version.py, von .gitignore abgedeckt).
+if python3 scripts/gen_version.py; then
+  echo "  App-Version im Image: $(python3 scripts/gen_version.py --print)"
+else
+  echo "  Hinweis: keine Git-Tags nutzbar - App-Version bleibt wie im Quellstand."
+fi
+
 if [ -n "${VS_IMAGE_TAR:-}" ]; then
   if [ ! -f "$VS_IMAGE_TAR" ]; then
     echo "Fehler: VS_IMAGE_TAR=$VS_IMAGE_TAR existiert nicht."

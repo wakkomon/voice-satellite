@@ -10,8 +10,12 @@ set -euo pipefail
 SSH_HOST="${1:-192.168.1.24}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT="voice-satellite"
-VERSION="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' "${SCRIPT_DIR}/master/__init__.py" 2>/dev/null | head -1 || true)"
-VERSION="${VERSION:-2.0.0}"
+# Version automatisch: letzter Git-Tag + Commits seitdem (scripts/gen_version.py).
+# Das Skript schreibt master/_version.py + app/_version.py, die beim Start
+# __version__ in den __init__.py files ueberschreiben.
+python3 "${SCRIPT_DIR}/scripts/gen_version.py" || echo "WARN: gen_version fehlgeschlagen"
+VERSION="$(python3 "${SCRIPT_DIR}/scripts/gen_version.py" --print 2>/dev/null || true)"
+VERSION="${VERSION:-0.0.0}"
 
 echo "=== Voice-Satellite Master Deploy v${VERSION} ==="
 echo "Ziel: ${SSH_HOST}"

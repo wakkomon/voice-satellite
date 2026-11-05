@@ -186,6 +186,16 @@ class Handler(BaseHTTPRequestHandler):
             self._send_download(config.export_config(), fname)
         elif path == "/events":
             self._sse()
+        elif path == "/speak/status":
+            # fuer openHAB/Scripte: laeuft gerade eine Sprachausgabe?
+            p = _pipeline
+            return self._send(200, {
+                "speaking": bool(p and (p.speaking or p.web_audio_busy)),
+                "phase": getattr(p, "phase", None)})
+        elif path == "/audio/out":
+            # aktuelle Audio-Ausgabe + was dieser Satellite anbieten wuerde
+            return self._send(200, {"out": audio.current_output(),
+                                    "devices": audio.list_outputs()})
         elif path == "/volume":
             st = volume.get()
             if st is None:
@@ -231,6 +241,16 @@ class Handler(BaseHTTPRequestHandler):
             # Beschriftung statt "TTS direkt": der Text geht ohne
             # Intent/LLM-Pipeline direkt in die Sprachausgabe — der
             # TTS-Aufruf selbst laeuft wie alles ueber den Master-Proxy.
+            # wait=true (Standard fuer openHAB-curl): bis zum Ende hoeren,
+            # damit der Aufrufer danach sicher ist. vol=0..100 gilt nur fuer
+            # diese Durchsage; die eingestellte Lautstaerke bleibt erhalten.
+            p = _pipeline
+            vol = data.get("vol", data.get("volume"))
+            wait = bool(data.get("wait", True))
+            if p is not None:
+                ok = p.broadcast(text, vol=vol, wait=wait)
+                return self._send(200 if ok else 502,
+                                  {"ok": ok, "text": text[:80]})
             self._ev(f"Web: \"{text[:60]}\" (Speak ohne Pipeline, TTS via Master)")
             wav = tts.synthesize(text)
             if not wav:
@@ -300,6 +320,16 @@ class Handler(BaseHTTPRequestHandler):
             threading.Thread(target=self._play_tone, args=(tone, repeat),
                              daemon=True).start()
             return self._send(200, {"ok": True, "tone": tone, "repeat": repeat})
+        if self.path == "/audio/out":
+            # Audio-Ausgabe dieses Satelliten umschalten (plughw:1,0, ...)
+            dev = data.get("out") or data.get("device")
+            try:
+                new, prev = audio.set_output(dev)
+            except Exception as e:
+                return self._send(400, {"error": str(e)})
+            self._ev(f"Web: Audio-Ausgabe {prev} -> {new}")
+            return self._send(200, {"ok": True, "out": new, "prev": prev,
+                                    "note": "gilt bis zum Neustart"})
         if self.path == "/volume":
             # {"volume": 0..100?} und/oder {"muted": true|false} –
             # mindestens eines muss vorhanden sein.

@@ -358,6 +358,67 @@ class SatManager:
 
     # ── Query ──────────────────────────────────────────────────
 
+    # ------------------------------------------------------------------
+    # Anzeige- und Steuerungs-Helfer (UI-Spalte, Master -> Satellit)
+    # ------------------------------------------------------------------
+    DEFAULT_WEB_PORT = 8770
+
+    @staticmethod
+    def activity(sat: "Satellite") -> str:
+        """Was der Satellit gerade tut - fuer die UI-Spalte 'Aktivitaet'.
+
+        Die Phase steht vom Pipeline-Schritt BEVOR er ausgefuehrt wird
+        ('STT: Aufnahme -> Text ...'), und der Herzschlag wird bei jedem
+        Schritt sofort ausgeloest. Deshalb ist hier die laufende Aktion zu
+        sehen und nicht das Ergebnis des letzten Durchlaufs.
+        """
+        pl = sat.info.get("pipeline") or {}
+        phase = (pl.get("phase") or "").strip()
+        state = (pl.get("state") or "").strip()
+        if sat.status != "online":
+            return "offline"
+        if phase and phase != "bereit":
+            return phase
+        if state == "speak":
+            return "Antwort wird gespielt"
+        if state == "stt":
+            return "Aufnahme"
+        last = (pl.get("last_event") or "").strip()
+        return last or "bereit"
+
+    @staticmethod
+    def _web_port(sat: "Satellite") -> int:
+        """Port des Web-Dienstes (Heartbeat-Feld, sonst Standard)."""
+        try:
+            port = int((sat.info or {}).get("web_port") or 0)
+        except (TypeError, ValueError):
+            return SatManager.DEFAULT_WEB_PORT
+        return port if 0 < port < 65536 else SatManager.DEFAULT_WEB_PORT
+
+    def sat_target(self, key: str) -> "tuple[str, str] | None":
+        """Satellit per MAC, IP oder Hostnamen -> (Schluessel, Basis-URL).
+
+        Die Basis-URL zeigt auf den Web-Dienst des Satelliten (/speak,
+        /volume, /output ...) - nur darueber kann der Master Durchsagen,
+        Lautstaerke und Audio-Ausgabe steuern. None, wenn der Satellit
+        unbekannt ist oder keine IP hat.
+        """
+        want = (key or "").strip().lower()
+        if not want:
+            return None
+        with self._lock:
+            sat = self.satellites.get(key) or self.satellites.get(want)
+            if sat is None:
+                for k, s in self.satellites.items():
+                    host = (s.hostname or "").lower()
+                    if (s.ip or "").lower() == want or host == want \
+                            or host.split(".")[0] == want or k.lower() == want:
+                        sat, key = s, k
+                        break
+            if sat is None or not sat.ip:
+                return None
+            return key, f"http://{sat.ip}:{self._web_port(sat)}"
+
     async def list_satellites(self) -> list[dict]:
         """Liste aller bekannten Satelliten (inkl. Heartbeat-Details)."""
         with self._lock:
@@ -373,6 +434,15 @@ class SatManager:
                     "pipeline": s.info.get("pipeline"),
                     "system": s.info.get("system"),
                     "components": s.info.get("components"),
+                    # Kopfzeile der Satelliten-Tabelle: App-Stand, gemeldet
+                    # vom Satelliten (Build-Version), und Aktionstext statt
+                    # der Docker-Angabe, die auf dem Host nicht zuverlaessig
+                    # war (Container-MACs aendern sich bei jedem Rebuild).
+                    "app_version": (s.info.get("version") or ""),
+                    "activity": self.activity(s),
+                    "phase": ((s.info.get("pipeline") or {}).get("phase") or ""),
+                    "last_event": ((s.info.get("pipeline") or {}).get("last_event") or ""),
+                    "web_port": self._web_port(s) if s.ip else 0,
                 }
                 for s in self.satellites.values()
             ]

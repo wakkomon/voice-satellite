@@ -25,7 +25,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from . import chatlog, config, http
+from . import __version__, chatlog, config, http
 
 log = logging.getLogger(__name__)
 
@@ -74,11 +74,25 @@ def get_satellite_info(pipeline) -> dict:
         "mac": _MAC,
         "hostname": _HOSTNAME,
         "ip": "",
-        "docker_running": True,
+        "docker_running": True,          # Altbestand, UI zeigt den Wert nicht mehr
         "config_version": config.config_version(),
+        # App-Version: der Master zeigt sie in der Kopfzeile der Satelliten
+        # und verifiziert nach jedem Push, ob der Satellit wirklich auf dem
+        # neuen Stand laeuft.
+        "version": __version__,
+        # Web-Port dieses Satelliten: nur so kann der Master Sprachausgabe,
+        # Lautstaerke und Audio-Ausgabe steuern (Broadcast an jeden Raum).
+        "web_port": config.WEB_PORT,
         "pipeline": {
             "state": pipeline.state if pipeline else "idle",
             "web_audio_busy": getattr(pipeline, "web_audio_busy", False),
+            # phase = der Schritt, der JETZT laeuft. Die Master-Tabelle zeigt
+            # sie in 'Aktivitaet' (vorher: nur idle/listening/speaking).
+            "phase": getattr(pipeline, "phase", None),
+            "speaking": bool(getattr(pipeline, "speaking", False)),
+            # letzter Live-Log-Eintrag: Fallback fuer die UI-Spalte, wenn die
+            # Phase schon wieder 'bereit' ist (z.B. kurz nach Antwortende).
+            "last_event": (getattr(pipeline, "events", []) or [{}])[-1].get("msg"),
         },
         "system": {
             "hostname": _HOSTNAME,
@@ -192,6 +206,28 @@ _stop_event = threading.Event()
 _last_event_seq = 0
 
 
+# Ein Live-Log-Eintrag soll am Master SOFORT erscheinen, nicht erst beim
+# naechsten Heartbeat-Takt: die Pipeline setzt dieses Event, der
+# Heartbeat-Thread meldet daraufhin Status + neue Events sofort.
+_events_wake = threading.Event()
+
+
+def notify_events() -> None:
+    """Von der Pipeline bei jedem Live-Log-Eintrag gerufen (nicht blockierend).
+
+    Weckt den Heartbeat-Thread, damit der Master den aktuellen Zustand der
+    Pipeline sieht ('Aufnahme läuft …', 'STT …'), waehrend sie noch laeuft.
+    """
+    _events_wake.set()
+
+
+def wait_for_event(timeout: float) -> bool:
+    """Bis timeout auf einen neuen Pipeline-Event warten (Heartbeat-Thread)."""
+    got = _events_wake.wait(timeout=timeout)
+    _events_wake.clear()
+    return got
+
+
 def _fresh_events(pipeline, limit: int = 40) -> list:
     """Pipeline-Events, die der Master noch nicht bekommen hat.
 
@@ -273,7 +309,15 @@ def _heartbeat_loop(pipeline) -> None:
     pull_and_apply_config()
     while not _stop_event.is_set():
         _do_heartbeat(pipeline)
-        _stop_event.wait(config.HEARTBEAT_SEC)
+        # Auf neue Live-Log-Events hoeren: der Master sieht, was die Pipeline
+        # gerade tut (Aufnahme/STT/Router), statt erst bis zu HEARTBEAT_SEC
+        # spaeter. Laenger als 2s darf der Status maximal veralten.
+        waited = 0.0
+        period = max(1.0, float(config.HEARTBEAT_SEC))
+        while not _stop_event.is_set() and waited < period:
+            if wait_for_event(timeout=min(2.0, period - waited)):
+                _do_heartbeat(pipeline)
+            waited += min(2.0, period - waited)
 
 
 def start_heartbeat_thread(pipeline) -> None:

@@ -92,7 +92,7 @@ footer { margin-top:24px; color:var(--dim); font-size:0.78rem; }
   <div class="card">
     <h2>Satelliten <span class="num" id="sat-count" style="color:var(--dim)"></span></h2>
     <table>
-      <thead><tr><th>Satellit</th><th>IP</th><th>Docker</th><th>Aktivität</th><th>Aktion</th></tr></thead>
+      <thead><tr><th>Satellit</th><th>IP</th><th>Aktivität</th><th>Aktion</th></tr></thead>
       <tbody id="sat-body"><tr><td colspan="5" style="color:var(--dim)">lade …</td></tr></tbody>
     </table>
   </div>
@@ -441,9 +441,15 @@ async function refresh() {
     const known = sats.filter(s => s.known);
     $('sat-count').textContent = `(${known.filter(s=>s.status==='online').length} online / ${known.length} bekannt)`;
     $('sat-body').innerHTML = known.length ? known.map(s => {
-      // Aktivität zusammenbauen
+      // Aktivität: was läuft grade (Phase vor Ausführung), Version, Last
+      const act = s.activity || (s.pipeline ? (s.pipeline.phase || s.pipeline.state || '') : '');
       const parts = [];
-      if (s.pipeline) parts.push(`Pipeline: <b>${esc(s.pipeline.state || '–')}</b>`);
+      const phaseTxt = String(act || '').trim();
+      if (phaseTxt) {
+        const busy = !/^(bereit|ready|idle|offline|–)$/i.test(phaseTxt);
+        parts.push(`<b>${esc(phaseTxt)}</b>${busy ? ' <span style="color:var(--accent)">▸ aktiv</span>' : ''}`);
+      }
+      if (s.app_version) parts.push(`<span style="color:var(--dim)">v${esc(s.app_version)}</span>`);
       if (s.system) parts.push(`System: ${esc(s.system.hostname || '–')} (Last: ${(s.system.cpu_load ?? 0).toFixed(1)})`);
       // components als kleine Badges
       if (s.components && Array.isArray(s.components)) {
@@ -456,23 +462,18 @@ async function refresh() {
       }
       // Farbe: grün = online + Container läuft; gelb = Host online,
       // Container gestoppt ODER Status noch unbekannt; rot = Host offline.
+      // Statuspunkt = Host-Status (online/gelb/offline)
       const dotCls = s.status === 'offline' ? 'off'
-                   : s.status !== 'online'  ? 'warn'
-                   : s.docker_running       ? 'on' : 'warn';
-      const dockBadge = s.docker_running
-        ? '<span class="badge ok">verbunden</span>'
-        : '<span class="badge" style="color:#e5a50a">offline</span>';
+                   : s.status === 'online'  ? 'on'
+                   : 'warn';
       const activityHtml = parts.length ? parts.join('<br>') :
         (s.status === 'offline'
           ? '<span style="color:var(--dim)">offline</span>'
-          : s.status === 'online'
-            ? '<span style="color:var(--dim)">Host online, Container offline</span>'
-            : '<span style="color:var(--dim)">Status unbekannt</span>');
+          : '<span style="color:var(--dim)">bereit</span>');
 
       return `<tr>
         <td><span class="dot ${dotCls}"></span>${esc(s.hostname || s.ip)}</td>
         <td class="num">${esc(s.ip)}</td>
-        <td>${dockBadge}</td>
         <td style="font-size:0.82rem;line-height:1.4">${activityHtml}</td>
         <td>
           <button onclick="act('${esc(s.mac)}','restart')">Start</button>
@@ -480,7 +481,7 @@ async function refresh() {
         </td>
       </tr>`;
     }).join('')
-      : '<tr><td colspan="5" style="color:var(--dim)">keine Satelliten konfiguriert</td></tr>';
+      : '<tr><td colspan="4" style="color:var(--dim)">keine Satelliten konfiguriert</td></tr>';
   } catch (e) {
     $('idx-status').className='badge err'; $('idx-status').textContent='nicht erreichbar';
   }
@@ -539,7 +540,11 @@ function connectSSE() {
   const es = new EventSource('/events');
   es.addEventListener('index_done', e => logEvent('index_done', JSON.parse(e.data).data));
   es.addEventListener('index_error', e => logEvent('index_error', JSON.parse(e.data).data));
-  es.addEventListener('sat_status', e => logEvent('sat_status', JSON.parse(e.data).data));
+  es.addEventListener('sat_status', e => {
+    const data = JSON.parse(e.data).data;
+    if (data && data.mac) refresh();            // Tabelle live (Phase 'Aktivität')
+    if (data.log) logEvent('sat_status', data); // Live-Log nur bei online/offline
+  });
   es.onerror = () => { es.close(); setTimeout(connectSSE, 5000); };
 }
 

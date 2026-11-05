@@ -13,3 +13,7 @@ data/
 
 # Deploy-Lock (flock-Sperre gegen parallele Doppel-Runs)
 .deploy.lock
+
+# Build-Version (scripts/gen_version.py) — Artefakt, kein Quellcode
+app/_version.py
+master/_version.py

@@ -658,18 +658,28 @@ def _on_sat_status(mac: str, sat) -> None:
     Live-Log erscheinen; nur Status-Änderungen (online/offline/unknown,
     Container-Start/Stopp) breiten wir aus. Die Satellitentabelle holt
     sich ihre Daten ohnehin per 30-s-Poll und bleibt aktuell."""
+    # Dedupe-Signatur = (Host-Status, Activity-Phase). Damit erwischt die
+    # Web-UI sowohl echte Statuswechsel (online/offline) ALS AUCH jede
+    # Aenderung der Pipeline-Phase – die Spalte 'Aktivitaet' bleibt live
+    # aktuell, statt erst beim naechsten 30-s-Poll aufzufrischen.
+    act = manager.activity(sat)
     prev = _last_status_sent.get(mac)
-    sig = (sat.status, bool(sat.docker_running))
+    sig = (sat.status, act)
     if prev is not None and prev == sig:
         return
+    # Live-Log-Zeile nur bei echtem Statuswechsel (online/offline) – nicht
+    # bei jeder Phase-Wechselung, sonst wuerde das Log vollgespamt.
+    log_status = prev is None or prev[0] != sat.status
     _last_status_sent[mac] = sig
     payload = {
         "mac": mac, "ip": sat.ip, "hostname": sat.hostname,
         "status": sat.status, "docker_running": sat.docker_running,
+        "activity": act,
         "pipeline": sat.info.get("pipeline"),
         "components": sat.info.get("components"),
         "system": sat.info.get("system"),
     }
+    payload["log"] = log_status  # UI: Live-Log-Zeile nur bei echtem Statuswechsel
     try:
         asyncio.get_running_loop().call_soon_threadsafe(
             _broadcast, "sat_status", payload)
@@ -678,6 +688,162 @@ def _on_sat_status(mac: str, sat) -> None:
 
 
 manager.set_status_callback(_on_sat_status)
+
+
+# ── Steuerung via openHAB / curl (Broadcast, Lautstärke, Audio-Ausgabe) ──
+#
+# Der Master spricht die Web-Dienste der Satelliten direkt an (Base-URL
+# aus mac/ip + web_port, gemeldet im Heartbeat). Damit ist jede Raum-
+# Durchsage, Lautstärkeänderung und Ausgabe-Umschaltung mit einem
+# curl-Befehl möglich – z.B. aus einer openHAB-Rule:
+#
+#   # Durchsage an einen Raum / alle Räume:
+#   curl -s -X POST $MASTER/api/broadcast \
+#        -H "Authorization: Bearer $TOKEN" \
+#        -d '{"sat":"wohnzimmer","text":"Essen ist fertig"}'
+#
+#   # Lautstärke setzen (0-100) / abfragen:
+#   curl -s -X POST $MASTER/api/satellite/wohnzimmer/volume \
+#        -d '{"volume":40}'          # oder {"volume":0,"muted":true}
+#   curl -s $MASTER/api/satellite/wohnzimmer/volume
+#
+#   # Audio-Ausgabe umschalten / abrufen:
+#   curl -s -X POST $MASTER/api/satellite/wohnzimmer/output -d '{"out":"plughw:1,0"}'
+#   curl -s $MASTER/api/satellite/wohnzimmer/output
+#
+# 'sat' ist MAC, IP oder (Teil-)Hostnamen; leere/fehlende sat = alle
+# bekannten, online Satelliten.
+#
+import httpx as _httpx
+
+
+async def _sat_control(key: str, endpoint: str, payload: dict | None = None,
+                       timeout: float = 60.0) -> JSONResponse:
+    """Einen Steuer-Endpunkt AUF dem Satelliten aufrufen.
+
+    key leert / 'all' / '*' → an ALLE bekannten, online Satelliten, sonst
+    an den einen (MAC/IP/Hostnamen). Liefert je eine JSONResponse: bei
+    Einzelziel die Antwort des Satelliten, bei Broadcast eine Zusammenfassung
+    pro Ziel."""
+    key = (key or "").strip().lower()
+    if key in ("", "all", "*"):
+        with manager._lock:
+            targets = [
+                (k, f"http://{s.ip}:{SatManager._web_port(s)}")
+                for k, s in manager.satellites.items()
+                if s.status == "online" and s.ip
+            ]
+    else:
+        hit = manager.sat_target(key)
+        targets = [hit] if hit else []
+    if not targets:
+        return JSONResponse(
+            {"ok": False,
+             "error": ("kein Satellit gefunden" if key not in ("", "all", "*")
+                       else "keine bekannten, online Satelliten")},
+            status_code=404)
+
+    import json as _json
+    async def _call(t):
+        url = t[1] + endpoint
+        try:
+            async with _httpx.AsyncClient(timeout=timeout) as c:
+                r = await c.post(url, json=(payload or {}))
+                try:
+                    body = r.json()
+                except Exception:
+                    body = {"raw": r.text[:400]}
+                return t[0], r.status_code, body
+        except Exception as e:
+            return t[0], 502, {"error": str(e)}
+
+    if len(targets) == 1:
+        mac, code, body = await _call(targets[0])
+        out = dict(body)
+        out.setdefault("ok", code == 200)
+        return JSONResponse(out, status_code=code)
+    results = await asyncio.gather(*[_call(t) for t in targets])
+    summary = [
+        {"sat": mac, "ok": code == 200, "code": code, "detail": body}
+        for mac, code, body in results
+    ]
+    return JSONResponse({"ok": all(s["ok"] for s in summary),
+                         "targets": summary})
+
+
+async def _ctl_body(req: Request) -> dict:
+    """JSON-Body einer POST-Steueranfrage (leer, wenn nicht vorhanden)."""
+    import json as _json
+    try:
+        raw = await req.body()
+        return _json.loads(raw or b"{}") or {}
+    except Exception:
+        return {}
+
+
+async def _openhab_broadcast(req: Request) -> JSONResponse:
+    """POST /api/broadcast {sat?, text, vol?} – Durchsage ohne Wake/LLM."""
+    body = await _ctl_body(req)
+    text = str(body.get("text") or "").strip()
+    if not text:
+        return JSONResponse({"ok": False, "error": "text fehlt"})
+    payload = {"text": text, "wait": bool(body.get("wait", True))}
+    if body.get("vol") is not None:
+        payload["vol"] = int(body["vol"])
+    return await _sat_control(body.get("sat") or "", "/speak", payload,
+                              timeout=max(5.0, float(body.get("wait_ms", 60.0)) / 1000.0 + 30.0))
+
+
+async def _openhab_volume(req: Request) -> JSONResponse:
+    """POST /api/satellite/{mac}/volume {volume?, muted?}"""
+    mac = req.path_params["mac"]
+    body = await _ctl_body(req)
+    if body.get("volume") is None and body.get("muted") is None:
+        return JSONResponse({"ok": False, "error": "volume oder muted fehlt"})
+    return await _sat_control(mac, "/volume", body)
+
+
+async def _openhab_volume_get(req: Request) -> JSONResponse:
+    """GET /api/satellite/{mac}/volume – aktueller Zustand."""
+    mac = req.path_params["mac"]
+    hit = manager.sat_target(mac)
+    if not hit:
+        return JSONResponse({"ok": False, "error": "Satellit nicht bekannt"},
+                            status_code=404)
+    key, base = hit
+    try:
+        async with _httpx.AsyncClient(timeout=10.0) as c:
+            r = await c.get(base + "/volume")
+            return JSONResponse(r.json(), status_code=r.status_code)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=502)
+
+
+async def _openhab_output(req: Request) -> JSONResponse:
+    """POST /api/satellite/{mac}/output {out|device} – Ausgabe umschalten."""
+    mac = req.path_params["mac"]
+    body = await _ctl_body(req)
+    dev = body.get("out") or body.get("device")
+    if not dev:
+        return JSONResponse({"ok": False, "error": "out (Gerätename) fehlt"})
+    return await _sat_control(mac, "/audio/out", {"out": dev})
+
+
+async def _openhab_output_get(req: Request) -> JSONResponse:
+    """GET /api/satellite/{mac}/output – verfügbare + aktuelle Geräte."""
+    mac = req.path_params["mac"]
+    hit = manager.sat_target(mac)
+    if not hit:
+        return JSONResponse({"ok": False, "error": "Satellit nicht bekannt"},
+                            status_code=404)
+    key, base = hit
+    try:
+        async with _httpx.AsyncClient(timeout=15.0) as c:
+            r = await c.get(base + "/audio/out")
+            return JSONResponse(r.json(), status_code=r.status_code)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=502)
+
 
 routes = [
     Route("/", _ui),
@@ -719,6 +885,13 @@ routes = [
     Route("/proxy/music/{subpath:path}", proxy.proxy_music,
           methods=["GET", "HEAD"]),
     # (d) Zentrales MCP-Gateway (Tools aller Satelliten)
+    # openHAB / curl-Steuerung: Broadcast, Lautstärke, Audio-Ausgabe.
+    # 'sat' ist MAC/IP/Hostnamen; leer = alle online Satelliten (Broadcast).
+    Route("/api/broadcast", _openhab_broadcast, methods=["POST"]),
+    Route("/api/satellite/{mac}/volume", _openhab_volume, methods=["POST"]),
+    Route("/api/satellite/{mac}/volume", _openhab_volume_get, methods=["GET"]),
+    Route("/api/satellite/{mac}/output", _openhab_output, methods=["POST"]),
+    Route("/api/satellite/{mac}/output", _openhab_output_get, methods=["GET"]),
     Route("/mcp/tools", mcp_gateway.mcp_tools_all),
     Route("/mcp/tools/{mac}", mcp_gateway.mcp_tools_one),
     Route("/mcp", mcp_gateway.mcp_call, methods=["POST"]),

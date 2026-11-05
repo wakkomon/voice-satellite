@@ -265,6 +265,61 @@ def set_mic_mute(mute):
         print(f"[audio] mic_mute({state}) fehlgeschlagen: {e}")
 
 
+def list_outputs():
+    """AUSGABE-Geraete dieses Satelliten (aplay -L), fuer API und WebUI.
+
+    Reicht von der Default-Karte bis zu USB-Geraeten; der Name ist genau das,
+    was SPEAKER_DEVICE erwartet (z.B. 'plughw:1,0'). Schlaegt fehl (kein
+    aplay im Bild), kommt zumindest das aktuell eingestellte Geraet zurueck.
+    """
+    try:
+        r = subprocess.run(["aplay", "-L"], capture_output=True,
+                           text=True, timeout=15)
+    except Exception:
+        return [SPEAKER_DEVICE_DEFAULT()]
+    out, name = [], None
+    for line in (r.stdout or "").splitlines():
+        if not line.startswith(" "):            # Name-Zeile, Beschreibung folgt
+            name = line.strip()
+        elif name and line.strip():
+            out.append({"device": name, "info": line.strip()})
+            name = None
+    if not out:
+        out = [{"device": SPEAKER_DEVICE_DEFAULT(), "info": "aktuell"}]
+    return out
+
+
+def current_output():
+    return config.SPEAKER_DEVICE
+
+
+def set_output(name):
+    """Audio-Ausgabe zur Laufzeit umschalten (TTS, Musik und Toene).
+
+    Wird NICHT persistiert: nach einem Neustart gilt wieder SPEAKER_DEVICE
+    aus der Konfiguration. Dauerhaft umstellen geht per Config-Ueberschreibung
+    (docs/CONFIG.md). Gibt (neu, bisher) zurueck.
+    """
+    global _output_override
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("Audio-Ausgabe fehlt")
+    known = [d["device"] for d in list_outputs()]
+    if known and name not in known and not name.startswith(("hw:", "plughw:")):
+        raise ValueError(f"Unbekannte Audio-Ausgabe {name!r}; moeglich: "
+                         + ", ".join(known[:12]))
+    prev, _output_override = config.SPEAKER_DEVICE, name
+    config.SPEAKER_DEVICE = name
+    return name, prev
+
+
+def SPEAKER_DEVICE_DEFAULT():
+    return getattr(config, "SPEAKER_DEVICE", "default")
+
+
+_output_override = None
+
+
 def play_wav(wav_bytes, device=None, blocking=True):
     """WAV -> aplay.
 

@@ -21,7 +21,8 @@ import sys
 import threading
 import time
 
-from . import audio, chatlog, config, display, duck, memory, playback, router, stt, tones, tts, wake, web
+from . import (audio, chatlog, config, display, duck, memory, playback, router, stt,
+               tones, tts, volume, wake, web)
 
 log = logging.getLogger("satellite")
 
@@ -54,6 +55,11 @@ class Pipeline:
         self._mic_restart_requested = False
         self.events = []              # Ring-Puffer für /status & SSE-Feed
         self.seq = 0                  # monotone Event-Nummer (SSE-Reconnect)
+        self.on_event = None          # Callback: neuer Event -> Master-Push wecken
+        # Phase = was die Pipeline GERADE tut. Live-Log und Master-Tabelle
+        # zeigen damit den laufenden Schritt, nicht erst sein Ergebnis.
+        self.phase = "bereit"
+        self.speaking = False
         self.stats = {"wakes": 0, "commands": 0, "llm": 0, "errors": 0,
                       "followups": 0, "started": time.time()}
         self._last_wake = 0.0
@@ -70,6 +76,17 @@ class Pipeline:
         self.events.append({"ts": time.strftime("%H:%M:%S"), "seq": self.seq,
                             "msg": msg})
         del self.events[:-60]
+        if self.on_event:
+            # Live-Log pushen, ohne auf den naechsten Heartbeat-Takt zu warten
+            try:
+                self.on_event()
+            except Exception:
+                pass
+
+    def set_phase(self, msg):
+        """Aktuelle Taetigkeit merken und sofort ins Live-Log melden."""
+        self.phase = msg
+        self.ev(msg)
 
     def _fail(self, msg):
         self.stats["errors"] += 1
@@ -228,6 +245,7 @@ class Pipeline:
         self.state = "recording"
         self.stats["wakes"] += 1
         self._play_tone("wake")     # hohes Signal: Codewort erkannt, Aufnahme an
+        self.set_phase("Aufnahme läuft …")   # Live-Log: Aufnahme ist offen, Sprache endet per VAD
         try:
             pcm = self.rec.capture()
             if self._respond(pcm) is True:
@@ -268,6 +286,7 @@ class Pipeline:
         self._acquire_device()      # Ton "end" erklingt ueber die Pause
         self._play_tone("end")   # tiefes Signal: Sprachende, wird verarbeitet
         self._release_device()   # STT+LLM: Musik läuft leise weiter
+        self.set_phase("STT: Aufnahme → Text …")   # Live-Log zeigt den Lauf, nicht erst sein Ergebnis
         text = stt.transcribe(audio.to_wav(pcm))
         if not text:
             self._acquire_device()
@@ -289,6 +308,7 @@ class Pipeline:
         self.state = "processing"
         display.show_text("Frage", text)
         display.show_thinking()
+        self.set_phase(f"Router: verarbeite »{text[:48]}« …")   # läuft jetzt, Ergebnis folgt
         t0 = time.time()
         answer, kind, llm_ok = router.handle(text)
         display.end_thinking()
@@ -337,7 +357,7 @@ class Pipeline:
         self.ev(f"Follow-up: nach {rounds} Runden beendet")
         self._play_tone("end")          # tiefes Signal: Follow-up-Pause zu Ende
 
-    def speak(self, answer):
+    def speak(self, answer, wait=True):
         """TTS-Antwort im Normalpegel: erst Geraet freibekommen (Duck-
         Musik leise stehen lassen), dann die gemerkte Pre-Duck-Laut-
         staere zuruecksetzen, damit die Antwort laut ueber die Pause
@@ -360,6 +380,8 @@ class Pipeline:
             self._release_device()
             return
         self.state = "speaking"
+        self.speaking = True
+        self.set_phase("Sprachausgabe …")   # Live-Log: Antwort wird gerade gehoert
         duck.restore_for_tts()       # TTS im Normalpegel (Pre-Duck)
 
         def _play_and_cleanup():
@@ -373,6 +395,8 @@ class Pipeline:
                 self.mic.drain()
                 self.vad.reset()         # Geräuschuntergrenze neu lernen
                 self.state = "wake"
+                self.speaking = False
+                self.phase = "bereit"
                 duck.duck_again()        # zurück auf Duck-Level
                 self._release_device()   # Gerät frei, Musik leise weiter
 
@@ -382,7 +406,59 @@ class Pipeline:
         # Auf Wiedergabe-Ende warten (Safety-Timeout verhindert Blockade
         # bei aplay-Hang: max. 30 s, danach kehrt Main-Loop zurück – der
         # Thread läuft weiter und macht Cleanup).
-        play_thread.join(timeout=30)
+        # wait=False (Broadcast/API): nicht auf das Wiedergabe-Ende warten --
+        # der Master wuerde sonst pro Satellit deren Timeout abwarten.
+        play_thread.join(timeout=30 if wait else 0)
+
+    def broadcast(self, text, vol=None, wait=False):
+        """Durchsage von ausserhalb (openHAB, Master-API): Text ohne
+        Wake-Word und ohne LLM direkt auf den Lautsprecher.
+
+        vol:  0-100 = Lautstaerke NUR fuer diese Durchsage (danach zurueck);
+              None = die eingestellte Lautstaerke behalten.
+        wait: True = bis zum Ende der Wiedergabe blockieren.
+
+        Wie beim Web-TTS: Wake-Loop waehrend der Ausgabe taub, Player-Hold
+        (Musik pausiert statt ins bereits belegte Geraet zu schreiben),
+        Mic-Stream hinterher geleert -> kein Echo in der naechsten Runde.
+        """
+        text = (text or "").strip()
+        if not text:
+            return False
+        prev = None
+        if vol is not None:
+            try:
+                prev = volume.get()
+                volume.set_volume(int(vol))
+            except (TypeError, ValueError):
+                log.warning("broadcast: ungueltige Lautstaerke %r", vol)
+                prev = None
+        self.web_audio_busy = True
+        self.set_phase(f"Durchsage: »{text[:60]}«")
+        playback.player.pause()
+        ok = False
+        try:
+            wav = tts.synthesize(text)     # TTS laeuft wie alles ueber Master
+            if wav:
+                audio.play_wav(wav)
+                ok = True
+            else:
+                self._fail("TTS leer (Master erreichbar?)")
+        except Exception as e:
+            log.error("Broadcast-Fehler: %s", e)
+            self._fail(f"Broadcast-Fehler: {e}")
+        finally:
+            playback.player.resume()
+            self.drain_mic()
+            self.web_audio_busy = False
+            self.speaking = False
+            self.phase = "bereit"
+            if prev is not None:
+                try:
+                    volume.set_volume(prev[0], muted=prev[1])
+                except Exception:
+                    pass
+        return ok
 
     # ── Hauptloop ─────────────────────────────────────────────
     def run(self):
@@ -479,6 +555,7 @@ def main():
     # Heartbeat: Status-Push an Master (wenn MASTER_URL gesetzt)
     if config.MASTER_URL:
         from . import heartbeat as _hb
+        p.on_event = _hb.notify_events   # jeder Live-Log-Eintrag weckt den Heartbeat
         _hb.start_heartbeat_thread(p)
     router.warm_async()             # LLM-Modell im Hintergrund vorwärmen
     # Medien-Index (2.0alpha): Der Master-Container (dev) ist die einzige
