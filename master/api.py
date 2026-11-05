@@ -373,8 +373,8 @@ async def _chat_send(req: Request) -> JSONResponse:
                 answer = (((data.get("choices") or [{}])[0]
                            .get("message") or {}).get("content") or "").strip()
         except Exception as e:
-            log.warning("Chat-LLM: %s", e)
-            answer = f"LLM-Fehler: {e}"
+            log.warning("Chat-LLM: %s: %s", type(e).__name__, e)
+            answer = f"LLM-Fehler ({type(e).__name__})"
     if not answer:
         answer = "(leere Antwort)"
     rec = None

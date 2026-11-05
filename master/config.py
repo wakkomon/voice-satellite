@@ -40,6 +40,8 @@ SATELLITE_HEARTBEAT_SEC = _env_int("SATELLITE_HEARTBEAT_SEC", "60")
 SATELLITE_MAX_MISSED = _env_int("SATELLITE_MAX_MISSED", "5")
 
 # ── Backend-URLs (nur Master-intern, nie an Satelliten senden) ──
-TTS_BACKEND_URL     = _env("TTS_BACKEND_URL", "http://192.168.1.31:7811/v1/audio/speech")
-STT_BACKEND_URL     = _env("STT_BACKEND_URL", "http://192.168.1.31:9000/v1/audio/transcriptions")
-LLM_BACKEND_URL     = _env("LLM_BACKEND_URL", "http://192.168.1.33:8642/v1/chat/completions")
+# Fallback auf die allgemeinen URLs (LLM_URL/TTS_URL/STT_URL), damit ein
+# veralteter Default nicht stumm in einen Connect-Timeout laeuft.
+TTS_BACKEND_URL     = _env("TTS_BACKEND_URL", "") or _env("TTS_URL", "http://192.168.1.31:7811/v1/audio/speech")
+STT_BACKEND_URL     = _env("STT_BACKEND_URL", "") or _env("STT_URL", "http://192.168.1.31:9000/v1/audio/transcriptions")
+LLM_BACKEND_URL     = _env("LLM_BACKEND_URL", "") or _env("LLM_URL", "http://192.168.1.33:8642/v1/chat/completions")
