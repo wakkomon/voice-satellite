@@ -17,6 +17,7 @@ unbefugte Fremdnutzung des Proxys, wenn AUTH_TOKEN gesetzt ist.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 from urllib.parse import urlparse
@@ -25,6 +26,7 @@ import httpx
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 
+from . import chatstore
 from . import config as master_cfg
 from .satconfig import store as config_store
 
@@ -143,6 +145,15 @@ async def proxy_tts(req: Request) -> Response:
     if not url:
         return JSONResponse({"error": "TTS_URL nicht konfiguriert"}, status_code=502)
     body = await req.body()
+    # Chat-UI: TTS-Ausgabe als Aufnahme merken (Key = Hash des eingelesenen
+    # Texts; identischer Text -> dieselbe Aufnahme, keine Duplikate).
+    rec_key = None
+    try:
+        _t = (json.loads(body) or {}).get("input") or ""
+        if _t:
+            rec_key = chatstore.key_for(_t)
+    except (ValueError, AttributeError):
+        pass
     client = httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=300.0, write=10.0, pool=10.0))
     try:
         resp = await client.send(
@@ -161,6 +172,12 @@ async def proxy_tts(req: Request) -> Response:
             async for chunk in resp.aiter_bytes(8192):
                 buf += chunk
                 yield chunk
+            # Stream komplett -> komplette WAV als Chat-Aufnahme sichern
+            if rec_key and len(buf) > 400:
+                try:
+                    chatstore.save_recording(rec_key, buf)
+                except Exception as e:
+                    log.warning("Chat-Aufnahme: %s", e)
         except httpx.StreamError as e:
             log.warning("TTS-streamer: %s, sende %d Bytes bisher: %s", e, len(buf), e)
             if buf:

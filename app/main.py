@@ -21,7 +21,7 @@ import sys
 import threading
 import time
 
-from . import audio, config, display, duck, memory, playback, router, stt, tones, tts, wake, web
+from . import audio, chatlog, config, display, duck, memory, playback, router, stt, tones, tts, wake, web
 
 log = logging.getLogger("satellite")
 
@@ -45,6 +45,7 @@ class Pipeline:
         self.wake = wake.WakeWord(config.WAKE_PPN, config.WAKE_SENS)
         self.frame_bytes = self.wake.frame_length * 2
         playback.player.set_on_event(self._on_music_event)
+        playback.player.set_on_play(self._on_play_music)
         self.mic = audio.MicStream(self.frame_bytes)
         self.vad = audio.make_vad()
         self.rec = audio.Recorder(self.mic, self.vad, self.frame_bytes)
@@ -200,6 +201,10 @@ class Pipeline:
             display.reset_music_info()
             display.show_text("Musik", "Gestoppt")
 
+    def _on_play_music(self, title: str, item: str) -> None:
+        """Stueck laeuft -> Chat-Eintrag (WebUI: Musik mit Wiedergabe)."""
+        chatlog.emit("musik", title, item)
+
     # ── Zyklus nach dem Codewort ──────────────────────────────
     def conversation(self):
         """Ein kompletter Frage-Antwort-Zyklus inkl. optionaler
@@ -271,6 +276,7 @@ class Pipeline:
             return False
         log.info("STT erkannt: %s", text)
         self.ev(f"STT: {text}")
+        chatlog.emit("user", text)
         if _is_ack(text):
             # "Danke" & aehnliches: Abschlusston, Session zu – nicht
             # weiter zuhoeren, direkt auf Wake-Word warten.

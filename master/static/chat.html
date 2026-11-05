@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voice-Satellite · Chat</title>
+<style>
+:root { --bg:#12141a; --card:#1c1f28; --fg:#e8eaf0; --dim:#8b90a0; --acc:#4fa3ff; --ok:#3ecf8e; --warn:#f0a03c; --err:#f0605a; }
+* { box-sizing:border-box; }
+html,body { height:100%; }
+body { margin:0; font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; background:var(--bg); color:var(--fg); display:flex; flex-direction:column; }
+header { padding:14px 20px 10px; border-bottom:1px solid #2a2e3a; }
+h1 { font-size:1.15rem; font-weight:600; margin:0; display:flex; align-items:center; gap:10px; }
+h1 a { color:var(--dim); font-size:0.85rem; font-weight:400; text-decoration:none; }
+h1 .v { color:var(--dim); font-size:0.8rem; font-weight:400; margin-left:auto; }
+.controls { display:flex; gap:8px; align-items:center; padding:10px 20px; border-bottom:1px solid #2a2e3a; flex-wrap:wrap; }
+.controls select, .controls input[type=checkbox] { background:#0d0f14; border:1px solid #2a2e3a; color:var(--fg); padding:5px 8px; border-radius:6px; font-size:0.85rem; }
+.controls label { color:var(--dim); font-size:0.82rem; display:flex; align-items:center; gap:6px; }
+.chat { flex:1; overflow-y:auto; padding:16px 20px; display:flex; flex-direction:column; gap:10px; }
+.msg { max-width:78%; padding:8px 12px; border-radius:12px; font-size:0.92rem; line-height:1.35; background:var(--card); position:relative; }
+.msg .who { display:block; font-size:0.7rem; color:var(--dim); margin-bottom:3px; }
+.msg .time { font-size:0.68rem; color:var(--dim); margin-top:4px; text-align:right; }
+.msg.user { align-self:flex-end; background:#1d3a5c; border-bottom-right-radius:4px; }
+.msg.assistant { align-self:flex-start; border-bottom-left-radius:4px; }
+.msg.musik { align-self:flex-start; border-left:3px solid var(--ok); border-bottom-left-radius:4px; }
+.msg.system { align-self:center; background:transparent; color:var(--dim); font-size:0.78rem; }
+.msg .play { margin-top:6px; display:flex; gap:6px; align-items:center; }
+.msg .play button { background:var(--acc); color:#fff; border:none; border-radius:6px; padding:4px 12px; font-size:0.75rem; cursor:pointer; }
+.msg .play button.stop { background:var(--err); }
+.msg .play span { font-size:0.75rem; color:var(--dim); }
+.inputbar { display:flex; gap:8px; padding:12px 20px; border-top:1px solid #2a2e3a; }
+.inputbar input { flex:1; background:#0d0f14; border:1px solid #2a2e3a; color:var(--fg); padding:10px 14px; border-radius:8px; font-size:0.95rem; }
+.inputbar input:focus { outline:none; border-color:var(--acc); }
+.inputbar button { background:var(--acc); color:#fff; border:none; border-radius:8px; padding:8px 20px; font-size:0.9rem; cursor:pointer; }
+.inputbar button:disabled { opacity:0.4; cursor:default; }
+.empty { color:var(--dim); text-align:center; margin-top:40px; font-size:0.9rem; }
+</style>
+</head>
+<body>
+<header>
+  <h1>💬 Chat <a href="/">← Master</a><span class="v" id="status">verbinde …</span></h1>
+</header>
+<div class="controls">
+  <select id="sat-select" onchange="switchSat()"><option value="">Alle Satelliten</option></select>
+  <label><input type="checkbox" id="speak-toggle" checked> Antwort abspielen</label>
+  <label style="margin-left:auto"><span id="rec-info" class="num" style="color:var(--dim);font-size:0.78rem"></span></label>
+</div>
+<div class="chat" id="chat"></div>
+<div class="inputbar">
+  <input id="chat-input" placeholder="Nachricht an den Assistenten …" autocomplete="off">
+  <button id="btn-send" onclick="sendMsg()">Senden</button>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let mac = localStorage.getItem("chat_mac") || "";
+let lastTs = 0;
+const audio = new Audio();
+let audioBusy = null;
+
+// ── Aufnahme-Wiedergabe: Key = SHA-1(UTF-8 Text), erste 16 hex ──
+async function recKey(text) {
+  const buf = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("").slice(0, 16);
+}
+function stopAudio() {
+  audio.pause(); audio.src = "";
+  if (audioBusy) { audioBusy.classList.remove("stop"); audioBusy.textContent = "▶ Abspielen"; audioBusy = null; }
+}
+async function playRec(text, btn) {
+  if (audioBusy === btn) { stopAudio(); return; }
+  stopAudio();
+  const key = await recKey(text);
+  audio.src = "/api/chat/rec/" + key;
+  audio.onended = stopAudio;
+  audio.onerror = stopAudio;
+  btn.classList.add("stop"); btn.textContent = "⏹ Stoppen";
+  audioBusy = btn;
+  audio.play().catch(stopAudio);
+}
+function playUrl(url, btn) {
+  if (audioBusy === btn) { stopAudio(); return; }
+  stopAudio();
+  audio.src = url;
+  audio.onended = stopAudio;
+  btn.classList.add("stop"); btn.textContent = "⏹ Stoppen";
+  audioBusy = btn;
+  audio.play().catch(stopAudio);
+}
+function musicUrl(path) {
+  if (!path) return null;
+  if (/^https?:\/\//.test(path)) return path;
+  return "/proxy/music/" + path.replace(/^\/+/, "");
+}
+
+// ── Rendering ─────────────────────────────────────────────────
+function fmtTime(ts) {
+  const d = new Date(ts * 1000);
+  return d.toLocaleDateString("de-DE", {day:"2-digit", month:"2-digit"}) +
+         " " + d.toLocaleTimeString("de-DE", {hour:"2-digit", minute:"2-digit"});
+}
+function esc(s) { const d = document.createElement("div"); d.textContent = s || ""; return d.innerHTML; }
+
+function renderEntry(e) {
+  const div = document.createElement("div");
+  const kind = e.kind || "system";
+  div.className = "msg " + kind;
+  const who = e.mac ? ` — ${esc(e.mac)}` : "";
+  if (kind === "user") {
+    div.innerHTML = `<span class="who">Du${who}</span>${esc(e.text)}<div class="time">${fmtTime(e.ts)}</div>`;
+  } else if (kind === "assistant") {
+    div.innerHTML = `<span class="who">Assistent${who}</span>${esc(e.text)}<div class="play" id="p-${Math.round(e.ts*1000)}"><button>▶ Abspielen</button><span>Aufnahme</span></div><div class="time">${fmtTime(e.ts)}</div>`;
+    const btn = div.querySelector("button");
+    btn.onclick = () => playRec(e.text, btn);
+  } else if (kind === "musik") {
+    const url = musicUrl(e.path);
+    const playHtml = url ? `<div class="play"><button>▶ Wiedergabe</button><span class="num" style="font-size:0.75rem;color:var(--dim)"></span></div>` : "";
+    div.innerHTML = `<span class="who">Musik${who}</span>${esc(e.text)}${playHtml}<div class="time">${fmtTime(e.ts)}</div>`;
+    const btn = div.querySelector("button");
+    if (btn) btn.onclick = () => playUrl(url, btn);
+  } else {
+    div.innerHTML = `<span class="who">System${who}</span>${esc(e.text)}<div class="time">${fmtTime(e.ts)}</div>`;
+  }
+  return div;
+}
+
+async function loadEntries() {
+  const q = mac ? "?mac=" + encodeURIComponent(mac) + "&limit=200" : "?limit=200";
+  const r = await fetch("/api/chat/messages" + q);
+  if (!r.ok) { $("status").textContent = "Fehler " + r.status; return; }
+  const data = await r.json();
+  const chat = $("chat");
+  const newE = (data.entries || []).filter(e => e.ts > lastTs || lastTs === 0);
+  lastTs = Math.max(lastTs, ...((data.entries || []).map(e => e.ts) || [0]));
+  if (lastTs === 0) {
+    chat.innerHTML = "";
+    if (!data.entries.length) {
+      chat.innerHTML = '<div class="empty">Noch keine Einträge.<br>Sprech-Turne, Musik und Web-Nachrichten erscheinen hier.</div>';
+      return;
+    }
+    for (const e of data.entries) chat.prepend(renderEntry(e));
+    return;
+  }
+  if (newE.length) {
+    for (const e of newE) chat.appendChild(renderEntry(e));
+    chat.scrollTop = chat.scrollHeight;
+  }
+  $("status").textContent = "";
+}
+
+// ── Web-Chat senden ───────────────────────────────────────────
+async function sendMsg() {
+  const text = $("chat-input").value.trim();
+  if (!text) return;
+  $("chat-input").value = "";
+  $("btn-send").disabled = true;
+  $("status").textContent = "verarbeite …";
+  // optimistic user entry
+  const div = renderEntry({ kind:"user", text, ts: Date.now()/1000, mac: mac || "web" });
+  $("chat").appendChild(div);
+  try {
+    const r = await fetch("/api/chat/send", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ text, mac, speak: $("speak-toggle").checked })
+    });
+    const data = await r.json();
+    if (r.ok) {
+      const a = renderEntry({ kind:"assistant", text: data.answer, ts: data.ts || Date.now()/1000, mac: mac || "web" });
+      $("chat").appendChild(a);
+      const btn = a.querySelector(".play button");
+      if (btn && data.rec) btn.onclick = () => { stopAudio(); audio.src = "/api/chat/rec/" + data.rec; audio.onended = stopAudio; btn.classList.add("stop"); btn.textContent = "⏹ Stoppen"; audioBusy = btn; audio.play().catch(stopAudio); };
+      $("chat").scrollTop = $("chat").scrollHeight;
+    } else {
+      $("status").textContent = data.error || "Fehler " + r.status;
+    }
+  } catch (e) {
+    $("status").textContent = "Verbindung fehlgeschlagen";
+  }
+  $("btn-send").disabled = false;
+}
+
+// ── Satelliten-Liste ──────────────────────────────────────────
+async function loadSats() {
+  const r = await fetch("/api/satellites");
+  if (!r.ok) return;
+  const sats = await r.json();
+  const sel = $("sat-select");
+  for (const s of sats) {
+    const o = document.createElement("option");
+    o.value = s.mac;
+    o.textContent = s.custom_name || s.name || s.hostname || s.mac;
+    sel.appendChild(o);
+  }
+  if (mac) sel.value = mac;
+}
+function switchSat() {
+  mac = $("sat-select").value;
+  localStorage.setItem("chat_mac", mac);
+  lastTs = 0;
+  $("chat").innerHTML = "";
+  loadEntries();
+}
+
+$("chat-input").addEventListener("keydown", e => { if (e.key === "Enter") sendMsg(); });
+loadSats();
+loadEntries();
+setInterval(() => { if (!$("btn-send").disabled) loadEntries(); }, 10000);
+// Aufnahme-Liste (Karte rechts, Info-Zeile)
+(async () => {
+  try {
+    const r = await fetch("/api/chat/recs");
+    const d = await r.json();
+    $("rec-info").textContent = (d.recs || []).length + " TTS-Aufnahmen";
+  } catch {}
+})();
+</script>
+</body>
+</html>

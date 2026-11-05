@@ -25,7 +25,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from . import config, http
+from . import chatlog, config, http
 
 log = logging.getLogger(__name__)
 
@@ -229,6 +229,10 @@ def _do_heartbeat(pipeline) -> None:
                 # erster Event-Bericht seit (Neu-)Start des Satelliten: der
                 # Master setzt seine seq-Zaehlung fuer uns zurueck
                 payload["events_reset"] = True
+        chat_pending = chatlog.pending()
+        if chat_pending:
+            # ausstehende Chat-Eintraege (Push war ausgefallen) nachliefern
+            payload["chat"] = chat_pending
         url = f"{config.MASTER_URL.rstrip('/')}/api/satellite/{payload['mac']}/heartbeat"
         data = json.dumps(payload).encode("utf-8")
         headers = {"Content-Type": "application/json"}
@@ -241,6 +245,14 @@ def _do_heartbeat(pipeline) -> None:
             if resp.status == 200:
                 if evs:
                     _last_event_seq = max(e.get("seq", 0) for e in evs)
+                if chat_pending:
+                    # Master bestaetigt die uebergebenen Chat-Eintraege
+                    try:
+                        chat_ack = json.loads(resp.read() or b"{}").get("chat_ack")
+                        if chat_ack:
+                            chatlog.ack(int(chat_ack))
+                    except Exception:
+                        pass
                 log.debug("Heartbeat OK (%s, %d Events)",
                           payload.get("hostname", "?"), len(evs))
             else:

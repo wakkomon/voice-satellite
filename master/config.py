@@ -24,6 +24,14 @@ LOG_LEVEL       = _env("LOG_LEVEL", "INFO")
 MUSIC_ROOT      = _env("MUSIC_ROOT", "/m")  # Container-mountpunkt (wie /m auf Satelliten)
 CACHE_DIR       = _env("CACHE_DIR", "/data/vs-index")  # Index-Cache (persistiertes JSON)
 
+# ── Chat-WebUI ────────────────────────────────────────────────
+# Chat-Eintraege (Satelliten-Turne + Web-Chat) + TTS-Aufnahmen
+CHAT_DIR        = _env("CHAT_DIR", os.path.join(CACHE_DIR, "chat"))
+# LLM/TTS fuer die Web-Chat-Frage-Antwort (eigene Werte, Satellite unangetastet)
+CHAT_MODEL      = _env("CHAT_MODEL", "")          # leer -> LLM_MODEL-Default unten
+CHAT_TTS_MODEL  = _env("CHAT_TTS_MODEL", "")      # leer -> TTS_MODEL-Default unten
+CHAT_TTS_VOICE  = _env("CHAT_TTS_VOICE", "")      # leer -> TTS_VOICE-Default unten
+
 # ── Raspi-Manager ─────────────────────────────────────────────
 # (Auto-Discovery entfernt – Satelliten melden sich aktiv per Heartbeat an)
 # Heartbeat-Intervall (s)

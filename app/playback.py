@@ -55,6 +55,7 @@ class MusicPlayer:
         self._title = None
         self._source = None              # file | playlist | radio
         self._on_event = None
+        self._on_play = None
         # Job-Persistenz fuer pause/resume:
         self._job = None                 # (items, source, title)
         self._idx = 0
@@ -106,6 +107,11 @@ class MusicPlayer:
     def set_on_event(self, cb):
         """Pipeline ev() als Callback – Events erscheinen im Webui-Feed."""
         self._on_event = cb
+
+    def set_on_play(self, cb):
+        """Callback (title, item) wenn ein Stueck wirklich laeuft
+        (Chat-UI: Musik-Eintrag mit Wiedergabe-Button)."""
+        self._on_play = cb
 
     def _ev(self, msg):
         log.info("Musik: %s", msg)
@@ -761,6 +767,12 @@ class MusicPlayer:
                 return
             self._ev(("Radio: " + (self._title or "")) if source == "radio"
                      else f"Laueft: {self._title}")
+            if self._on_play:
+                # Chat-UI: Eintrag mit Titel + Quelle (Wiedergabe-Button)
+                try:
+                    self._on_play(self._title or "", item)
+                except Exception:
+                    pass
             self._item_t0 = time.monotonic()
             rc = procs[-1].wait()
             self._kill_procs(procs)     # nur EIGENEN Baum (mpg123/curl)

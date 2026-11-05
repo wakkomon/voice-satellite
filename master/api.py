@@ -18,15 +18,19 @@ import io
 import json
 import logging
 import os
+import re
 import threading
 import time
 
 from starlette.applications import Starlette
 from starlette.background import BackgroundTask
 from starlette.requests import Request
-from starlette.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
+from starlette.responses import (FileResponse, JSONResponse,
+                                 PlainTextResponse, Response,
+                                 StreamingResponse)
 from starlette.routing import Route
 
+from . import chatstore
 from . import config as master_cfg
 from . import __version__ as MASTER_VERSION
 from . import proxy
@@ -253,12 +257,163 @@ async def _sat_heartbeat(req: Request) -> JSONResponse:
     # dem Heartbeat, damit sein Satellitenname schon bekannt ist.
     events = payload.pop("events", None)
     events_reset = bool(payload.pop("events_reset", False))
+    # Chat-Eintraege (Sprech-Turne + Musik) des Satelliten – Chat-WebUI
+    chat = payload.pop("chat", None)
+    chat_stored = 0
+    if isinstance(chat, list):
+        try:
+            chat_stored = chatstore.add_sats_chat(mac, chat)
+        except Exception as e:
+            log.warning("Chat-Eintraege (%s): %s", mac, e)
     manager.record_heartbeat(mac, payload)
     n = 0
     if isinstance(events, list):
         n = manager.record_events(mac, events, events_reset,
                                   ip=str(payload.get("ip") or ""))
-    return JSONResponse({"ok": True, "events_stored": n})
+    return JSONResponse({"ok": True, "events_stored": n,
+                         "chat_stored": chat_stored})
+
+
+# ── Chat-WebUI ────────────────────────────────────────────────
+# Chatfenster im WebUI: Eintraege der Satelliten (Sprech-Turne + Musik,
+# gepusht per Push/Heartbeat), TTS-Aufnahmen (Master zeichnet ueber den
+# TTS-Proxy mit) und ein Web-Chat mit eigener LLM/TTS-Frage-Antwort.
+
+def _chat_ui_file(name: str) -> Response:
+    path = os.path.join(_STATIC_DIR, name)
+    with open(path, "rb") as f:
+        return Response(f.read(), media_type="text/html; charset=utf-8",
+                        headers={"Cache-Control": "no-cache"})
+
+
+async def _chat_ui(req: Request) -> Response:
+    """Web-Chat (chat.html) – eigenes Tab in der Master-WebUI."""
+    return _chat_ui_file("chat.html")
+
+
+async def _chat_push(req: Request) -> JSONResponse:
+    """POST /api/satellite/{mac}/chat – Satellite pusht Chat-Eintraege.
+    Body: {entries: [{eid, ts, role, text, path}]}. Antwort: {chat_ack}."""
+    mac = req.path_params["mac"].lower()
+    if not _sat_auth_ok(req, mac):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        payload = await req.json()
+    except (json.JSONDecodeError, ValueError):
+        payload = {}
+    entries = payload.get("entries") if isinstance(payload, dict) else None
+    try:
+        ack = chatstore.add_sats_chat(mac, entries if isinstance(entries, list) else [])
+    except Exception as e:
+        log.warning("Chat-Push (%s): %s", mac, e)
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+    return JSONResponse({"ok": True, "chat_ack": ack})
+
+
+async def _chat_messages(req: Request) -> JSONResponse:
+    """GET /api/chat/messages?mac=&limit= → Eintraege, neueste zuerst."""
+    mac = (req.query_params.get("mac") or "").strip() or None
+    try:
+        limit = int(req.query_params.get("limit", "200"))
+    except ValueError:
+        limit = 200
+    entries = chatstore.chat_entries(mac, min(max(limit, 1), 500))
+    return JSONResponse({"entries": entries})
+
+
+async def _chat_recs(req: Request) -> JSONResponse:
+    """GET /api/chat/recs → alle TTS-Aufnahmen (key, size, mtime)."""
+    return JSONResponse({"recs": chatstore.list_recordings()})
+
+
+async def _chat_rec(req: Request) -> Response:
+    """GET /api/chat/rec/{key}.wav → eine TTS-Aufnahme (Abitur-Playback)."""
+    key = req.path_params["key"]
+    if not re.fullmatch(r"[a-f0-9]{12,32}", key):
+        return PlainTextResponse("ungueltiger key", status_code=400)
+    fn = os.path.join(chatstore.RECS_DIR, key + ".wav")
+    if not os.path.isfile(fn):
+        return PlainTextResponse("nicht gefunden", status_code=404)
+    return FileResponse(fn, media_type="audio/wav")
+
+
+async def _chat_send(req: Request) -> JSONResponse:
+    """POST /api/chat/send {text, mac, speak} → LLM-Antwort (+TTS-Aufnahme).
+
+    mac (optional): Konfig des gewaehlten Satelliten verwenden (LLM/TTS-
+    Modelle), sonst globale. TTS-Antwort wird aufgezeichnet und mit
+    'rec' zurueckgegeben – die Chat-UI spielt sie ab.
+    """
+    try:
+        body = await req.json()
+    except (json.JSONDecodeError, ValueError):
+        return JSONResponse({"error": "ungueltiges JSON"}, status_code=400)
+    text = (body.get("text") or "").strip()
+    mac = (body.get("mac") or "").lower().strip()
+    speak = bool(body.get("speak", True))
+    if not text:
+        return JSONResponse({"error": "leere Nachricht"}, status_code=400)
+    chatstore.add_chat(mac or "web", "user", text, who="web")
+
+    cfg = config_store.get_effective(mac or None)
+    import httpx
+    url = master_cfg.LLM_BACKEND_URL
+    tok = proxy._upstream_token("LLM_TOKEN", proxy.ENV_LLM_TOKEN)
+    if not url:
+        answer, rec = "LLM ist nicht konfiguriert.", None
+    else:
+        payload = {"model": cfg.get("LLM_MODEL") or "",
+                   "messages": [{"role": "user", "content": text}],
+                   "stream": False}
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                r = await client.post(url, json=payload,
+                                      headers=proxy._headers(tok, req))
+                data = r.json()
+                answer = (((data.get("choices") or [{}])[0]
+                           .get("message") or {}).get("content") or "").strip()
+        except Exception as e:
+            log.warning("Chat-LLM: %s", e)
+            answer = f"LLM-Fehler: {e}"
+    if not answer:
+        answer = "(leere Antwort)"
+    rec = None
+    if speak and answer and not answer.startswith("LLM"):
+        rec = chatstore.key_for(answer)
+        try:
+            twav = await _synth_tts(cfg, answer)
+            if twav:
+                chatstore.save_recording(rec, twav)
+            else:
+                rec = None
+        except Exception as e:
+            log.warning("Chat-TTS: %s", e)
+            rec = None
+    entry = chatstore.add_chat(mac or "web", "assistant", answer,
+                               rec=rec)
+    return JSONResponse({"answer": answer, "rec": rec, "ts": entry["ts"]})
+
+
+async def _synth_tts(cfg: dict, text: str) -> bytes | None:
+    """Antwort ueber den TTS-Backend sprachlich erzeugen (Voll-WAV)."""
+    import httpx
+    url = master_cfg.TTS_BACKEND_URL
+    if not url:
+        return None
+    tok = proxy._upstream_token("TTS_TOKEN", proxy.ENV_TTS_TOKEN)
+    model = cfg.get("TTS_MODEL") or ""
+    voice = cfg.get("TTS_VOICE") or ""
+    payload = {"model": model, "voice": voice, "input": text,
+               "response_format": "wav"}
+    headers = {"Content-Type": "application/json"}
+    if tok:
+        headers["Authorization"] = f"Bearer {tok}"
+    async with httpx.AsyncClient(timeout=300.0) as client:
+        r = await client.post(url, json=payload, headers=headers)
+        if r.status_code != 200 or not r.content:
+            log.warning("Chat-TTS: HTTP %d", r.status_code)
+            return None
+        return r.content
 
 
 # ── Zentrale Konfigurationsverwaltung (b) ──────────────────────
@@ -538,6 +693,13 @@ routes = [
     Route("/api/satellite/{mac}/pause", _sat_pause, methods=["POST"]),
     Route("/api/satellite/{mac}/unpause", _sat_unpause, methods=["POST"]),
     Route("/api/satellite/{mac}/heartbeat", _sat_heartbeat, methods=["POST"]),
+    # Chat-WebUI
+    Route("/chat.html", _chat_ui),
+    Route("/api/satellite/{mac}/chat", _chat_push),
+    Route("/api/chat/messages", _chat_messages),
+    Route("/api/chat/recs", _chat_recs),
+    Route("/api/chat/rec/{key}", _chat_rec),
+    Route("/api/chat/send", _chat_send, methods=["POST"]),
     Route("/api/satellites", _satellite_list),
     Route("/api/satellites/status", _satellites_status),
     # (b) Zentrale Konfigurationsverwaltung
