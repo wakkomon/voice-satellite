@@ -145,8 +145,10 @@ async function loadEntries() {
       chat.innerHTML = '<div class="empty">Noch keine Einträge.<br>Sprech-Turne, Musik und Web-Nachrichten erscheinen hier.</div>';
       return;
     }
-    for (const e of data.entries)
-      if (!seen.has(ekey(e))) { seen.add(ekey(e)); chat.prepend(renderEntry(e)); }
+    // API liefert neueste zuerst — fuer Chat-Ansicht (neueste unten) umdrehen
+    for (const e of [...data.entries].reverse())
+      if (!seen.has(ekey(e))) { seen.add(ekey(e)); chat.appendChild(renderEntry(e)); }
+    chat.scrollTop = chat.scrollHeight;
     return;
   }
   if (newE.length) {
