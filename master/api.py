@@ -695,7 +695,7 @@ routes = [
     Route("/api/satellite/{mac}/heartbeat", _sat_heartbeat, methods=["POST"]),
     # Chat-WebUI
     Route("/chat.html", _chat_ui),
-    Route("/api/satellite/{mac}/chat", _chat_push),
+    Route("/api/satellite/{mac}/chat", _chat_push, methods=["POST"]),
     Route("/api/chat/messages", _chat_messages),
     Route("/api/chat/recs", _chat_recs),
     Route("/api/chat/rec/{key}", _chat_rec),
