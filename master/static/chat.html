@@ -136,21 +136,24 @@ async function loadEntries() {
   const data = await r.json();
   $("status").textContent = "";
   const chat = $("chat");
-  const newE = (data.entries || []).filter(e => e.ts > lastTs || lastTs === 0);
-  lastTs = Math.max(lastTs, ...((data.entries || []).map(e => e.ts) || [0]));
-  if (lastTs === 0) {
+  const entries = data.entries || [];
+  const prevTs = lastTs;
+  lastTs = Math.max(lastTs, ...(entries.map(e => e.ts) || [0]));
+  if (prevTs === 0) {
     chat.innerHTML = "";
     seen.clear();
-    if (!data.entries.length) {
+    if (!entries.length) {
       chat.innerHTML = '<div class="empty">Noch keine Einträge.<br>Sprech-Turne, Musik und Web-Nachrichten erscheinen hier.</div>';
       return;
     }
     // API liefert neueste zuerst — fuer Chat-Ansicht (neueste unten) umdrehen
-    for (const e of [...data.entries].reverse())
+    for (const e of [...entries].reverse())
       if (!seen.has(ekey(e))) { seen.add(ekey(e)); chat.appendChild(renderEntry(e)); }
     chat.scrollTop = chat.scrollHeight;
     return;
   }
+  // Inkrementell: nur neue Eintraege, chronologisch aufsteigend, ans Ende haengen
+  const newE = entries.filter(e => e.ts > prevTs).sort((a, b) => a.ts - b.ts);
   if (newE.length) {
     for (const e of newE)
       if (!seen.has(ekey(e))) { seen.add(ekey(e)); chat.appendChild(renderEntry(e)); }
