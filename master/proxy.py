@@ -291,9 +291,11 @@ async def proxy_music(req: Request) -> Response:
     Unterstützt Range-Requests für flüssiges Streaming.
 
     Pfad ist relativ zu MUSIC_ROOT, z.B. /proxy/music/Radio/FluxFM.mp3.
+
+    Kein Token: die Route akzeptiert nur GET/HEAD (reines Streaming aus dem
+    oeffentlichen /api/music-Index) und ist unten gegen Traversal gesichert —
+    damit der Play-Button im WebUI ohne Token funktioniert.
     """
-    if e := _auth_error(req):
-        return e
     try:
         rel_path = "/".join(urlparse(req.url.path).path.split("/proxy/music/", 1))
         rel_path = rel_path.strip("/")
