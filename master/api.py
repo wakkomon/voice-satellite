@@ -366,7 +366,7 @@ async def _chat_send(req: Request) -> JSONResponse:
                    "messages": [{"role": "user", "content": text}],
                    "stream": False}
         try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
+            async with httpx.AsyncClient(timeout=300.0) as client:
                 r = await client.post(url, json=payload,
                                       headers=proxy._headers(tok, req))
                 data = r.json()
