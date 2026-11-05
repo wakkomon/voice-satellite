@@ -129,6 +129,7 @@ async function loadEntries() {
   const r = await fetch("/api/chat/messages" + q);
   if (!r.ok) { $("status").textContent = "Fehler " + r.status; return; }
   const data = await r.json();
+  $("status").textContent = "";
   const chat = $("chat");
   const newE = (data.entries || []).filter(e => e.ts > lastTs || lastTs === 0);
   lastTs = Math.max(lastTs, ...((data.entries || []).map(e => e.ts) || [0]));
