@@ -3,9 +3,15 @@
 set -eu
 cd /home/hermes/voice-satellite
 
-# Version aus dem Repo (Einzige Quelle: master/__init__.py)
-VERSION=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' master/__init__.py | head -1)
-if [ -z "$VERSION" ]; then echo "FEHLER: __version__ in master/__init__.py nicht gefunden" >&2; exit 1; fi
+# Version: Build-Artefakt master/_version.py (gen_version.py, vor dem Build
+# im Checkout laufen lassen), Fallback master/__init__.py (dort ist der
+# Fallback-Wert EINGEZENTERT — daher indent-tolerantes sed)
+VERSION=""
+[ -f master/_version.py ] && \
+  VERSION=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' master/_version.py | head -1)
+[ -z "$VERSION" ] && \
+  VERSION=$(sed -n 's/^[[:space:]]*__version__ = "\(.*\)"/\1/p' master/__init__.py | head -1)
+if [ -z "$VERSION" ]; then echo "FEHLER: __version__ nicht gefunden (_version.py / __init__.py)" >&2; exit 1; fi
 echo "Deploy Version: $VERSION"
 
 # Altes Image als Rollback-Marke sichern, bevor der Tag ueberschrieben wird.

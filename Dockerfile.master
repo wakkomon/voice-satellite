@@ -17,6 +17,10 @@ WORKDIR /app
 COPY --from=builder /usr/local/lib/python3.11/site-packages/ \
     /usr/local/lib/python3.11/site-packages/
 COPY master/ ./master/
+# Build-Artefakt von scripts/gen_version.py: VOR dem Build im Checkout
+# ausführen, dann landet master/_version.py im Image. Wildcard = no-op,
+# wenn die Datei fehlt (Fallback __version__ in __init__.py greift).
+COPY master/_version.py* ./master/
 
 # Datenverzeichnis (SQLite-Gedächtnis) – Volume in der compose-Datei
 RUN mkdir -p /data
