@@ -124,6 +124,11 @@ function renderEntry(e) {
   return div;
 }
 
+// Dedup: gleiche (kind,mac,text)-Eintraege nicht doppelt rendern
+// (optimistischer Sende-Eintrag vs. Polling-Antwort mit Server-ts)
+const seen = new Set();
+const ekey = e => (e.kind || "system") + "|" + (e.mac || "") + "|" + (e.text || "");
+
 async function loadEntries() {
   const q = mac ? "?mac=" + encodeURIComponent(mac) + "&limit=200" : "?limit=200";
   const r = await fetch("/api/chat/messages" + q);
@@ -135,15 +140,18 @@ async function loadEntries() {
   lastTs = Math.max(lastTs, ...((data.entries || []).map(e => e.ts) || [0]));
   if (lastTs === 0) {
     chat.innerHTML = "";
+    seen.clear();
     if (!data.entries.length) {
       chat.innerHTML = '<div class="empty">Noch keine Einträge.<br>Sprech-Turne, Musik und Web-Nachrichten erscheinen hier.</div>';
       return;
     }
-    for (const e of data.entries) chat.prepend(renderEntry(e));
+    for (const e of data.entries)
+      if (!seen.has(ekey(e))) { seen.add(ekey(e)); chat.prepend(renderEntry(e)); }
     return;
   }
   if (newE.length) {
-    for (const e of newE) chat.appendChild(renderEntry(e));
+    for (const e of newE)
+      if (!seen.has(ekey(e))) { seen.add(ekey(e)); chat.appendChild(renderEntry(e)); }
     chat.scrollTop = chat.scrollHeight;
   }
   $("status").textContent = "";
@@ -157,7 +165,9 @@ async function sendMsg() {
   $("btn-send").disabled = true;
   $("status").textContent = "verarbeite …";
   // optimistic user entry
-  const div = renderEntry({ kind:"user", text, ts: Date.now()/1000, mac: mac || "web" });
+  const mine = { kind:"user", text, ts: Date.now()/1000, mac: mac || "web" };
+  const div = renderEntry(mine);
+  seen.add(ekey(mine));
   $("chat").appendChild(div);
   try {
     const r = await fetch("/api/chat/send", {
@@ -198,6 +208,7 @@ async function loadSats() {
 function switchSat() {
   mac = $("sat-select").value;
   localStorage.setItem("chat_mac", mac);
+  seen.clear();
   lastTs = 0;
   $("chat").innerHTML = "";
   loadEntries();
