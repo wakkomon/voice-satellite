@@ -47,14 +47,9 @@ services:
       - "com.voice-satellite.role=master"
       - "com.voice-satellite.version=2.0.0"
 
-    # ── Satelliten (aktive Anmeldung via Heartbeat) ──
-    environment:
-      # Bekannte Satelliten (ip[,mac];ip[,mac]) – erscheinen im Dashboard
-      # (gelb „unknown"), bis der erste Heartbeat eintrifft
-      SATELLITES: "192.168.1.32;192.168.1.26"
-      SSH_USER: "pi"
-      # Persistente zentrale Config (satellites.json) – überlebt Rebuilds
-      VS_CONFIG_DIR: "/data/config"
+    # SATELLITES / SSH_USER / VS_CONFIG_DIR kommen aus .env.master
+    # (keine Duplikate in environment – würden dort übergewichten und
+    #  z. B. die Satelliten-Liste überschreiben)
 
 volumes:
   index-data:
