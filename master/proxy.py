@@ -250,7 +250,7 @@ async def proxy_stt(req: Request) -> Response:
 
 
 async def proxy_llm(req: Request) -> Response:
-    """LLM-Proxy: OpenAI chat/completions rein, JSON-Antwort raus."""
+    """LLM-Proxy: OpenAI chat/completions. stream=true -> SSE durchreichen (App-Chat live), sonst JSON-Vollantwort."""
     if req.method in ("GET", "HEAD"):
         return JSONResponse({"ok": True, "endpoint": "llm"})
     if e := _auth_error(req):
@@ -260,7 +260,33 @@ async def proxy_llm(req: Request) -> Response:
     if not url:
         return JSONResponse({"error": "LLM_URL nicht konfiguriert"}, status_code=502)
     body = await req.body()
+    # stream=true -> SSE an den Client durchreichen (App-Chat zeigt die
+    # Antwort LIVE, waehrend sie waechst). stream=false/fehlend (Pi, sonst)
+    # bleibt der bewaehrte Vollantwort-Pfad unberuehrt.
     try:
+        want_stream = bool(json.loads(body).get("stream"))
+    except Exception:
+        want_stream = False
+    try:
+        if want_stream:
+            client = httpx.AsyncClient(timeout=httpx.Timeout(300.0))
+            try:
+                up_req = client.build_request(
+                    "POST", url, content=body,
+                    headers=_headers(token, req,
+                                     {"Content-Type": "application/json"}))
+                up_resp = await client.send(up_req, stream=True)
+            except Exception as e:
+                await client.aclose()
+                log.warning("LLM-Stream-Setup: %s", e)
+                return JSONResponse({"error": f"llm upstream: {e}"},
+                                     status_code=502)
+            return StreamingResponse(
+                _llm_stream(up_resp, client),
+                status_code=up_resp.status_code,
+                headers={"Content-Type": "text/event-stream",
+                         "Cache-Control": "no-cache",
+                         "X-Accel-Buffering": "no"})
         async with httpx.AsyncClient(timeout=httpx.Timeout(300.0)) as client:
             r = await client.post(
                 url, content=body,
@@ -272,6 +298,26 @@ async def proxy_llm(req: Request) -> Response:
     except httpx.HTTPError as e:
         log.warning("LLM-Proxy-Fehler: %s", e)
         return JSONResponse({"error": f"llm upstream: {e}"}, status_code=502)
+
+
+async def _llm_stream(up_resp, client):
+    """Upstream-SSE an den Client durchreichen; Upstream+Client sauber raeumen.
+
+    Der Async-Generator laeuft NACHDEM proxy_llm die Response zurueckgegeben
+    hat, deshalb halten wir client + up_resp hier offen und schliessen sie in
+    finally (nicht im aufrufenden try/except).
+    """
+    try:
+        async for line in up_resp.aiter_lines():
+            yield (line + "\n").encode()
+    except Exception as e:
+        log.warning("LLM-Stream unterbrochen: %s", e)
+    finally:
+        for closer in (up_resp.aclose, client.aclose):
+            try:
+                await closer()
+            except Exception:
+                pass
 
 async def proxy_openhab(req: Request) -> Response:
     """OpenHAB-Proxy: REST-API rein, JSON raus (GET/POST/PUT/DELETE).
