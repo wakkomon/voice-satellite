@@ -168,7 +168,14 @@ async function broadcastTo(satMac, text, btn) {
   } catch (e) {
     $("status").textContent = "Sende-Fehler";
   }
-  setTimeout(() => { if (btn && audioBusy === btn) resetBtn(btn); }, 3500);
+  // audioBusy wird in diesem Pfad nie gesetzt -> nicht daran festmachen;
+  // Button zuruecksetzen, solange er noch im Sende-Zustand ist.
+  setTimeout(() => {
+    if (btn && btn.textContent === "… Sende") {
+      btn.classList.remove("stop");
+      btn.textContent = "▶ Abspielen";
+    }
+  }, 3500);
 }
 // Eintrag abspielen – Zielgerät = aktueller "Abspielen auf"-Auswahlwert.
 function speakOut(entry, btn) {
