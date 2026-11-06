@@ -75,11 +75,10 @@ function nameOf(m) {
   return SATNAMES[m] || m;
 }
 
-// ── Aufnahme-Wiedergabe: Key = SHA-1(UTF-8 Text), erste 16 hex ──
-async function recKey(text) {
-  const buf = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(text));
-  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("").slice(0, 16);
-}
+// ── Aufnahme-Wiedergabe: Key berechnet der Master (/api/chat/recq).
+// Der WebUI-Hashing-Weg (crypto.subtle) steht auf HTTP-LAN-IPs nicht zur
+// Verfuegung (insecure context) -> silent failure; deshalb Serverschluessel. ──
+function recUrl(text) { return "/api/chat/recq?text=" + encodeURIComponent(text); }
 function resetBtn(btn) {
   if (!btn) return;
   if (audioBusy === btn) { audioBusy.classList.remove("stop"); audioBusy.textContent = "▶ Abspielen"; audioBusy = null; }
@@ -94,8 +93,7 @@ function stopAudioKeepBtn() { audio.pause(); audio.src = ""; }
 async function playRec(text, btn) {
   if (audioBusy === btn) { stopAudio(); return; }
   stopAudio();
-  const key = await recKey(text);
-  audio.src = "/api/chat/rec/" + key;
+  audio.src = recUrl(text);
   audio.onended = stopAudio;
   audio.onerror = stopAudio;
   btn.classList.add("stop"); btn.textContent = "⏹ Stoppen";
@@ -124,8 +122,7 @@ function musicUrl(path) {
 async function playBrowser(text, btn) {
   if (audioBusy === btn) { stopAudio(); return; }
   stopAudio();
-  const key = await recKey(text);
-  const r = await fetch("/api/chat/rec/" + key).catch(() => null);
+  const r = await fetch(recUrl(text)).catch(() => null);
   if (r && r.ok) {
     const blob = await r.blob();
     const u = URL.createObjectURL(blob);

@@ -370,6 +370,22 @@ async def _chat_rec(req: Request) -> Response:
     return FileResponse(fn, media_type="audio/wav")
 
 
+async def _chat_recq(req: Request) -> Response:
+    """GET /api/chat/recq?text=… → TTS-Aufnahme zu einem Text.
+
+    Der Master berechnet den Key selbst (chatstore.key_for). Die WebUI kann
+    ihn nicht selbst bilden: crypto.subtle gibt es nur im Secure Context,
+    nicht bei http://<LAN-IP> — sonst schlaegt der Browser-Playback still fehl.
+    """
+    text = req.query_params.get("text", "")
+    if not text.strip():
+        return PlainTextResponse("text fehlt", status_code=400)
+    fn = os.path.join(chatstore.RECS_DIR, chatstore.key_for(text) + ".wav")
+    if not os.path.isfile(fn):
+        return PlainTextResponse("nicht gefunden", status_code=404)
+    return FileResponse(fn, media_type="audio/wav")
+
+
 async def _chat_send(req: Request) -> JSONResponse:
     """POST /api/chat/send {text, mac, speak} → LLM-Antwort (+TTS-Aufnahme).
 
@@ -935,6 +951,7 @@ routes = [
     Route("/api/chat/messages", _chat_messages),
     Route("/api/chat/recs", _chat_recs),
     Route("/api/chat/rec/{key}", _chat_rec),
+    Route("/api/chat/recq", _chat_recq),
     Route("/api/chat/send", _chat_send, methods=["POST"]),
     Route("/api/satellites", _satellite_list),
     Route("/api/satellites/status", _satellites_status),
