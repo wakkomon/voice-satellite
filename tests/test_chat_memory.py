@@ -43,10 +43,11 @@ def t_history_filters_and_limits():
         ])
         msgs = mm.history("web")
         # CHAT_MAX_HISTORY=4, chronologisch, nur user/assistant mit Text
+        # 5 nutzliche Eintraege, Cap=4 -> "Hallo" faellt raus
         assert [m["content"] for m in msgs] == \
-            ["Hallo", "Hallo!", "Gut.", "Danke."], msgs
+            ["Hallo!", "Wie gehts?", "Gut.", "Danke."], msgs
         assert [m["role"] for m in msgs] == \
-            ["user", "assistant", "assistant", "user"], msgs
+            ["assistant", "user", "assistant", "user"], msgs
 
 
 def t_build_messages_shape():
@@ -77,11 +78,12 @@ def t_build_messages_no_facts_no_system():
 def t_facts_dedupe_and_cap():
     with tempfile.TemporaryDirectory() as tmp:
         cs, mm = _setup(tmp)
-        mm.add_facts(["a", "b", "c", "d"])  # CHAT_MAX_FACTS=3 -> "a" raus
-        mm.add_facts(["b", "e"])            # Duplikat bleibt weg
-        facts = mm.load_facts()
-        assert "a" not in facts and "b" in facts
-        assert len(facts) == 3, facts
+        mm.add_facts(["a", "b", "c", "d"])  # Cap=3 -> aeltste rowid ("a") raus
+        facts = mm.load_facts()             # Cap(3) -> a raus, rest rowid-DESC
+        assert facts == ["d", "c", "b"], facts
+        mm.add_facts(["b", "e"])            # b: Duplikat (IGNORE), e neu
+        facts = mm.load_facts()             # Cap evictet naechste rowid (b)
+        assert facts == ["e", "d", "c"], facts
 
 
 def t_parse_facts():

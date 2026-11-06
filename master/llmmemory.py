@@ -45,9 +45,11 @@ def history(chat_key: str, limit: int | None = None) -> list:
     Nur user/assistant-Eintraege mit Text — musik/system-Kacheln und
     leerer Text sind kein Promptmaterial."""
     limit = limit or config.CHAT_MAX_HISTORY
-    entries = chatstore.chat_entries(chat_key, limit=max(limit * 2, 200))
+    # chat_entries liefert NEUESTE zuerst: dort aufwaerlen, bis limit
+    # Nutz-Eintraege gefunden sind, dann umdrehen auf Zeitreihenfolge.
+    entries = chatstore.chat_entries(chat_key, limit=200)
     msgs = []
-    for e in reversed(entries):
+    for e in entries:
         if e.get("kind") not in ("user", "assistant"):
             continue
         t = (e.get("text") or "").strip()
@@ -57,7 +59,7 @@ def history(chat_key: str, limit: int | None = None) -> list:
                      "content": t})
         if len(msgs) >= limit:
             break
-    return msgs
+    return list(reversed(msgs))
 
 
 def build_messages(chat_key: str, text: str, limit: int | None = None) -> list:
@@ -83,7 +85,10 @@ def load_facts() -> list:
     if not config.CHAT_MEMORY_FACTS_ENABLED:
         return []
     with _lock, _conn() as con:
-        return [f for (f,) in con.execute("SELECT fact FROM facts ORDER BY ts DESC")]
+        # rowid als Tiebreak: mehrere Fakten in derselben Sekunde waeren
+        # sonst in der Cap-/Reihenfolge-Auswahl indeterminiert.
+        return [f for (f,) in con.execute(
+            "SELECT fact FROM facts ORDER BY ts DESC, rowid DESC")]
 
 
 def add_facts(facts: list) -> None:
@@ -93,7 +98,7 @@ def add_facts(facts: list) -> None:
                         (int(__import__("time").time()), f))
         con.execute(
             "DELETE FROM facts WHERE rowid NOT IN "
-            "(SELECT rowid FROM facts ORDER BY ts DESC LIMIT ?)",
+            "(SELECT rowid FROM facts ORDER BY rowid DESC LIMIT ?)",
             (config.CHAT_MAX_FACTS,))
 
 
