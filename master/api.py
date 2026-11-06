@@ -279,8 +279,18 @@ async def _sat_heartbeat(req: Request) -> JSONResponse:
     if isinstance(events, list):
         n = manager.record_events(mac, events, events_reset,
                                   ip=str(payload.get("ip") or ""))
+    # Mini-Config-Pull: die Android-App (kein Pi-Config-Client) holt ihre
+    # Display-Bilder ueber den Heartbeat. Nur anzeigerelevante, nicht-geheime
+    # Werte aus der effektiven Config (Global + Sat-Override).
+    try:
+        # Geraete-Override falls mac als Satelit konfiguriert ist, sonst global.
+        eff = config_store.get_effective(mac)
+        cfg = {"default_image_url": str(eff.get("DEFAULT_IMAGE_URL") or "")}
+    except Exception as e:
+        log.warning("Heartbeat-Config-Pull (%s): %s", mac, e)
+        cfg = {}
     return JSONResponse({"ok": True, "events_stored": n,
-                         "chat_stored": chat_stored})
+                         "chat_stored": chat_stored, "config": cfg})
 
 
 # ── Chat-WebUI ────────────────────────────────────────────────
