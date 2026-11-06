@@ -133,6 +133,34 @@ def _headers(token: str, req: Request, extra: dict | None = None) -> dict:
     return h
 
 
+def _fill_tts_defaults(req: Request, body: bytes) -> bytes:
+    """Modell/Stimme aus der zentralen Config auffuellen, wenn der Client
+    nichts (oder Leer) schickt.
+
+    Die Android-App im Master-Modus sendet beides bewusst leer (Master ist
+    die alleinige Quelle); der Pi sendet seinen eigenen Wert. Es wird NUR
+    geleerte Felder gefuellt: die App bekommt dadurch dieselbe TTS_VOICE /
+    TTS_MODEL wie der Pi, der Pi bleibt unangetastet.
+    """
+    try:
+        payload = json.loads(body)
+    except (ValueError, TypeError):
+        return body
+    if not isinstance(payload, dict):
+        return body
+    eff = config_store.get_effective(None)
+    changed = False
+    for field, key in (("model", "TTS_MODEL"), ("voice", "TTS_VOICE")):
+        if not str(payload.get(field) or "").strip():
+            val = str(eff.get(key) or "").strip()
+            if val:
+                payload[field] = val
+                changed = True
+    if not changed:
+        return body
+    return json.dumps(payload).encode("utf-8")
+
+
 async def proxy_tts(req: Request) -> Response:
     """TTS-Proxy: JSON rein, audio/wav (Streaming) raus."""
     # Health-Probe: Satelliten-Heartbeat checkt Komponenten mit GET/HEAD.
@@ -145,6 +173,9 @@ async def proxy_tts(req: Request) -> Response:
     if not url:
         return JSONResponse({"error": "TTS_URL nicht konfiguriert"}, status_code=502)
     body = await req.body()
+    # App schickt im Master-Modus leeres model/voice -> aus der zentralen
+    # Config auffuellen (gleiche Stimme wie der Pi-Satellit).
+    body = _fill_tts_defaults(req, body)
     # Chat-UI: TTS-Ausgabe als Aufnahme merken (Key = Hash des eingelesenen
     # Texts; identischer Text -> dieselbe Aufnahme, keine Duplikate).
     rec_key = None

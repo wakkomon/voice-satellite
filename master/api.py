@@ -31,7 +31,7 @@ from starlette.responses import (FileResponse, JSONResponse,
 from starlette.routing import Route
 
 from . import chatstore
-from . import chatstream
+from . import chatstream, llmmemory
 from . import config as master_cfg
 from . import __version__ as MASTER_VERSION
 from . import proxy
@@ -432,8 +432,15 @@ async def _chat_send(req: Request) -> JSONResponse:
         # Streaming: Teilantwort und Thinking live an die UI (chat_progress
         # "stream"). Denk-Modelle melden reasoning_content VOR der Antwort;
         # der Hermes-Gateway (.33:8642) liefert beides als SSE-Deltas.
+        # Gedächtnis (CHAT_MEMORY_ENABLED): letze N Chat-Eintraege dieses
+        # Chats + Fakten aus dem Langzeitstore als Systemprompt — analog
+        # zum Satellite (app/memory.py).
+        if master_cfg.CHAT_MEMORY_ENABLED:
+            msgs = llmmemory.build_messages(mac or "web", text)
+        else:
+            msgs = [{"role": "user", "content": text}]
         payload = {"model": cfg.get("LLM_MODEL") or "",
-                   "messages": [{"role": "user", "content": text}],
+                   "messages": msgs,
                    "stream": True}
         try:
             mt = int(str(cfg.get("LLM_MAX_TOKENS") or "").strip() or 0)
@@ -490,6 +497,13 @@ async def _chat_send(req: Request) -> JSONResponse:
             rec = None
     entry = chatstore.add_chat(mac or "web", "assistant", answer,
                                rec=rec, out=out, think=think)
+    # Langzeitgedächtnis: Fakten aus dem Turn extrahieren (Daemon-Thread,
+    # blockiert die Antwort nicht). Nur bei echten Antworten, nicht bei
+    # Fehler-Platzhaltern.
+    if (master_cfg.CHAT_MEMORY_ENABLED and url and answer
+            and not answer.startswith("LLM")):
+        llmmemory.extract_facts_async(text, answer,
+                                      cfg.get("LLM_MODEL") or "")
     # Zielgerät-Broadcast: Ausgewählter Satellit spricht die Antwort laut
     # (/speak, wait=false). Feuer-und-vergiss, damit die Chat-Antwort nicht
     # auf dem Gerät blockiert (wie /api/broadcast).

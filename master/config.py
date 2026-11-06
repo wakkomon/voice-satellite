@@ -32,6 +32,15 @@ CHAT_MODEL      = _env("CHAT_MODEL", "")          # leer -> LLM_MODEL-Default un
 CHAT_TTS_MODEL  = _env("CHAT_TTS_MODEL", "")      # leer -> TTS_MODEL-Default unten
 CHAT_TTS_VOICE  = _env("CHAT_TTS_VOICE", "")      # leer -> TTS_VOICE-Default unten
 
+# Gedächtnis des Web-Chat-LLMs (analog Satellite app/memory.py):
+# Kurzzeit = letzte N Chat-Eintraege pro Chat-Key (mac/"web") aus dem JSONL,
+# Langzeit = extrahierte Fakten in CHAT_MEMORY_DB (sqlite) im Systemprompt.
+CHAT_MEMORY_ENABLED  = _env("CHAT_MEMORY_ENABLED", "1") in ("1", "true", "yes", "on")
+CHAT_MEMORY_FACTS_ENABLED = _env("CHAT_MEMORY_FACTS", "1") in ("1", "true", "yes", "on")
+CHAT_MEMORY_DB       = _env("CHAT_MEMORY_DB", os.path.join(CHAT_DIR, "memory.db"))
+CHAT_MAX_HISTORY     = _env_int("CHAT_MAX_HISTORY", "20")   # Nachrichten im Prompt
+CHAT_MAX_FACTS       = _env_int("CHAT_MAX_FACTS", "100")    # Fakten im Systemprompt
+
 # ── Raspi-Manager ─────────────────────────────────────────────
 # (Auto-Discovery entfernt – Satelliten melden sich aktiv per Heartbeat an)
 # Heartbeat-Intervall (s)
