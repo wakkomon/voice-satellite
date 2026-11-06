@@ -201,7 +201,8 @@ function renderEntry(e) {
   if (kind === "user") {
     // Eingabe -> Quellgerät (wo es erkannt wurde)
     who = `<span class="badge in">🎤 ${esc(devname)}</span>`;
-    playHtml = `<div class="play"><button>▶ Abspielen</button><span>Ausgabe</span></div>`;
+    // Eingabe ist nur Erkanntes, keine Audio-Ausgabe -> kein Abspiel-Button.
+    playHtml = "";
   } else if (kind === "assistant") {
     // Ausgabe -> echtes Zielgerät (wo die Antwort gesprochen wird), nicht das
     // Eingabegerät. e.out = 'browser' | Satellit-Key; 📢 = an Gerät gebroadcastt.
@@ -284,10 +285,13 @@ async function sendMsg() {
     const data = await r.json();
     if (r.ok && data.answer) {
       const outTgt = data.out || $("out-select").value;
-      const a = renderEntry({ kind:"assistant", text: data.answer, ts: data.ts || Date.now()/1000, mac: mac || "web", out: outTgt });
-      seen.add(ekey({ kind:"assistant", mac: mac || "web", text: data.answer }));
-      $("chat").appendChild(a);
-      $("chat").scrollTop = $("chat").scrollHeight;
+      const a = { kind:"assistant", text: data.answer, ts: data.ts || Date.now()/1000, mac: mac || "web", out: outTgt };
+      // Antwort evtl. schon per SSE-Event 'answer' gerendert -> Dedup beachten.
+      if (!seen.has(ekey(a))) {
+        seen.add(ekey(a));
+        $("chat").appendChild(renderEntry(a));
+        $("chat").scrollTop = $("chat").scrollHeight;
+      }
       if (data.broadcast === "started")
         $("status").textContent = "Antwort an " + nameOf(outTgt) + " gebroadcastet";
     } else {
@@ -326,6 +330,25 @@ function switchSat() {
   $("chat").innerHTML = "";
   loadEntries();
 }
+
+// ── Chat-Status: der Master meldet Verarbeitungsphasen per SSE (/events).
+// thinking -> answer (Antwort schon anzeigen, bevor TTS laeuft) -> tts -> done.
+const PHASE_TXT = { thinking: "🧠 denkt nach …", tts: "🔊 Audio wird erzeugt …", done: "" };
+const sse = new EventSource("/events");
+sse.addEventListener("chat_progress", ev => {
+  let d; try { d = (JSON.parse(ev.data) || {}).data || {}; } catch { return; }
+  if (d.state in PHASE_TXT) $("status").textContent = PHASE_TXT[d.state];
+  if (d.state === "answer" && d.answer) {
+    const e = { kind: "assistant", text: d.answer, ts: d.ts || Date.now() / 1000,
+                mac: d.mac || "web", out: d.out };
+    if (!seen.has(ekey(e))) {
+      seen.add(ekey(e));
+      $("chat").appendChild(renderEntry(e));
+      $("chat").scrollTop = $("chat").scrollHeight;
+      lastTs = Math.max(lastTs, e.ts);
+    }
+  }
+});
 
 $("chat-input").addEventListener("keydown", e => { if (e.key === "Enter") sendMsg(); });
 loadSats();

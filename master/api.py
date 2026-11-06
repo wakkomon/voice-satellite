@@ -105,6 +105,11 @@ def _broadcast(event: str, data: dict) -> None:
             pass
 
 
+def _chat_progress(state: str, **extra) -> None:
+    """Chat-Verarbeitungsphase an die WebUI melden (SSE-Event chat_progress)."""
+    _broadcast("chat_progress", {"state": state, **extra})
+
+
 # ── API Handler ─────────────────────────────────────────────────
 
 async def _heartbeat(req: Request) -> JSONResponse:
@@ -409,6 +414,7 @@ async def _chat_send(req: Request) -> JSONResponse:
     if not text:
         return JSONResponse({"error": "leere Nachricht"}, status_code=400)
     chatstore.add_chat(mac or "web", "user", text, who="web")
+    _chat_progress("thinking")
 
     cfg = config_store.get_effective(mac or None)
     import httpx
@@ -432,6 +438,9 @@ async def _chat_send(req: Request) -> JSONResponse:
             answer = f"LLM-Fehler ({type(e).__name__})"
     if not answer:
         answer = "(leere Antwort)"
+    # Antwort sofort melden: die UI zeigt sie, bevor die TTS fertig ist.
+    _chat_progress("answer", answer=answer, mac=mac or "web", out=out,
+                   ts=time.time())
     rec = None
     want_tts = speak and answer and not answer.startswith("LLM")
     # Browser-Ausgabe: Master synthetisiert die Antwort als Aufnahme zum
@@ -439,6 +448,7 @@ async def _chat_send(req: Request) -> JSONResponse:
     # dann keine Doppel-TTS auf der Master-Seite.
     if want_tts and out == "browser":
         rec = chatstore.key_for(answer)
+        _chat_progress("tts")
         try:
             twav = await _synth_tts(cfg, answer)
             if twav:
@@ -460,6 +470,7 @@ async def _chat_send(req: Request) -> JSONResponse:
         _bg_tasks.add(task)
         task.add_done_callback(_bg_tasks.discard)
         broadcast = "started"
+    _chat_progress("done")
     return JSONResponse({"answer": answer, "rec": rec, "ts": entry["ts"],
                          "out": out, "broadcast": broadcast})
 
