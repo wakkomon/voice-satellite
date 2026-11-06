@@ -88,11 +88,22 @@ class SatManager:
         return self.sat_kind(key) == "android"
 
     def sat_kind(self, key: str) -> str:
-        """Melde-Typ eines Satelliten ('pi' | 'android'); 'pi' wenn unbekannt."""
+        """Melde-Typ eines Satelliten ('pi' | 'android'); 'pi' wenn unbekannt.
+
+        Apps, die noch kein kind-Feld senden (App < 2.4.1), werden ueber den
+        Key-/Hostnamen-Praefix 'android' erkannt — die App-Device-IDs beginnen
+        immer damit."""
         with self._lock:
             sat = self.satellites.get((key or "").strip().lower()) \
                 or self.satellites.get(key)
-            return str(getattr(sat, "kind", "pi") or "pi")
+            kind = str(getattr(sat, "kind", "pi") or "pi")
+            if kind == "pi":
+                k = (key or "").lower()
+                host = (getattr(sat, "hostname", "") or "").lower()
+                if k.startswith("android") or host.startswith("sat-android") \
+                        or host.startswith("android"):
+                    kind = "android"
+            return kind
 
     def set_status_callback(self, cb) -> None:
         """Callback(mac, sat) bei jeder Status-/Docker-Änderung (für SSE)."""
