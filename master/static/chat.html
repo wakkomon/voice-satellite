@@ -198,8 +198,11 @@ function renderEntry(e) {
     who = `<span class="badge in">🎤 ${esc(devname)}</span>`;
     playHtml = `<div class="play"><button>▶ Abspielen</button><span>Ausgabe</span></div>`;
   } else if (kind === "assistant") {
-    // Ausgabe -> Zielgerät (wo die Antwort abgespielt wird)
-    who = `<span class="badge out">🔊 ${esc(devname)}</span>`;
+    // Ausgabe -> echtes Zielgerät (wo die Antwort gesprochen wird), nicht das
+    // Eingabegerät. e.out = 'browser' | Satellit-Key; 📢 = an Gerät gebroadcastt.
+    const tgt = e.out || e.mac;
+    const bcast = e.out && e.out !== "browser";
+    who = `<span class="badge out">${bcast ? "🔊📢" : "🔊"} ${esc(nameOf(tgt))}${bcast ? " · Broadcast" : ""}</span>`;
     playHtml = `<div class="play"><button>▶ Abspielen</button><span>Ausgabe</span></div>`;
   } else if (kind === "musik") {
     who = `<span class="badge mus">🎵 ${esc(devname)}</span>`;
@@ -270,13 +273,18 @@ async function sendMsg() {
     const r = await fetch("/api/chat/send", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({ text, mac, speak: $("speak-toggle").checked })
+      body: JSON.stringify({ text, mac, speak: $("speak-toggle").checked,
+                             out: $("out-select").value })
     });
     const data = await r.json();
     if (r.ok && data.answer) {
-      const a = renderEntry({ kind:"assistant", text: data.answer, ts: data.ts || Date.now()/1000, mac: mac || "web" });
+      const outTgt = data.out || $("out-select").value;
+      const a = renderEntry({ kind:"assistant", text: data.answer, ts: data.ts || Date.now()/1000, mac: mac || "web", out: outTgt });
+      seen.add(ekey({ kind:"assistant", mac: mac || "web", text: data.answer }));
       $("chat").appendChild(a);
       $("chat").scrollTop = $("chat").scrollHeight;
+      if (data.broadcast === "started")
+        $("status").textContent = "Antwort an " + nameOf(outTgt) + " gebroadcastet";
     } else {
       $("status").textContent = data.error || "Fehler " + r.status;
     }

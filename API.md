@@ -186,9 +186,43 @@ curl -s -X POST $MASTER/api/broadcast \
      -d '{"text":"Alle ans Esszimmer, bitte!"}'
 # Ein Raum:
 curl -s -X POST $MASTER/api/broadcast \
-     -H "Authorization: Bearer $TOKEN" \
+     -H "Authorization: Bearer ***" \
      -d '{"sat":"wohnzimmer","text":"Essen ist fertig"}'
 ```
+
+### Web-Chat: Antwort an Zielgerät (`out`)
+Die Chat-WebUI (`/chat.html`) und `POST /api/chat/send` nehmen ein
+**Zielgerät** für die *Antwort* entgegen — unabhängig vom Eingabegerät
+(Quellgerät). `out` bestimmt, **wo** die LLM-Antwort gesprochen wird:
+
+- `out` leer / `"web"` / `"browser"` → Browser-Ausgabe: der Master
+  synthetisiert die Antwort als Aufnahme (`rec`), die im Chat abspielbar ist.
+- `out` = Satellit (MAC/IP/Hostnamen) → der ausgewählte Satellit spricht die
+  Antwort über `/speak` (`wait=false`, **feuer-und-vergiss** — die
+  Chat-Antwort blockiert nicht, solange das Gerät TTS braucht). Antwort-Text
+  und Zielgerät erscheinen als Ausgabetext im Chat.
+
+`POST /api/chat/send` akzeptiert:
+`{text, mac?, speak?, out?}` → Antwort `{answer, rec, ts, out, broadcast}`
+(`broadcast` = `"started"`, wenn die Antwort an einen Satelliten gebroadcastet
+wurde, sonst `null`). Die ausgewählte `out` wird pro `assistant`-Eintrag im
+Chat-Store persistiert (`out`), die UI zeigt sie als Zielgerät-Badge
+(`🔊` Browser, `🔊📢` + „· Broadcast“ bei Satelliten).
+
+```bash
+# Antwort in den Browser (Aufnahme) — out leer:
+curl -s -X POST $MASTER/api/chat/send \
+     -H "Authorization: Bearer ***" \
+     -d '{"text":"Wie ist die Zeit?"}'
+# Antwort laut am Zielgerät (display01):
+curl -s -X POST $MASTER/api/chat/send \
+     -H "Authorization: Bearer ***" \
+     -d '{"text":"Wie ist die Zeit?","out":"display01"}'
+```
+
+> Hinweis: Beim Satelliten-Ziel macht der Master **keine** zweite TTS-Aufnahme
+> (die spricht das Gerät selbst). `speak=false` unterdrückt die Sprachausgabe
+> vollständig (nur Text).
 
 ### Lautstärke
 ```bash

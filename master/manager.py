@@ -163,7 +163,9 @@ class SatManager:
                     age = time.time() - sat.last_seen
                     if age > interval * max_missed and sat.status != "offline":
                         sat.status = "offline"
-                        log.warning("Satellit %s: offline (%.0f s)", sat.hostname, age)
+                        # Bewusst KEIN log.warning: Satelliten gehen jederzeit in
+                        # Bereitschaft/Sleep — die Warnung war Dauer-Rauschen im
+                        # Live-Log. Statuswechsel + _notify (UI/SSE) bleiben erhalten.
                         self._notify(mac, sat)
                     elif age < interval * 2 and sat.status == "offline":
                         sat.status = "online"

@@ -48,6 +48,9 @@ _START_TIME = time.time()
 _LOG_LINES: list[str] = []
 _LOG_MAX = 500
 _log_lock = threading.Lock()
+
+# Hintergrund-Tasks (Zielgerät-Broadcast) referenziert halten gegen GC
+_bg_tasks: set = set()
 # aktive Live-Log-SSE-Queues (GET /logs) — werden thread-sicher befüllt
 _log_clients: list[asyncio.Queue] = []
 _log_clients_lock = threading.Lock()
@@ -365,6 +368,11 @@ async def _chat_send(req: Request) -> JSONResponse:
     text = (body.get("text") or "").strip()
     mac = (body.get("mac") or "").lower().strip()
     speak = bool(body.get("speak", True))
+    # Zielgerät der Ausgabe: 'browser' | '' (=browser) | MAC/IP/Hostname eines
+    # Satelliten. Bestimmt, WO der Ausgabetext (Antwort) gesprochen wird.
+    out = (body.get("out") or "").strip().lower()
+    if out in ("", "web"):
+        out = "browser"
     if not text:
         return JSONResponse({"error": "leere Nachricht"}, status_code=400)
     chatstore.add_chat(mac or "web", "user", text, who="web")
@@ -392,7 +400,11 @@ async def _chat_send(req: Request) -> JSONResponse:
     if not answer:
         answer = "(leere Antwort)"
     rec = None
-    if speak and answer and not answer.startswith("LLM"):
+    want_tts = speak and answer and not answer.startswith("LLM")
+    # Browser-Ausgabe: Master synthetisiert die Antwort als Aufnahme zum
+    # Abspielen. Bei Satellit-Ausgabe spricht das Zielgerät selbst (/speak) —
+    # dann keine Doppel-TTS auf der Master-Seite.
+    if want_tts and out == "browser":
         rec = chatstore.key_for(answer)
         try:
             twav = await _synth_tts(cfg, answer)
@@ -404,8 +416,19 @@ async def _chat_send(req: Request) -> JSONResponse:
             log.warning("Chat-TTS: %s", e)
             rec = None
     entry = chatstore.add_chat(mac or "web", "assistant", answer,
-                               rec=rec)
-    return JSONResponse({"answer": answer, "rec": rec, "ts": entry["ts"]})
+                               rec=rec, out=out)
+    # Zielgerät-Broadcast: Ausgewählter Satellit spricht die Antwort laut
+    # (/speak, wait=false). Feuer-und-vergiss, damit die Chat-Antwort nicht
+    # auf dem Gerät blockiert (wie /api/broadcast).
+    broadcast = None
+    if want_tts and out != "browser":
+        task = asyncio.create_task(_sat_control(
+            out, "/speak", {"text": answer, "wait": False}, timeout=60))
+        _bg_tasks.add(task)
+        task.add_done_callback(_bg_tasks.discard)
+        broadcast = "started"
+    return JSONResponse({"answer": answer, "rec": rec, "ts": entry["ts"],
+                         "out": out, "broadcast": broadcast})
 
 
 async def _synth_tts(cfg: dict, text: str) -> bytes | None:

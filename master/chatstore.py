@@ -57,14 +57,19 @@ def _append_chat(mac: str, entry: dict) -> None:
 
 
 def add_chat(mac: str, kind: str, text: str, *, who: str = "",
-             path: str = "", rec: str | None = None) -> dict:
-    """Einen (Web-)Eintrag anhängen; gibt ihn zurueck (inkl. ts)."""
+             path: str = "", rec: str | None = None,
+             out: str | None = None) -> dict:
+    """Einen (Web-)Eintrag anhängen; gibt ihn zurueck (inkl. ts).
+    out = Zielgerät der Ausgabe (nur bei assistant-Einträgen gesetzt):
+    'browser' oder Satellit-Key — bestimmt, WO der Text gesprochen wurde."""
     e = {"ts": time.time(), "kind": kind, "text": text or "",
          "mac": mac or "web", "who": who or ""}
     if path:
         e["path"] = path
     if rec:
         e["rec"] = rec
+    if out:
+        e["out"] = out
     _append_chat(mac or "web", e)
     return e
 
