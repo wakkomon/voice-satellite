@@ -321,6 +321,14 @@ class Pipeline:
             self._play_tone("error")  # tiefes Signal: LLM-Ausfall/leere Antwort
             self._fail("LLM-Fehler – Fehlerton abgespielt")
         display.show_text("Antwort", answer)
+        # Assistenten-Antwort in den Master-Chat melden (Zielgeraet = wir),
+        # damit dort nicht nur erkannte Eingaben, sondern auch die Ausgaeben
+        # erscheinbar sind. llm_ok=False -> nur Fehlerton, nichts melden.
+        if llm_ok and str(answer or "").strip():
+            try:
+                chatlog.emit("assistant", str(answer))
+            except Exception:
+                pass
         self.speak(answer)
         return True                 # Antwort wurde gesprochen -> Follow-up offen
 
@@ -425,6 +433,25 @@ class Pipeline:
         text = (text or "").strip()
         if not text:
             return False
+        # Externe Durchsage als Ausgabetext in den Master-Chat melden
+        # (Zielgeraet = wir), damit sie wie LLM-Antworten erscheinbar sind.
+        try:
+            chatlog.emit("assistant", text)
+        except Exception:
+            pass
+        if not wait:
+            # Nicht blockieren: TTS-Synthese + Wiedergabe laeuft im
+            # Hintergrund, damit /speak (Master-/openHAB-Wege) sofort
+            # antworten kann und der Master nicht nach ~30 s time-out
+            # faellt, waeherend der Satellit noch synthetisiert. Der Ton
+            # erklingt dann im Hintergrund (siehe _broadcast_blocking).
+            threading.Thread(target=self._broadcast_blocking,
+                             args=(text, vol), daemon=True).start()
+            return True
+        return self._broadcast_blocking(text, vol)
+
+    def _broadcast_blocking(self, text, vol=None):
+        """Blockinger Teil von broadcast(): vol + TTS + Wiedergabe + Aufräumen."""
         prev = None
         if vol is not None:
             try:

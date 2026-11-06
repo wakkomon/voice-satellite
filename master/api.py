@@ -257,15 +257,21 @@ async def _sat_heartbeat(req: Request) -> JSONResponse:
     # dem Heartbeat, damit sein Satellitenname schon bekannt ist.
     events = payload.pop("events", None)
     events_reset = bool(payload.pop("events_reset", False))
-    # Chat-Eintraege (Sprech-Turne + Musik) des Satelliten – Chat-WebUI
+    # Chat-Eintraege (Sprech-Turne + Musik) des Satelliten – Chat-WebUI.
+    # record_heartbeat ZUERST (legt den Satelliten im Registry an), dann den
+    # kanonischen Registry-Key (stabile IP statt Docker-Bridge-MAC) aufloesen
+    # und die Eintraege unter GLEICHDEM Key speichern, den die Chat-WebUI bei
+    # Geratefilterung nutzt – sonst taucht bei ausgewaehltem Gerat kein
+    # Textinhalt auf.
     chat = payload.pop("chat", None)
+    manager.record_heartbeat(mac, payload)
+    canon = manager.canonical_key(mac, str(payload.get("ip") or "")) or mac
     chat_stored = 0
     if isinstance(chat, list):
         try:
-            chat_stored = chatstore.add_sats_chat(mac, chat)
+            chat_stored = chatstore.add_sats_chat(canon, chat)
         except Exception as e:
-            log.warning("Chat-Eintraege (%s): %s", mac, e)
-    manager.record_heartbeat(mac, payload)
+            log.warning("Chat-Eintraege (%s): %s", canon, e)
     n = 0
     if isinstance(events, list):
         n = manager.record_events(mac, events, events_reset,
@@ -302,10 +308,18 @@ async def _chat_push(req: Request) -> JSONResponse:
     except (json.JSONDecodeError, ValueError):
         payload = {}
     entries = payload.get("entries") if isinstance(payload, dict) else None
+    # Die direkt gepushten Eintraege haelten selbst keine IP; die Quell-IP
+    # (req.client.host) ist aber dieselbe wie beim Heartbeat und damit der
+    # Match fuer s.ip.
+    ip = str(payload.get("ip") or "") if isinstance(payload, dict) else ""
+    ip = ip or (req.client.host if req.client else "") or ""
+    # Kanonischer Registry-Key (stabile IP statt Bridge-MAC), wie beim
+    # Heartbeat – sonst findet die WebUI die Eintraege bei Geratefilter nicht.
+    canon = manager.canonical_key(mac, ip) or mac
     try:
-        ack = chatstore.add_sats_chat(mac, entries if isinstance(entries, list) else [])
+        ack = chatstore.add_sats_chat(canon, entries if isinstance(entries, list) else [])
     except Exception as e:
-        log.warning("Chat-Push (%s): %s", mac, e)
+        log.warning("Chat-Push (%s): %s", canon, e)
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
     return JSONResponse({"ok": True, "chat_ack": ack})
 

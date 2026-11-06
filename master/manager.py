@@ -419,6 +419,24 @@ class SatManager:
                 return None
             return key, f"http://{sat.ip}:{self._web_port(sat)}"
 
+    def canonical_key(self, mac: str, ip: str = "") -> str | None:
+        """Kanonischer Registry-Key fuer ein (mac, ip)-Paar – genau so, wie
+        record_heartbeat ihn waehlt. Docker-Satelliten melden ihre Bridge-MAC
+        (z. B. 02:42:ac:11:00:03), der Registry-Key ist aber die stabile
+        Host-IP (z. B. 192.168.82.32). Chat-Eintraege muessen unter genau
+        diesem Key landen, sonst findet die Chat-WebUI sie bei
+        Geratefilterung nicht (kein Textinhalt bei ausgewaehltem Gerat)."""
+        mac = (mac or "").lower().strip()
+        ip = (ip or "").strip()
+        with self._lock:
+            if mac and mac in self.satellites:
+                return mac
+            if ip:
+                for key, s in self.satellites.items():
+                    if s.ip and s.ip == ip:
+                        return key
+            return mac or None
+
     async def list_satellites(self) -> list[dict]:
         """Liste aller bekannten Satelliten (inkl. Heartbeat-Details)."""
         with self._lock:

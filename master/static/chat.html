@@ -16,14 +16,19 @@ h1 .v { color:var(--dim); font-size:0.8rem; font-weight:400; margin-left:auto; }
 .controls { display:flex; gap:8px; align-items:center; padding:10px 20px; border-bottom:1px solid #2a2e3a; flex-wrap:wrap; }
 .controls select, .controls input[type=checkbox] { background:#0d0f14; border:1px solid #2a2e3a; color:var(--fg); padding:5px 8px; border-radius:6px; font-size:0.85rem; }
 .controls label { color:var(--dim); font-size:0.82rem; display:flex; align-items:center; gap:6px; }
+.clabel { color:var(--dim); font-size:0.72rem; text-transform:uppercase; letter-spacing:.04em; }
 .chat { flex:1; overflow-y:auto; padding:16px 20px; display:flex; flex-direction:column; gap:10px; }
 .msg { max-width:78%; padding:8px 12px; border-radius:12px; font-size:0.92rem; line-height:1.35; background:var(--card); position:relative; }
-.msg .who { display:block; font-size:0.7rem; color:var(--dim); margin-bottom:3px; }
+.msg .who { display:block; margin-bottom:4px; }
 .msg .time { font-size:0.68rem; color:var(--dim); margin-top:4px; text-align:right; }
 .msg.user { align-self:flex-end; background:#1d3a5c; border-bottom-right-radius:4px; }
 .msg.assistant { align-self:flex-start; border-bottom-left-radius:4px; }
 .msg.musik { align-self:flex-start; border-left:3px solid var(--ok); border-bottom-left-radius:4px; }
 .msg.system { align-self:center; background:transparent; color:var(--dim); font-size:0.78rem; }
+.badge { display:inline-block; font-size:0.68rem; padding:1px 7px; border-radius:8px; background:#0d0f14; border:1px solid #2a2e3a; color:var(--dim); }
+.badge.in { border-color:#2a5a8a; color:#8ec5ff; }
+.badge.out { border-color:#2f7a52; color:#7ee0b0; }
+.badge.mus { border-color:#5a4a2a; color:#f0c47a; }
 .msg .play { margin-top:6px; display:flex; gap:6px; align-items:center; }
 .msg .play button { background:var(--acc); color:#fff; border:none; border-radius:6px; padding:4px 12px; font-size:0.75rem; cursor:pointer; }
 .msg .play button.stop { background:var(--err); }
@@ -41,8 +46,11 @@ h1 .v { color:var(--dim); font-size:0.8rem; font-weight:400; margin-left:auto; }
   <h1>💬 Chat <a href="/">← Master</a><span class="v" id="status">verbinde …</span></h1>
 </header>
 <div class="controls">
-  <select id="sat-select" onchange="switchSat()"><option value="">Alle Satelliten</option></select>
-  <label><input type="checkbox" id="speak-toggle" checked> Antwort abspielen</label>
+  <span class="clabel">Chat filtern</span>
+  <select id="sat-select" onchange="switchSat()"><option value="">Alle Geräte</option></select>
+  <span class="clabel" style="margin-left:6px">Abspielen auf</span>
+  <select id="out-select"><option value="browser">🖥 Browser</option></select>
+  <label style="margin-left:6px"><input type="checkbox" id="speak-toggle" checked> Antwort abspielen</label>
   <label style="margin-left:auto"><span id="rec-info" class="num" style="color:var(--dim);font-size:0.78rem"></span></label>
 </div>
 <div class="chat" id="chat"></div>
@@ -57,16 +65,31 @@ let mac = localStorage.getItem("chat_mac") || "";
 let lastTs = 0;
 const audio = new Audio();
 let audioBusy = null;
+const SATNAMES = {}; // mac -> Anzeigename (aus /api/satellites)
+
+// ── Namen ─────────────────────────────────────────────────────
+function nameOf(m) {
+  if (!m) return "?";
+  if (m === "web") return "Web-Chat";
+  return SATNAMES[m] || m;
+}
 
 // ── Aufnahme-Wiedergabe: Key = SHA-1(UTF-8 Text), erste 16 hex ──
 async function recKey(text) {
   const buf = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(text));
   return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("").slice(0, 16);
 }
+function resetBtn(btn) {
+  if (!btn) return;
+  if (audioBusy === btn) { audioBusy.classList.remove("stop"); audioBusy.textContent = "▶ Abspielen"; audioBusy = null; }
+}
 function stopAudio() {
   audio.pause(); audio.src = "";
-  if (audioBusy) { audioBusy.classList.remove("stop"); audioBusy.textContent = "▶ Abspielen"; audioBusy = null; }
+  if (window.speechSynthesis) { try { window.speechSynthesis.cancel(); } catch {} }
+  resetBtn(audioBusy);
 }
+function stopAudioKeepBtn() { audio.pause(); audio.src = ""; }
+
 async function playRec(text, btn) {
   if (audioBusy === btn) { stopAudio(); return; }
   stopAudio();
@@ -83,6 +106,7 @@ function playUrl(url, btn) {
   stopAudio();
   audio.src = url;
   audio.onended = stopAudio;
+  audio.onerror = stopAudio;
   btn.classList.add("stop"); btn.textContent = "⏹ Stoppen";
   audioBusy = btn;
   audio.play().catch(stopAudio);
@@ -91,6 +115,67 @@ function musicUrl(path) {
   if (!path) return null;
   if (/^https?:\/\//.test(path)) return path;
   return "/proxy/music/" + path.replace(/^\/+/, "");
+}
+
+// ── Abspielen: Browser (Aufnahme sonst Browser-TTS) oder PI ────
+// Browser: zuerst die TTS-Aufnahme vom Master (Web-Chat-Antworten haben eine),
+// sonst Browser-TTS (Satelliten-Antworten haben keine Aufnahme).
+async function playBrowser(text, btn) {
+  if (audioBusy === btn) { stopAudio(); return; }
+  stopAudio();
+  const key = await recKey(text);
+  const r = await fetch("/api/chat/rec/" + key).catch(() => null);
+  if (r && r.ok) {
+    const blob = await r.blob();
+    const u = URL.createObjectURL(blob);
+    audio.src = u;
+    audio.onended = () => { stopAudio(); URL.revokeObjectURL(u); };
+    audio.onerror = () => { stopAudio(); URL.revokeObjectURL(u); };
+    btn.classList.add("stop"); btn.textContent = "⏹ Stoppen";
+    audioBusy = btn;
+    audio.play().catch(stopAudio);
+  } else {
+    speakSynth(text, btn);
+  }
+}
+function speakSynth(text, btn) {
+  if (!("speechSynthesis" in window)) { $("status").textContent = "Browser-TTS nicht verfügbar"; return; }
+  window.speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = "de-DE";
+  if (btn) {
+    btn.classList.add("stop"); btn.textContent = "⏹ Stoppen";
+    audioBusy = btn;
+    u.onend = u.onerror = () => { if (audioBusy === btn) { resetBtn(btn); } };
+  }
+  window.speechSynthesis.speak(u);
+}
+async function broadcastTo(satMac, text, btn) {
+  // PI / anderes Gerät: Text an den Satelliten -> dort TTS + Lautsprecher
+  // (POST /api/broadcast -> /speak). wait=false -> sofort zurück, TTS läuft
+  // auf dem Gerät im Hintergrund.
+  if (btn) { btn.classList.add("stop"); btn.textContent = "… Sende"; }
+  $("status").textContent = "→ " + nameOf(satMac);
+  try {
+    const r = await fetch("/api/broadcast", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ sat: satMac, text: text, wait: false })
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || d.ok === false) $("status").textContent = d.error || "Sende fehlgeschlagen (" + r.status + ")";
+  } catch (e) {
+    $("status").textContent = "Sende-Fehler";
+  }
+  setTimeout(() => { if (btn && audioBusy === btn) resetBtn(btn); }, 3500);
+}
+// Eintrag abspielen – Zielgerät = aktueller "Abspielen auf"-Auswahlwert.
+function speakOut(entry, btn) {
+  const out = $("out-select").value;
+  const text = (entry.text || "").trim();
+  if (!text) return;
+  if (out === "browser") playBrowser(text, btn);
+  else broadcastTo(out, text, btn);
 }
 
 // ── Rendering ─────────────────────────────────────────────────
@@ -104,28 +189,35 @@ function esc(s) { const d = document.createElement("div"); d.textContent = s || 
 function renderEntry(e) {
   const div = document.createElement("div");
   const kind = e.kind || "system";
+  const dev = e.mac || "";
+  const devname = nameOf(e.mac);
   div.className = "msg " + kind;
-  const who = e.mac ? ` — ${esc(e.mac)}` : "";
+  let who = "", playHtml = "", body = esc(e.text);
   if (kind === "user") {
-    div.innerHTML = `<span class="who">Du${who}</span>${esc(e.text)}<div class="time">${fmtTime(e.ts)}</div>`;
+    // Eingabe -> Quellgerät (wo es erkannt wurde)
+    who = `<span class="badge in">🎤 ${esc(devname)}</span>`;
+    playHtml = `<div class="play"><button>▶ Abspielen</button><span>Ausgabe</span></div>`;
   } else if (kind === "assistant") {
-    div.innerHTML = `<span class="who">Assistent${who}</span>${esc(e.text)}<div class="play" id="p-${Math.round(e.ts*1000)}"><button>▶ Abspielen</button><span>Aufnahme</span></div><div class="time">${fmtTime(e.ts)}</div>`;
-    const btn = div.querySelector("button");
-    btn.onclick = () => playRec(e.text, btn);
+    // Ausgabe -> Zielgerät (wo die Antwort abgespielt wird)
+    who = `<span class="badge out">🔊 ${esc(devname)}</span>`;
+    playHtml = `<div class="play"><button>▶ Abspielen</button><span>Ausgabe</span></div>`;
   } else if (kind === "musik") {
+    who = `<span class="badge mus">🎵 ${esc(devname)}</span>`;
     const url = musicUrl(e.path);
-    const playHtml = url ? `<div class="play"><button>▶ Wiedergabe</button><span class="num" style="font-size:0.75rem;color:var(--dim)"></span></div>` : "";
-    div.innerHTML = `<span class="who">Musik${who}</span>${esc(e.text)}${playHtml}<div class="time">${fmtTime(e.ts)}</div>`;
-    const btn = div.querySelector("button");
-    if (btn) btn.onclick = () => playUrl(url, btn);
+    playHtml = url ? `<div class="play"><button>▶ Wiedergabe</button></div>` : "";
   } else {
-    div.innerHTML = `<span class="who">System${who}</span>${esc(e.text)}<div class="time">${fmtTime(e.ts)}</div>`;
+    who = `<span class="badge">${esc(devname || "System")}</span>`;
+  }
+  div.innerHTML = `<span class="who">${who}</span>${body}${playHtml}<div class="time">${fmtTime(e.ts)}</div>`;
+  const btn = div.querySelector(".play button");
+  if (btn) {
+    if (kind === "musik") btn.onclick = () => playUrl(musicUrl(e.path), btn);
+    else btn.onclick = () => speakOut(e, btn);
   }
   return div;
 }
 
 // Dedup: gleiche (kind,mac,text)-Eintraege nicht doppelt rendern
-// (optimistischer Sende-Eintrag vs. Polling-Antwort mit Server-ts)
 const seen = new Set();
 const ekey = e => (e.kind || "system") + "|" + (e.mac || "") + "|" + (e.text || "");
 
@@ -143,7 +235,7 @@ async function loadEntries() {
     chat.innerHTML = "";
     seen.clear();
     if (!entries.length) {
-      chat.innerHTML = '<div class="empty">Noch keine Einträge.<br>Sprech-Turne, Musik und Web-Nachrichten erscheinen hier.</div>';
+      chat.innerHTML = '<div class="empty">Noch keine Einträge.<br>Sprech-Turne (Eingabe/Ausgabe) und Musik erscheinen hier.</div>';
       return;
     }
     // API liefert neueste zuerst — fuer Chat-Ansicht (neueste unten) umdrehen
@@ -169,7 +261,7 @@ async function sendMsg() {
   $("chat-input").value = "";
   $("btn-send").disabled = true;
   $("status").textContent = "verarbeite …";
-  // optimistic user entry
+  // optimistic user entry (Quellgerät = Web-Chat, Zielgerät folgt aus Antwort)
   const mine = { kind:"user", text, ts: Date.now()/1000, mac: mac || "web" };
   const div = renderEntry(mine);
   seen.add(ekey(mine));
@@ -181,11 +273,9 @@ async function sendMsg() {
       body: JSON.stringify({ text, mac, speak: $("speak-toggle").checked })
     });
     const data = await r.json();
-    if (r.ok) {
+    if (r.ok && data.answer) {
       const a = renderEntry({ kind:"assistant", text: data.answer, ts: data.ts || Date.now()/1000, mac: mac || "web" });
       $("chat").appendChild(a);
-      const btn = a.querySelector(".play button");
-      if (btn && data.rec) btn.onclick = () => { stopAudio(); audio.src = "/api/chat/rec/" + data.rec; audio.onended = stopAudio; btn.classList.add("stop"); btn.textContent = "⏹ Stoppen"; audioBusy = btn; audio.play().catch(stopAudio); };
       $("chat").scrollTop = $("chat").scrollHeight;
     } else {
       $("status").textContent = data.error || "Fehler " + r.status;
@@ -196,19 +286,24 @@ async function sendMsg() {
   $("btn-send").disabled = false;
 }
 
-// ── Satelliten-Liste ──────────────────────────────────────────
+// ── Geräte-Liste: befüllt beide Auswahlfelder + Namenstabelle ──
 async function loadSats() {
   const r = await fetch("/api/satellites");
   if (!r.ok) return;
   const sats = await r.json();
-  const sel = $("sat-select");
+  const filt = $("sat-select");
+  const out = $("out-select");
   for (const s of sats) {
-    const o = document.createElement("option");
-    o.value = s.mac;
-    o.textContent = s.custom_name || s.name || s.hostname || s.mac;
-    sel.appendChild(o);
+    const label = s.custom_name || s.name || s.hostname || s.mac;
+    SATNAMES[s.mac] = label;
+    const o1 = document.createElement("option");
+    o1.value = s.mac; o1.textContent = label;
+    filt.appendChild(o1);
+    const o2 = document.createElement("option");
+    o2.value = s.mac; o2.textContent = "📢 " + label;
+    out.appendChild(o2);
   }
-  if (mac) sel.value = mac;
+  if (mac) filt.value = mac;
 }
 function switchSat() {
   mac = $("sat-select").value;
@@ -223,7 +318,7 @@ $("chat-input").addEventListener("keydown", e => { if (e.key === "Enter") sendMs
 loadSats();
 loadEntries();
 setInterval(() => { if (!$("btn-send").disabled) loadEntries(); }, 10000);
-// Aufnahme-Liste (Karte rechts, Info-Zeile)
+// Aufnahme-Liste (Info-Zeile)
 (async () => {
   try {
     const r = await fetch("/api/chat/recs");
