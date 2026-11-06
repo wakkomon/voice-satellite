@@ -49,7 +49,7 @@ h1 .v { color:var(--dim); font-size:0.8rem; font-weight:400; margin-left:auto; }
   <span class="clabel">Chat filtern</span>
   <select id="sat-select" onchange="switchSat()"><option value="">Alle Geräte</option></select>
   <span class="clabel" style="margin-left:6px">Abspielen auf</span>
-  <select id="out-select"><option value="browser">🖥 Browser</option></select>
+  <select id="out-select"><option value="browser">🖥 Browser</option><option value="all">📢📢 Alle Geräte</option></select>
   <label style="margin-left:6px"><input type="checkbox" id="speak-toggle" checked> Antwort abspielen</label>
   <label style="margin-left:auto"><span id="rec-info" class="num" style="color:var(--dim);font-size:0.78rem"></span></label>
 </div>
@@ -71,6 +71,7 @@ const SATNAMES = {}; // mac -> Anzeigename (aus /api/satellites)
 function nameOf(m) {
   if (!m) return "?";
   if (m === "web") return "Web-Chat";
+  if (m === "all") return "Alle Geräte";
   return SATNAMES[m] || m;
 }
 

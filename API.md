@@ -202,6 +202,11 @@ Die Chat-WebUI (`/chat.html`) und `POST /api/chat/send` nehmen ein
   Chat-Antwort blockiert nicht, solange das Gerät TTS braucht). Antwort-Text
   und Zielgerät erscheinen als Ausgabetext im Chat.
 
+- `out` = "all" (auch "*") → **alle** bekannten, online
+  Satelliten gleichzeitig (wie `POST /api/broadcast` ohne `sat` —
+  Hausdurchsage). Die Chat-UI bietet dafür „📢📢 Alle Geräte“ in der
+  Auswahl „Abspielen auf“.
+
 `POST /api/chat/send` akzeptiert:
 `{text, mac?, speak?, out?}` → Antwort `{answer, rec, ts, out, broadcast}`
 (`broadcast` = `"started"`, wenn die Antwort an einen Satelliten gebroadcastet
@@ -218,6 +223,10 @@ curl -s -X POST $MASTER/api/chat/send \
 curl -s -X POST $MASTER/api/chat/send \
      -H "Authorization: Bearer ***" \
      -d '{"text":"Wie ist die Zeit?","out":"display01"}'
+# Durchsage an alle onlineen Geräte (Broadcast an alle):
+curl -s -X POST $MASTER/api/chat/send \
+     -H "Authorization: Bearer <MASTER_TOKEN>" \
+     -d '{"text":"Das Essen ist fertig.","out":"all"}'
 ```
 
 > Hinweis: Beim Satelliten-Ziel macht der Master **keine** zweite TTS-Aufnahme

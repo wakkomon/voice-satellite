@@ -368,8 +368,9 @@ async def _chat_send(req: Request) -> JSONResponse:
     text = (body.get("text") or "").strip()
     mac = (body.get("mac") or "").lower().strip()
     speak = bool(body.get("speak", True))
-    # Zielgerät der Ausgabe: 'browser' | '' (=browser) | MAC/IP/Hostname eines
-    # Satelliten. Bestimmt, WO der Ausgabetext (Antwort) gesprochen wird.
+    # Zielgerät der Ausgabe: 'browser' | '' (=browser) | 'all' (=alle
+    # Online-Satelliten) | MAC/IP/Hostname eines Satelliten. Bestimmt, WO
+    # der Ausgabetext (Antwort) gesprochen wird.
     out = (body.get("out") or "").strip().lower()
     if out in ("", "web"):
         out = "browser"
