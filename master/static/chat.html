@@ -33,6 +33,12 @@ h1 .v { color:var(--dim); font-size:0.8rem; font-weight:400; margin-left:auto; }
 .msg .play button { background:var(--acc); color:#fff; border:none; border-radius:6px; padding:4px 12px; font-size:0.75rem; cursor:pointer; }
 .msg .play button.stop { background:var(--err); }
 .msg .play span { font-size:0.75rem; color:var(--dim); }
+.msg .think { margin:2px 0 6px; font-size:0.78rem; }
+.msg .think summary { color:var(--dim); cursor:pointer; user-select:none; }
+.msg .think pre { white-space:pre-wrap; word-break:break-word; color:var(--dim);
+  font-family:inherit; margin:6px 0 0; border-left:2px solid #2a2e3a; padding-left:8px; }
+.msg.streaming .body::after { content:"\258C"; color:var(--acc); animation:blink 1s steps(1) infinite; }
+@keyframes blink { 50% { opacity:0; } }
 .inputbar { display:flex; gap:8px; padding:12px 20px; border-top:1px solid #2a2e3a; }
 .inputbar input { flex:1; background:#0d0f14; border:1px solid #2a2e3a; color:var(--fg); padding:10px 14px; border-radius:8px; font-size:0.95rem; }
 .inputbar input:focus { outline:none; border-color:var(--acc); }
@@ -197,7 +203,10 @@ function renderEntry(e) {
   const dev = e.mac || "";
   const devname = nameOf(e.mac);
   div.className = "msg " + kind;
-  let who = "", playHtml = "", body = esc(e.text);
+  let who = "", playHtml = "", body = esc(e.text), thinkHtml = "";
+  if (e.think) {
+    thinkHtml = `<details class="think"><summary>💭 Thinking (${e.think.length} Zeichen)</summary><pre>${esc(e.think)}</pre></details>`;
+  }
   if (kind === "user") {
     // Eingabe -> Quellgerät (wo es erkannt wurde)
     who = `<span class="badge in">🎤 ${esc(devname)}</span>`;
@@ -217,7 +226,7 @@ function renderEntry(e) {
   } else {
     who = `<span class="badge">${esc(devname || "System")}</span>`;
   }
-  div.innerHTML = `<span class="who">${who}</span>${body}${playHtml}<div class="time">${fmtTime(e.ts)}</div>`;
+  div.innerHTML = `<span class="who">${who}</span>${thinkHtml}<div class="body">${body}</div>${playHtml}<div class="time">${fmtTime(e.ts)}</div>`;
   const btn = div.querySelector(".play button");
   if (btn) {
     if (kind === "musik") btn.onclick = () => playUrl(musicUrl(e.path), btn);
@@ -271,6 +280,7 @@ async function sendMsg() {
   $("btn-send").disabled = true;
   $("status").textContent = "verarbeite …";
   // optimistic user entry (Quellgerät = Web-Chat, Zielgerät folgt aus Antwort)
+  const rid = Math.random().toString(16).slice(2, 10);
   const mine = { kind:"user", text, ts: Date.now()/1000, mac: mac || "web" };
   const div = renderEntry(mine);
   seen.add(ekey(mine));
@@ -280,7 +290,7 @@ async function sendMsg() {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({ text, mac, speak: $("speak-toggle").checked,
-                             out: $("out-select").value })
+                             out: $("out-select").value, rid })
     });
     const data = await r.json();
     if (r.ok && data.answer) {
@@ -294,6 +304,14 @@ async function sendMsg() {
       }
       if (data.broadcast === "started")
         $("status").textContent = "Antwort an " + nameOf(outTgt) + " gebroadcastet";
+      // SSE-'answer' koehte fehlgeschlagen sein -> Live-Div aus Antwort fuellen
+      if (live && live.rid === rid) {
+        live.entry = { kind:"assistant", text: data.answer, ts: data.ts || Date.now()/1000,
+                       mac: mac || "web", out: outTgt, think: live.entry.think || "" };
+        if (!seen.has(ekey(live.entry))) { seen.add(ekey(live.entry)); lastTs = Math.max(lastTs, live.entry.ts); }
+        live.div.replaceWith(renderEntry(live.entry));
+        live = null;
+      }
     } else {
       $("status").textContent = data.error || "Fehler " + r.status;
     }
@@ -325,6 +343,7 @@ async function loadSats() {
 function switchSat() {
   mac = $("sat-select").value;
   localStorage.setItem("chat_mac", mac);
+  if (live) { live = null; }
   seen.clear();
   lastTs = 0;
   $("chat").innerHTML = "";
@@ -333,21 +352,66 @@ function switchSat() {
 
 // ── Chat-Status: der Master meldet Verarbeitungsphasen per SSE (/events).
 // thinking -> answer (Antwort schon anzeigen, bevor TTS laeuft) -> tts -> done.
-const PHASE_TXT = { thinking: "🧠 denkt nach …", tts: "🔊 Audio wird erzeugt …", done: "" };
+const PHASE_TXT = { thinking: "🧠 denkt nach …", stream: "✍️ Antwort trifft ein …", tts: "🔊 Audio wird erzeugt …", done: "" };
 const sse = new EventSource("/events");
+// Live-Streaming: 'stream'-Events enthalten kumuliert think+answer bis zum
+// fertigen 'answer'-Event. live = { rid, div, entry } des eigenen Streams.
+let live = null;
+function updateLive() {
+  const div = live.div;
+  const body = div.querySelector(".body");
+  if (body) body.innerHTML = esc(live.entry.text);
+  let th = div.querySelector(".think");
+  if (live.entry.think) {
+    if (!th) {
+      th = document.createElement("details");
+      th.className = "think";
+      th.innerHTML = "<summary>💭 Thinking</summary><pre></pre>";
+      div.insertBefore(th, body);
+    }
+    th.querySelector("summary").textContent = "💭 Thinking (" + live.entry.think.length + " Zeichen)";
+    th.querySelector("pre").textContent = live.entry.think;
+  } else if (th) th.remove();
+  $("chat").scrollTop = $("chat").scrollHeight;
+}
 sse.addEventListener("chat_progress", ev => {
   let d; try { d = (JSON.parse(ev.data) || {}).data || {}; } catch { return; }
   if (d.state in PHASE_TXT) $("status").textContent = PHASE_TXT[d.state];
+  if (d.state === "stream") {
+    if (live && d.rid && d.rid !== live.rid) return; // fremde laufende Anfrage
+    if (!live) {
+      const e = { kind: "assistant", text: d.answer || "", ts: Date.now() / 1000,
+                  mac: d.mac || "web", out: d.out, think: d.think || "" };
+      const div = renderEntry(e);
+      div.classList.add("streaming");
+      live = { rid: d.rid || "", div, entry: e };
+      $("chat").appendChild(div);
+    } else {
+      live.entry.text = d.answer || live.entry.text;
+      live.entry.think = d.think || live.entry.think;
+      updateLive();
+    }
+    $("chat").scrollTop = $("chat").scrollHeight;
+  }
   if (d.state === "answer" && d.answer) {
+    if (live && d.rid && d.rid !== live.rid) { live.div.remove(); live = null; }
     const e = { kind: "assistant", text: d.answer, ts: d.ts || Date.now() / 1000,
-                mac: d.mac || "web", out: d.out };
-    if (!seen.has(ekey(e))) {
+                mac: d.mac || "web", out: d.out, think: d.think || "" };
+    if (live) {
+      // Live-Div wird final ersetzt (feste Zeit, Play-Button, Think-Block)
+      live.div.remove();
+      live = null;
+      seen.add(ekey(e));
+      lastTs = Math.max(lastTs, e.ts);
+      $("chat").appendChild(renderEntry(e));
+    } else if (!seen.has(ekey(e))) {
       seen.add(ekey(e));
       $("chat").appendChild(renderEntry(e));
-      $("chat").scrollTop = $("chat").scrollHeight;
       lastTs = Math.max(lastTs, e.ts);
     }
+    $("chat").scrollTop = $("chat").scrollHeight;
   }
+  if (d.state === "done" && live) { live.div.classList.remove("streaming"); }
 });
 
 $("chat-input").addEventListener("keydown", e => { if (e.key === "Enter") sendMsg(); });

@@ -168,6 +168,7 @@ const DOMAINS = {
     { key: "LLM_ENABLE_THINKING", type: "bool" },
     { key: "LLM_TIMEOUT", type: "text" },
     { key: "LLM_MAX_TOKENS", type: "text" },
+    { key: "INTENTS", type: "textarea" },
   ],
   openhab: [
     { key: "OPENHAB_URL", type: "text" },
@@ -268,6 +269,13 @@ function renderConfigTable() {
         <td class="key-col">${esc(f.key)}</td>
         <td class="type-col">${typeLabel}</td>
         <td><input type="password" class="cfg-input" data-key="${esc(f.key)}" data-type="password" ${set?'data-set="1"':''} value="" placeholder="${set?'gesetzt – leer lassen, um unverändert zu bleiben':'leer'}" /></td>
+      </tr>`;
+    }
+    if (f.type === 'textarea') {
+      return `<tr>
+        <td class="key-col">${esc(f.key)}</td>
+        <td class="type-col">M</td>
+        <td><textarea data-key="${esc(f.key)}" data-type="textarea" rows="8" class="cfg-input" style="width:100%;font-family:monospace;font-size:12px" placeholder="licht an|FlurLampe|ON&#10;licht aus|FlurLampe|OFF">${esc(String(val))}</textarea></td>
       </tr>`;
     }
     return `<tr>

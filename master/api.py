@@ -31,6 +31,7 @@ from starlette.responses import (FileResponse, JSONResponse,
 from starlette.routing import Route
 
 from . import chatstore
+from . import chatstream
 from . import config as master_cfg
 from . import __version__ as MASTER_VERSION
 from . import proxy
@@ -290,7 +291,10 @@ async def _sat_heartbeat(req: Request) -> JSONResponse:
     try:
         # Geraete-Override falls mac als Satelit konfiguriert ist, sonst global.
         eff = config_store.get_effective(mac)
-        cfg = {"default_image_url": str(eff.get("DEFAULT_IMAGE_URL") or "")}
+        cfg = {"default_image_url": str(eff.get("DEFAULT_IMAGE_URL") or ""),
+               # Zentrale Intent-Liste (Ausloeser|Item|Wert, eine Zeile pro
+               # Intent): die Android-App schaltet damit lokal ohne LLM.
+               "intents": str(eff.get("INTENTS") or "")}
     except Exception as e:
         log.warning("Heartbeat-Config-Pull (%s): %s", mac, e)
         cfg = {}
@@ -417,30 +421,56 @@ async def _chat_send(req: Request) -> JSONResponse:
     _chat_progress("thinking")
 
     cfg = config_store.get_effective(mac or None)
+    rid = str(body.get("rid") or "")[:32] or os.urandom(4).hex()
     import httpx
     url = master_cfg.LLM_BACKEND_URL
     tok = proxy._upstream_token("LLM_TOKEN", proxy.ENV_LLM_TOKEN)
+    answer, think, rec = "", "", None
     if not url:
-        answer, rec = "LLM ist nicht konfiguriert.", None
+        answer = "LLM ist nicht konfiguriert."
     else:
+        # Streaming: Teilantwort und Thinking live an die UI (chat_progress
+        # "stream"). Denk-Modelle melden reasoning_content VOR der Antwort;
+        # der Hermes-Gateway (.33:8642) liefert beides als SSE-Deltas.
         payload = {"model": cfg.get("LLM_MODEL") or "",
                    "messages": [{"role": "user", "content": text}],
-                   "stream": False}
+                   "stream": True}
         try:
-            async with httpx.AsyncClient(timeout=300.0) as client:
-                r = await client.post(url, json=payload,
-                                      headers=proxy._headers(tok, req))
-                data = r.json()
-                answer = (((data.get("choices") or [{}])[0]
-                           .get("message") or {}).get("content") or "").strip()
+            mt = int(str(cfg.get("LLM_MAX_TOKENS") or "").strip() or 0)
+            if mt > 0:
+                payload["max_tokens"] = mt
+        except ValueError:
+            pass
+        try:
+            tmo = httpx.Timeout(connect=10.0, read=300.0, write=10.0, pool=10.0)
+            async with httpx.AsyncClient(timeout=tmo) as client:
+                async with client.stream("POST", url, json=payload,
+                                         headers=proxy._headers(tok, req)) as up:
+                    if up.status_code != 200:
+                        await up.aread()
+                        raise RuntimeError(f"HTTP {up.status_code}")
+                    last_push = 0.0
+                    async for line in up.aiter_lines():
+                        r_delta, c_delta = chatstream.split_sse_chunk(line)
+                        think += r_delta
+                        answer += c_delta
+                        if (r_delta or c_delta) and time.time() - last_push >= 0.25:
+                            last_push = time.time()
+                            _chat_progress("stream", rid=rid, mac=mac or "web",
+                                           out=out, think=think, answer=answer)
         except Exception as e:
             log.warning("Chat-LLM: %s: %s", type(e).__name__, e)
-            answer = f"LLM-Fehler ({type(e).__name__})"
+            if not answer:
+                answer = f"LLM-Fehler ({type(e).__name__})"
+    # Denktags: falls das Modell das Denken inline in content liefert
+    answer, inline = chatstream.split_think_tags(answer.strip())
+    if inline:
+        think = (think + "\n" + inline).strip()
     if not answer:
         answer = "(leere Antwort)"
     # Antwort sofort melden: die UI zeigt sie, bevor die TTS fertig ist.
-    _chat_progress("answer", answer=answer, mac=mac or "web", out=out,
-                   ts=time.time())
+    _chat_progress("answer", answer=answer, think=think, mac=mac or "web",
+                   out=out, ts=time.time(), rid=rid)
     rec = None
     want_tts = speak and answer and not answer.startswith("LLM")
     # Browser-Ausgabe: Master synthetisiert die Antwort als Aufnahme zum
@@ -459,7 +489,7 @@ async def _chat_send(req: Request) -> JSONResponse:
             log.warning("Chat-TTS: %s", e)
             rec = None
     entry = chatstore.add_chat(mac or "web", "assistant", answer,
-                               rec=rec, out=out)
+                               rec=rec, out=out, think=think)
     # Zielgerät-Broadcast: Ausgewählter Satellit spricht die Antwort laut
     # (/speak, wait=false). Feuer-und-vergiss, damit die Chat-Antwort nicht
     # auf dem Gerät blockiert (wie /api/broadcast).
