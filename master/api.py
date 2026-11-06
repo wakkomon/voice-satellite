@@ -289,8 +289,14 @@ async def _sat_heartbeat(req: Request) -> JSONResponse:
     except Exception as e:
         log.warning("Heartbeat-Config-Pull (%s): %s", mac, e)
         cfg = {}
+    # Vorab registrierter Key (kanonisch) fuer Durchsage-Warteschlange:
+    # Android-Apps holen offene Nachrichten mit dem Heartbeat ab.
+    msgs = manager.drain_pending(canon)
+    if canon != mac:
+        msgs = manager.drain_pending(mac) + msgs
     return JSONResponse({"ok": True, "events_stored": n,
-                         "chat_stored": chat_stored, "config": cfg})
+                         "chat_stored": chat_stored, "config": cfg,
+                         "messages": msgs})
 
 
 # ── Chat-WebUI ────────────────────────────────────────────────
@@ -777,13 +783,14 @@ async def _sat_control(key: str, endpoint: str, payload: dict | None = None,
     if key in ("", "all", "*"):
         with manager._lock:
             targets = [
-                (k, f"http://{s.ip}:{SatManager._web_port(s)}")
+                (k, f"http://{s.ip}:{SatManager._web_port(s)}", s.kind)
                 for k, s in manager.satellites.items()
                 if s.status == "online" and s.ip
             ]
     else:
         hit = manager.sat_target(key)
-        targets = [hit] if hit else []
+        kind = manager.sat_kind(key) if hit else None
+        targets = [(hit[0], hit[1], kind)] if hit else []
     if not targets:
         return JSONResponse(
             {"ok": False,
@@ -791,9 +798,24 @@ async def _sat_control(key: str, endpoint: str, payload: dict | None = None,
                        else "keine bekannten, online Satelliten")},
             status_code=404)
 
+    def _enqueue(k, endpoint, payload):
+        """Steueranfrage an eine App (kein Web-Dienst): als Warteschlangen-
+        Nachricht vormerken; die App holt sie mit ihrem Heartbeat ab."""
+        if endpoint == "/speak":
+            manager.queue_for(k, str((payload or {}).get("text") or ""),
+                              speak=True)
+            return {"ok": True, "queued": True,
+                    "detail": "App ohne Web-Dienst — gewartet bis Heartbeat"}
+        return {"ok": False,
+                "error": f"{endpoint} von der App nicht unterstuetzt"}
+
     import json as _json
     async def _call(t):
-        url = t[1] + endpoint
+        k, base, kind = t
+        if kind == "android":
+            res = _enqueue(k, endpoint, payload)
+            return k, (200 if res.get("ok") else 400), res
+        url = base + endpoint
         try:
             async with _httpx.AsyncClient(timeout=timeout) as c:
                 r = await c.post(url, json=(payload or {}))
@@ -801,9 +823,9 @@ async def _sat_control(key: str, endpoint: str, payload: dict | None = None,
                     body = r.json()
                 except Exception:
                     body = {"raw": r.text[:400]}
-                return t[0], r.status_code, body
+                return k, r.status_code, body
         except Exception as e:
-            return t[0], 502, {"error": str(e)}
+            return k, 502, {"error": str(e)}
 
     if len(targets) == 1:
         mac, code, body = await _call(targets[0])

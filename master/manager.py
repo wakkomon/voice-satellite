@@ -48,6 +48,7 @@ class Satellite:
     info: dict = field(default_factory=dict)
     docker_running: bool = False
     is_known: bool = False   # aus SATELLITES-Konfiguration
+    kind: str = "pi"         # 'pi' (hat Web-Dienst) | 'android' (Pull-Empfang)
 
 
 class SatManager:
@@ -62,7 +63,36 @@ class SatManager:
         self._status_cb = None  # Callable[[str, Satellite], None] – bei Status-Wechsel
         # hochste je gesehene Pipeline-seq pro Satellit (Live-Log-Dedupe)
         self._event_seqs: dict[str, int] = {}
+        # Warteschlange für Android-Apps: die App betreibt keinen Web-Dienst,
+        # Durchsagen (/speak, Chat-'out') können nicht zu ihr gepusht werden.
+        # Sie holt sich offene Nachrichten mit ihrem nächsten Heartbeat ab.
+        self._pending: dict[str, list[dict]] = {}
         self._ensure_ssh_key()
+
+    # ── Pull-Warteschlange für Geräte ohne Web-Dienst (Android-App) ──
+
+    def queue_for(self, key: str, text: str, speak: bool = True) -> None:
+        """Nachricht für ein Pull-Gerät vormerken (wird per Heartbeat abgeholt)."""
+        with self._lock:
+            q = self._pending.setdefault(key, [])
+            q.append({"text": text, "speak": bool(speak)})
+            del q[:-50]  # nicht unbegrenzt anwachsen lassen
+
+    def drain_pending(self, key: str) -> list[dict]:
+        """Vorgemerkte Nachrichten für einen Key holen und leeren."""
+        with self._lock:
+            return self._pending.pop(key, [])
+
+    def is_android(self, key: str) -> bool:
+        """True, wenn der Satellit als App gemeldet ist (kein Web-Dienst)."""
+        return self.sat_kind(key) == "android"
+
+    def sat_kind(self, key: str) -> str:
+        """Melde-Typ eines Satelliten ('pi' | 'android'); 'pi' wenn unbekannt."""
+        with self._lock:
+            sat = self.satellites.get((key or "").strip().lower()) \
+                or self.satellites.get(key)
+            return str(getattr(sat, "kind", "pi") or "pi")
 
     def set_status_callback(self, cb) -> None:
         """Callback(mac, sat) bei jeder Status-/Docker-Änderung (für SSE)."""
@@ -280,6 +310,9 @@ class SatManager:
             sat.last_seen = time.time()
             if "docker_running" in data:
                 sat.docker_running = bool(data["docker_running"])
+            kind = str(data.get("kind") or "").strip().lower()
+            if kind in ("pi", "android"):
+                sat.kind = kind
             sat.info = data
             sat.is_known = True  # Herzschlag = bekannt
         # Status-Update an UI (außerhalb des Locks)
