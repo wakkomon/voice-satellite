@@ -397,6 +397,41 @@ async def _chat_recq(req: Request) -> Response:
     return FileResponse(fn, media_type="audio/wav")
 
 
+async def _chat_intent(text: str, mac: str, out: str) -> str | None:
+    """Intent-Bridge fuer den Master-Chat: vor dem LLM den Intent-Stack
+    eines Satelliten fragen (POST /intent, intents_only) — openHAB-,
+    Lautstaerke- und Musik-/Kamera-Befehle werden DORT ausgefuehrt und als
+    Antworttext zurueckgegeben. Kein Match, kein Satellit, App ohne
+    Web-Dienst oder Fehler -> None (Nachricht geht ans LLM wie bisher).
+    """
+    key = mac or (out if out not in ("", "browser", "web", "all") else "")
+    if not key:
+        # Browser-Chat ohne Ziel: erster online Pi-Satellit (Android-Apps
+        # haben keinen Web-Dienst und koennen /intent nicht bedienen).
+        with manager._lock:
+            sats = [(k, sa) for k, sa in manager.satellites.items()
+                    if sa.status == "online" and sa.ip and sa.kind != "android"]
+        if not sats:
+            return None
+        key = sats[0][0]
+    payload = {"text": text, "intents_only": True}
+    try:
+        resp = await _sat_control(key, "/intent", payload, timeout=30.0)
+        body = json.loads(resp.body)
+    except Exception as e:
+        log.debug("Chat-Intent-Bridge fehlgeschlagen: %s", e)
+        return None
+    if key in ("all", "*"):
+        for t in (body.get("targets") or []):
+            det = t.get("detail") or {}
+            if det.get("handled"):
+                return str(det.get("answer") or "")
+        return None
+    if body.get("handled"):
+        return str(body.get("answer") or "")
+    return None
+
+
 async def _chat_send(req: Request) -> JSONResponse:
     """POST /api/chat/send {text, mac, speak} → LLM-Antwort (+TTS-Aufnahme).
 
@@ -428,7 +463,13 @@ async def _chat_send(req: Request) -> JSONResponse:
     url = proxy._upstream_url("LLM_URL", master_cfg.LLM_BACKEND_URL)
     tok = proxy._upstream_token("LLM_TOKEN", proxy.ENV_LLM_TOKEN)
     answer, think, rec = "", "", None
-    if not url:
+    # Intent-Bridge: "Licht an", "Musik stoppen", "lauter" … bedient der
+    # Satellit; nur echter Freitext erreicht das LLM.
+    intent_hit = await _chat_intent(text, mac, out)
+    if intent_hit is not None:
+        answer = intent_hit
+        _chat_progress("intent", rid=rid, mac=mac or "web", out=out)
+    elif not url:
         answer = "LLM ist nicht konfiguriert."
     else:
         # Streaming: Teilantwort und Thinking live an die UI (chat_progress
@@ -503,7 +544,7 @@ async def _chat_send(req: Request) -> JSONResponse:
     # blockiert die Antwort nicht). Nur bei echten Antworten, nicht bei
     # Fehler-Platzhaltern.
     if (master_cfg.CHAT_MEMORY_ENABLED and url and answer
-            and not answer.startswith("LLM")):
+            and intent_hit is None and not answer.startswith("LLM")):
         llmmemory.extract_facts_async(text, answer,
                                       cfg.get("LLM_MODEL") or "")
     # Zielgerät-Broadcast: Ausgewählter Satellit spricht die Antwort laut

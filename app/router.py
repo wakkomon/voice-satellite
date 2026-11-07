@@ -366,35 +366,31 @@ def try_volume(text):
             if o_v >= 0 else f"Lautstärke auf {pct} Prozent.")
 
 
-def handle(text, channel="voice"):
-    """Haupt-Route: erst Musik-Stop, dann Lautstärke, dann openHAB, sonst LLM.
+def try_intents(text):
+    """Nur der Intent-Stack (Musik-Stop, Lautstaerke, openHAB, Playlist/
+    Radio/MP3/Kamera) — ohne LLM, ohne Memory-Schreibens.
 
-    channel 'voice'|'web' – steuert, in welchen Kurzzeitgedächtnis-Zweig
-    der Austausch geschrieben wird und aus welchem er Kontext liest.
-
-    Gibt (antwort, 'smarthome'|'llm', llm_ok) zurück; llm_ok=False bei
-    LLM-Ausfall/leerer Antwort (für den Fehlerton)."""
+    Gibt die Antwort zurueck, wenn ein Intent gematcht und gehandelt hat,
+    sonst None. Der Master-Chat (chat-WebUI) nutzt das als Bridge: Befehle
+    laufen auf dem Satelliten, Freitext bleibt beim Master-LLM.
+    """
     ms = try_music_stop(text)
     if ms is not None:
-        memory.add_exchange(text, ms, channel)
-        return ms, "smarthome", True
+        return ms
 
     # --- Lokale Intents (vor LLM) ---
     handled, resp = intent.try_set_volume(text)
     if handled:
-        memory.add_exchange(text, resp, channel)
-        return resp, "smarthome", True
+        return resp
 
-    # Existing try_volume: "Lauter"/"Leiser" + "Lautstärke [0-100][Prozent]"
+    # Existing try_volume: "Lauter"/"Leiser" + "Lautstaerke [0-100][Prozent]"
     vol = try_volume(text)
     if vol is not None:
-        memory.add_exchange(text, vol, channel)
-        return vol, "smarthome", True
+        return vol
 
     oh = try_openhab(text)
     if oh is not None:
-        memory.add_exchange(text, oh, channel)
-        return oh, "smarthome", True
+        return oh
 
     # Playlist / Radio / MP3 / Kamera — nur wenn nichts von openHAB gematched
     for name, fn in [
@@ -409,8 +405,22 @@ def handle(text, channel="voice"):
     ]:
         handled, resp = fn(text)
         if handled:
-            memory.add_exchange(text, resp, channel)
-            return resp, "smarthome", True
+            return resp
+    return None
+
+
+def handle(text, channel="voice"):
+    """Haupt-Route: erst Musik-Stop, dann Lautstärke, dann openHAB, sonst LLM.
+
+    channel 'voice'|'web' – steuert, in welchen Kurzzeitgedächtnis-Zweig
+    der Austausch geschrieben wird und aus welchem er Kontext liest.
+
+    Gibt (antwort, 'smarthome'|'llm', llm_ok) zurück; llm_ok=False bei
+    LLM-Ausfall/leerer Antwort (für den Fehlerton)."""
+    resp = try_intents(text)
+    if resp is not None:
+        memory.add_exchange(text, resp, channel)
+        return resp, "smarthome", True
 
     ans, ok = ask_llm(text, channel)
     memory.add_exchange(text, ans, channel)

@@ -297,6 +297,13 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/intent":
             if not text:
                 return self._send(400, {"error": "text fehlt"})
+            if data.get("intents_only"):
+                # Master-Chat-Bridge: nur Intent-Stack, kein LLM und KEINE
+                # Satellite-Memory-Schreibung — der Conversation-Verlauf
+                # liegt im Chat-Store des Masters.
+                resp = router.try_intents(text)
+                return self._send(200, {"handled": resp is not None,
+                                        "answer": resp or ""})
             t0 = time.time()
             # channel='web': Kurzhistorie getrennt von der Sprachpipeline –
             # ein getippter Webui-Text darf nicht beim naechsten Wake als
