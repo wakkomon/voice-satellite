@@ -83,7 +83,7 @@ URL_MODEL = {
     "satellite_keys": URL_KEYS,
     "satellite_value": "<MASTER_URL>/proxy/<llm|stt|tts|openhab>",
     "master_keys": [k.replace("_URL", "_BACKEND_URL") for k in URL_KEYS],
-    "master_source": "Master-UI (Store *_BACKEND_URL, Domain \"Backends\") bzw. ENV-Fallback",
+    "master_source": "Master-UI (Store *_URL in der jeweiligen API-Domain) bzw. ENV-Fallback (*_BACKEND_URL)",
     "satellite_sends_token": False,
     "token_home": "nur Master (SECRET_KEYS, Proxy injiziert Authorization)",
 }
@@ -95,8 +95,8 @@ def backend_loop_reject(key: str, value) -> str | None:
     """Zyklus-Schutz: eine URL, die auf den Master-Proxy zurueckzeigt, ware
     eine Endlosschleife (Proxy -> Master -> Proxy ...).
 
-    Regel A: ein Backend-Ziel (*_BACKEND_URL) muss das echte Backend nennen,
-             nie einen /proxy/-Pfad.
+    Regel A: ein Master-Ziel (*_URL) bzw. Backend-Alias (*_BACKEND_URL)
+             muss das echte Backend nennen, nie einen /proxy/-Pfad.
     Regel B: keine URL (auch kein Satelliten-Override) darf auf
              localhost/127.0.0.1 mit dem Master-eigenen Port zeigen — der
              Satellit erreicht das localhost des Masters gar nicht, und der
@@ -109,7 +109,8 @@ def backend_loop_reject(key: str, value) -> str | None:
     low = value.strip().lower()
     host = low.split("://", 1)[-1].partition("/")[0].rsplit("@")[-1]
     host_only, _, port = host.partition(":")
-    if key.endswith("_BACKEND_URL") and ("/proxy/" in low or low.endswith("/proxy")):
+    if (key in URL_KEYS or key.endswith("_BACKEND_URL")) and (
+            "/proxy/" in low or low.endswith("/proxy")):
         return ("%s muss das echte Backend nennen, nicht den Master-Proxy (%s)"
                 % (key, value))
     own = str(os.environ.get("MASTER_PORT", "8791"))
@@ -175,8 +176,9 @@ class ConfigStore:
                 merged.update(self._sats.get(mac.lower(), {}))
         for k in SECRET_KEYS:
             merged.pop(k, None)
-        for k in BACKEND_KEYS:
-            merged.pop(k, None)  # Master-Ziele: nie an Satelliten ausliefern
+        for k in BACKEND_KEYS + URL_KEYS:
+            merged.pop(k, None)  # Master-eigene Ziele: Satelliten leiten ihre
+            # Proxy-Adressen selbst aus MASTER_URL ab und brauchen sie nie.
         return merged
 
     def get_secret(self, key: str) -> str:
@@ -185,7 +187,8 @@ class ConfigStore:
             return self._global.get(key) or ""
 
     def get_backend(self, key: str) -> str:
-        """Gespeichertes Master-Backend-Ziel (*_BACKEND_URL), sonst ''."""
+        """Gespeicherter Wert eines Master-Ziels (*_URL oder Legacy-Alias
+        *_BACKEND_URL), sonst ''."""
         with self._lock:
             return str(self._global.get(key) or "")
 
@@ -237,12 +240,13 @@ class ConfigStore:
     def set_global(self, overrides: dict) -> int:
         """Globale Schluessel setzen (EDITABLE_KEYS + GLOBAL_ONLY + Secrets).
 
-        Zusaetzlich: *_BACKEND_URL (Master-Backend-Ziele, UI-Domain
-        "Backends"). Loop-Guards gelten; *_URL (Proxy-Adressen) bleiben
-        abgelehnt - der Satellit leitet sie aus MASTER_URL selbst ab.
+        Zusaetzlich: *_URL = die echten Master-Ziele (im WebUI in der jew.
+        API-Domain editierbar; der Master benutzt sie fuer Proxy/Chat/TTS/STT)
+        und der Legacy-Alias *_BACKEND_URL. Loop-Guards gelten fuer beide;
+        an Satelliten werden diese Keys nie ausgeliefert.
         """
         allowed = (set(EDITABLE_KEYS) | set(GLOBAL_ONLY_KEYS) | SECRET_KEYS
-                   | set(BACKEND_KEYS))
+                   | set(BACKEND_KEYS) | set(URL_KEYS))
         def _m() -> None:
             for k, v in (overrides or {}).items():
                 if k not in allowed:
@@ -252,6 +256,10 @@ class ConfigStore:
                     log.warning("Zentrale Konfig abgelehnt: %s", why)
                     continue
                 self._global[k] = v
+                if k in URL_KEYS:
+                    # Alias bereinigen: *_URL und *_BACKEND_URL duerfen
+                    # nicht auseinanderlaufen (Store-Wert gewinnt zuerst).
+                    self._global.pop(k.replace("_URL", "_BACKEND_URL"), None)
         self._set(_m)
         return self._version
 

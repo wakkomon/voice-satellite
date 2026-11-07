@@ -9,7 +9,8 @@
 * { box-sizing:border-box; }
 html,body { height:100%; }
 body { margin:0; font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; background:var(--bg); color:var(--fg); display:flex; flex-direction:column; }
-header { padding:14px 20px 10px; border-bottom:1px solid #2a2e3a; }
+header { padding:18px 24px 14px; border-bottom:1px solid #2a2e3a; }
+.backbtn { padding:6px 14px;border:1px solid var(--dim);background:transparent;border-radius:6px;cursor:pointer;color:var(--acc);font-size:0.85rem; }
 h1 { font-size:1.15rem; font-weight:600; margin:0; display:flex; align-items:center; gap:10px; }
 h1 a { color:var(--dim); font-size:0.85rem; font-weight:400; text-decoration:none; }
 h1 .v { color:var(--dim); font-size:0.8rem; font-weight:400; margin-left:auto; }
@@ -49,7 +50,7 @@ h1 .v { color:var(--dim); font-size:0.8rem; font-weight:400; margin-left:auto; }
 </head>
 <body>
 <header>
-  <h1>💬 Chat <a href="/">← Master</a><span class="v" id="status">verbinde …</span></h1>
+  <h1><button class="backbtn" onclick="location.href='/'">← Zurück</button>💬 Chat <span class="v" id="status">verbinde …</span></h1>
 </header>
 <div class="controls">
   <span class="clabel">Chat filtern</span>

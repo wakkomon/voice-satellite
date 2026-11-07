@@ -84,11 +84,12 @@ def _is_self_proxy(url: str) -> bool:
 
 
 def _upstream_url(key_url: str, env_url: str) -> str:
-    """Echtes Upstream-Backend: Store-Key *_BACKEND_URL (UI-Domain
-    "Backends") zuerst, dann ENV-Fallback. NIE die Proxy-Adresse
-    (*_URL im Store) – mit Loop-Guard gegen up-to-proxy-Ziele."""
-    url = config_store.get_backend(key_url.replace("_URL", "_BACKEND_URL"))
-    url = url or (env_url or "")
+    """Echtes Upstream-Backend: Master-Ziel aus dem Store (*_URL, im
+    WebUI editierbar) zuerst, dann Legacy-Alias *_BACKEND_URL im Store,
+    dann ENV-Fallback – mit Loop-Guard gegen Ziele auf den eigenen Proxy."""
+    url = (config_store.get_backend(key_url)
+           or config_store.get_backend(key_url.replace("_URL", "_BACKEND_URL"))
+           or (env_url or ""))
     if not url:
         return ""
     if _is_self_proxy(url):

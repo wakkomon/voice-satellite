@@ -39,7 +39,8 @@ from . import mcp_gateway
 from .indexer import _build_media_index, load_index_cache, save_index
 from .manager import SatManager
 from .satconfig import (store as config_store, EDITABLE_KEYS,
-                          GLOBAL_ONLY_KEYS, SECRET_KEYS, BACKEND_KEYS)
+                          GLOBAL_ONLY_KEYS, SECRET_KEYS, BACKEND_KEYS,
+                          URL_KEYS)
 
 log = logging.getLogger("master.api")
 
@@ -557,19 +558,20 @@ def _normalize_override(val) -> str | int | float | bool | None:
 async def _config_get(req: Request) -> JSONResponse:
     """GET /api/config → Snapshot der zentralen Konfiguration (UI).
 
-    Erganzt die Master-Backend-Ziele (*_BACKEND_URL) mit dem WIRKSAMEN Wert
-    (Store vor ENV-Fallback, Loop-Guard), damit die UI das anzeigt, was der
-    Proxy tatsaechlich anpricht — nicht nur einen Store-Rohling.
+    Zeigt fuer die Master-Ziele (*_URL) den WIRKSAMEN Wert: fehlt ein
+    Store-Eintrag, wird der ENV-Fallback (loop-guard-behandelt) eingesetzt,
+    damit die UI anzeigt, was der Proxy tatsaechlich anpricht.
     """
     snap = config_store.snapshot()
     try:
-        for bk in BACKEND_KEYS:
-            env_key = bk  # ENV heisst genauso; Fallback alt: *_URL im ENV
-            env_val = os.environ.get(env_key, "") or os.environ.get(
-                bk.replace("_BACKEND_URL", "_URL"), "")
-            eff = proxy._upstream_url(bk.replace("_BACKEND_URL", "_URL"), env_val)
+        for k in URL_KEYS:
+            if snap["global"].get(k):
+                continue  # Store-Wert ist wirksam und wird roh angezeigt
+            env_val = (os.environ.get(k.replace("_URL", "_BACKEND_URL"), "")
+                       or os.environ.get(k, ""))
+            eff = proxy._upstream_url(k, env_val)
             if eff:
-                snap["global"][bk] = eff
+                snap["global"][k] = eff
     except Exception:
         log.debug("Backend-Ziel-Anzeige fehlgeschlagen", exc_info=True)
     return JSONResponse(snap)
@@ -592,7 +594,7 @@ async def _config_put(req: Request) -> JSONResponse:
     # Nur erlaubte Schlüssel setzen (global: EDITABLE + GLOBAL_ONLY +
     # Secrets; per Satellite: nur EDITABLE_KEYS).
     g_allowed = (set(EDITABLE_KEYS) | set(GLOBAL_ONLY_KEYS)
-                 | set(SECRET_KEYS) | set(BACKEND_KEYS))
+                 | set(SECRET_KEYS) | set(BACKEND_KEYS) | set(URL_KEYS))
     g = {k: v for k, v in (data.get("global") or {}).items() if k in g_allowed}
     sats: dict[str, dict] = {}
     for mac, ov in (data.get("satellites") or {}).items():

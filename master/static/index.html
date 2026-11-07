@@ -50,6 +50,7 @@ footer { margin-top:24px; color:var(--dim); font-size:0.78rem; }
 .cfg-tabs { display:flex; gap:6px; margin-bottom:12px; flex-wrap:wrap; }
 .cfg-tabs button { background:var(--card); border:1px solid #2a2e3a; color:var(--dim); padding:4px 14px; font-size:0.78rem; }
 .cfg-tabs button.active { background:var(--acc); color:#fff; border-color:var(--acc); }
+.backbtn { padding:6px 14px;border:1px solid var(--dim);background:transparent;border-radius:6px;cursor:pointer;color:var(--acc);font-size:0.85rem; }
 .cfg-table { width:100%; border-collapse:collapse; font-size:0.85rem; }
 .cfg-table th { text-align:left; color:var(--dim); font-size:0.72rem; padding:3px 6px; border-bottom:1px solid #2a2e3a; }
 .cfg-table td { padding:3px 6px; border-bottom:1px solid #1a1d24; vertical-align:middle; }
@@ -107,7 +108,7 @@ footer { margin-top:24px; color:var(--dim); font-size:0.78rem; }
 <!-- CONFIG PAGE (hidden by default) -->
 <div id="config-page" style="display:none">
   <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
-    <button id="btn-config-back" style="padding:6px 14px;border:1px solid var(--dim);background:transparent;border-radius:4px;cursor:pointer;color:var(--acc);font-size:0.85rem">← Zurück</button>
+    <button id="btn-config-back" class="backbtn">← Zurück</button>
     <h2 style="margin:0;font-size:1.15rem">Konfiguration</h2>
   </div>
 
@@ -117,7 +118,6 @@ footer { margin-top:24px; color:var(--dim); font-size:0.78rem; }
     <button data-domain="stt">STT</button>
     <button data-domain="llm">LLM</button>
     <button data-domain="openhab">OpenHAB</button>
-    <button data-domain="backends">⚡ Backends</button>
     <button data-domain="secrets">🔑 Secrets</button>
     <button data-domain="system">System</button>
   </div>
@@ -150,20 +150,20 @@ const fmtTs = ts => ts ? new Date(ts*1000).toLocaleTimeString('de-DE') : '–';
 // ── Config domain definitions ──
 const DOMAINS = {
   tts: [
-    { key: "TTS_URL", type: "text", readonly: true, note: "Altlast aus alter Master-Config: nicht editierbar, fuer Satelliten wirkungslos (Satelliten leiten ihre Proxy-Adresse aus MASTER_URL ab). Echtes Ziel: Tab Backends." },
+    { key: "TTS_URL", type: "text", note: "Ziel, das der Master selbst anspricht. Satelliten sprechen nur den Master-Proxy an; Loop-Schutz weist /proxy/-Ziele zurück." },
     { key: "TTS_MODEL", type: "text" },
     { key: "TTS_VOICE", type: "text" },
     { key: "TTS_LANGUAGE", type: "text" },
     { key: "TTS_TIMEOUT", type: "text" },
   ],
   stt: [
-    { key: "STT_URL", type: "text", readonly: true, note: "Altlast aus alter Master-Config: nicht editierbar, fuer Satelliten wirkungslos (Satelliten leiten ihre Proxy-Adresse aus MASTER_URL ab). Echtes Ziel: Tab Backends." },
+    { key: "STT_URL", type: "text", note: "Ziel, das der Master selbst anspricht. Satelliten sprechen nur den Master-Proxy an; Loop-Schutz weist /proxy/-Ziele zurück." },
     { key: "STT_MODEL", type: "text" },
     { key: "STT_LANGUAGE", type: "text" },
     { key: "STT_TIMEOUT", type: "text" },
   ],
   llm: [
-    { key: "LLM_URL", type: "text", readonly: true, note: "Altlast aus alter Master-Config: nicht editierbar, fuer Satelliten wirkungslos (Satelliten leiten ihre Proxy-Adresse aus MASTER_URL ab). Echtes Ziel: Tab Backends." },
+    { key: "LLM_URL", type: "text", note: "Ziel, das der Master selbst anspricht. Satelliten sprechen nur den Master-Proxy an; Loop-Schutz weist /proxy/-Ziele zurück." },
     { key: "LLM_MODEL", type: "text" },
     { key: "LLM_HAS_TOOLS", type: "bool" },
     { key: "LLM_ENABLE_THINKING", type: "bool" },
@@ -172,15 +172,9 @@ const DOMAINS = {
     { key: "INTENTS", type: "textarea" },
   ],
   openhab: [
-    { key: "OPENHAB_URL", type: "text", readonly: true, note: "Altlast aus alter Master-Config: nicht editierbar, fuer Satelliten wirkungslos (Satelliten leiten ihre Proxy-Adresse aus MASTER_URL ab). Echtes Ziel: Tab Backends." },
+    { key: "OPENHAB_URL", type: "text", note: "Ziel, das der Master selbst anspricht. Satelliten sprechen nur den Master-Proxy an; Loop-Schutz weist /proxy/-Ziele zurück." },
     { key: "OPENHAB_CACHE_TTL", type: "text" },
     { key: "DEFAULT_IMAGE_URL", type: "text" },
-  ],
-  backends: [
-    { key: "LLM_BACKEND_URL", type: "text" },
-    { key: "TTS_BACKEND_URL", type: "text" },
-    { key: "STT_BACKEND_URL", type: "text" },
-    { key: "OPENHAB_BACKEND_URL", type: "text" },
   ],
   secrets: [
     { key: "TTS_TOKEN", type: "password" },

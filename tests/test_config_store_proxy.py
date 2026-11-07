@@ -70,19 +70,20 @@ ck(store.get_effective()["TTS_MODEL"] == "de-DEXT2-medium",
 ck(store.get_effective("unknown:mac")["TTS_MODEL"] == "de-DEXT2-medium",
    "unbekannter Satellit erhaelt die globalen Defaults")
 
-print("== Backend-Ziele: editierbar, aber loop-guard-behandelt ==")
-before = dict(store._global)
+print("== Master-Ziele: *_URL editierbar, Loop-Guard aktiv ==")
 store.set_global({"TTS_BACKEND_URL": "http://127.0.0.1:8791/proxy/tts",
                   "OPENHAB_URL": "http://192.168.82.33:8080/rest"})
-ck("TTS_BACKEND_URL" not in store._global and "OPENHAB_URL" not in store._global,
-   "Proxy-Pfad als Backend-Ziel abgelehnt; *_URL bleiben nicht editierbar")
-ck(store._global == before, "ablehnen laesst den Bestand unveraendert")
+ck("TTS_BACKEND_URL" not in store._global and
+   store._global.get("OPENHAB_URL") == "http://192.168.82.33:8080/rest",
+   "Loop-Ziel abgelehnt; *_URL (Master-Ziel) ist editierbar")
 store.set_global({"LLM_BACKEND_URL": "http://litellm:4000/v1/chat/completions"})
 ck(store.get_backend("LLM_BACKEND_URL") == "http://litellm:4000/v1/chat/completions",
-   "*_BACKEND_URL ist Master-seitig speicherbar (UI-Domain Backends)")
+   "*_BACKEND_URL bleibt als Legacy-Alias speicherbar")
 ck("LLM_BACKEND_URL" not in store.get_effective() and
-   "LLM_BACKEND_URL" not in store.get_effective("B8:C7:5D:10:E8:DC"),
-   "Backend-Ziele werden nie an Satelliten ausgeliefert")
+   "LLM_BACKEND_URL" not in store.get_effective("B8:C7:5D:10:E8:DC") and
+   "OPENHAB_URL" not in store.get_effective() and
+   "OPENHAB_URL" not in store.get_effective("B8:C7:5D:10:E8:DC"),
+   "Master-Ziele (*_URL wie *_BACKEND_URL) nie an Satelliten geliefert")
 
 print("== Proxy-Loop-Guard ==")
 g = sc.backend_loop_reject
@@ -92,8 +93,8 @@ ck(not g("TTS_BACKEND_URL", "http://192.168.82.24:4000/api/tts/openai"),
    "echtes Backend-Ziel -> erlaubt")
 ck(g("LLM_BACKEND_URL", "http://localhost:8791/v1/chat/completions"),
    "localhost + Master-Port -> abgelehnt")
-ck(not g("LLM_URL", "http://192.168.82.24:8791/proxy/llm"),
-   "Satelliten-Wert = Master-Proxy ist erlaubt (der Proxy selbst huelt ihn nicht)")
+ck(g("LLM_URL", "http://192.168.82.24:8791/proxy/llm"),
+   "Master-Ziel (*_URL) auf /proxy/ -> abgelehnt (Regel A gilt auch fuer *_URL)")
 ck(g("TTS_URL", "http://127.0.0.1:8791/proxy/tts"),
    "Satelliten-Override zurueck auf localhost-Master -> abgelehnt")
 try:
@@ -120,7 +121,13 @@ if px:
     os.environ.pop("TTS_BACKEND_TOKEN", None)
     ck(px._upstream_url("LLM_URL", "http://from-env:4000/v1/chat/completions") ==
        "http://litellm:4000/v1/chat/completions",
-       "Upstream-Ziel: Store (*_BACKEND_URL) gewinnt vor ENV-Fallback")
+       "Upstream-Ziel: Legacy-Alias im Store gewinnt vor ENV-Fallback")
+    store.set_global({"LLM_URL": "http://from-store-url:4000/v1/chat/completions"})
+    ck(px._upstream_url("LLM_URL", "http://from-env:4000/v1/chat/completions") ==
+       "http://from-store-url:4000/v1/chat/completions",
+       "Upstream-Ziel: Store (*_URL, WebUI) gewinnt vor Alias und ENV")
+    ck("LLM_BACKEND_URL" not in store._global,
+       "*_URL gesetzt -> Legacy-Alias faellt weg (kein Drift)")
     ck(px._upstream_url("TTS_URL", "http://from-env:7811/v1/audio/speech") ==
        "http://from-env:7811/v1/audio/speech",
        "ohne Store-Wert gewinnt das ENV (alt: .env.master)")
