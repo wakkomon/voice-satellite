@@ -1,3 +1,4 @@
 starlette==0.44.0
 uvicorn==0.34.0
 httpx==0.28.1
+segno>=1.5,<2

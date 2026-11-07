@@ -783,16 +783,12 @@ async def _config_export(req: Request) -> Response:
     return Response(body, media_type="application/json; charset=utf-8", headers=headers)
 
 
-async def _config_appqr(req: Request) -> Response:
-    """GET /api/config/appqr -> Konfig als App-KEY=WERT-Text (für den QR-Code).
+def _appqr_text(req: Request) -> str:
+    """Aktuelle globale Master-Config als App-KEY=WERT-Text (für den QR-Code).
 
-    Baut die aktuelle globale Master-Config in dem KEY=WERT-Format, das die
-    Android-App per Config-Import versteht. Ein neues App-Gerät scannt den QR
-    (Config-Seite) und importiert die Werte - inkl. MASTER_URL + MASTER_TOKEN -
-    und verbindet sich damit selbst am Master. TTS/STT/LLM-Modell + Stimme
-    bleiben bewusst leer: der Master bestimmt sie wie bei den Pi-Satelliten
-    selbst im Proxy-Flow. Enthält das Master-Token -> wie /api/config/export
-    nur im vertrauenswürdigen LAN betreiben."""
+    Baut genau den Text, den die Android-App per Config-Import versteht
+    (MASTER_URL + MASTER_TOKEN + Sprach-/Modellfelder). Geteilt von
+    /api/config/appqr (Text) und /api/config/appqr.png (QR-Bild)."""
     import os
     try:
         g = config_store.get_effective(None) or {}
@@ -819,8 +815,45 @@ async def _config_appqr(req: Request) -> Response:
              "DEFAULT_IMAGE_URL=" + val("DEFAULT_IMAGE_URL"),
              "INTENTS=" + val("INTENTS").replace("\n", "\\n"),
              "WAKE_WORD=" + val("WAKE_WORD")]
-    body = ("\n".join(lines) + "\n").encode("utf-8")
-    return Response(body, media_type="text/plain; charset=utf-8",
+    return "\n".join(lines) + "\n"
+
+
+async def _config_appqr_png(req: Request) -> Response:
+    """GET /api/config/appqr.png -> QR-Code-PNG der App-Konfiguration.
+
+    Enthält dasselbe wie /api/config/appqr (inkl. MASTER_TOKEN) -> nur im
+    vertrauenswürdigen LAN betreiben. Ein App-Gerät scannt das Bild
+    (Einstellungen -> QR-Code scannen) und importiert die Konfiguration."""
+    try:
+        import io
+        import segno
+    except Exception as e:
+        log.warning("appqr.png: segno fehlt: %s", e)
+        return JSONResponse({"error": "QR-Bibliothek (segno) nicht installiert"},
+                            status_code=500)
+    text = _appqr_text(req)
+    try:
+        buf = io.BytesIO()
+        segno.make(text, error="M").save(buf, kind="png", scale=8, border=2)
+    except Exception as e:
+        log.warning("appqr.png: %s", e)
+        return JSONResponse({"error": "QR-Erzeugung fehlgeschlagen"}, status_code=500)
+    return Response(buf.getvalue(), media_type="image/png",
+                    headers={"Cache-Control": "no-cache"})
+
+
+async def _config_appqr(req: Request) -> Response:
+    """GET /api/config/appqr -> Konfig als App-KEY=WERT-Text (für den QR-Code).
+
+    Baut die aktuelle globale Master-Config in dem KEY=WERT-Format, das die
+    Android-App per Config-Import versteht. Ein neues App-Gerät scannt den QR
+    (Config-Seite) und importiert die Werte - inkl. MASTER_URL + MASTER_TOKEN -
+    und verbindet sich damit selbst am Master. TTS/STT/LLM-Modell + Stimme
+    bleiben bewusst leer: der Master bestimmt sie wie bei den Pi-Satelliten
+    selbst im Proxy-Flow. Enthält das Master-Token -> wie /api/config/export
+    nur im vertrauenswürdigen LAN betreiben."""
+    text = _appqr_text(req)
+    return Response(text.encode("utf-8"), media_type="text/plain; charset=utf-8",
                     headers={"Cache-Control": "no-cache"})
 
 
@@ -1236,6 +1269,7 @@ routes = [
     Route("/api/config/apply", _config_apply_get, methods=["GET"]),
     Route("/api/config/export", _config_export),
     Route("/api/config/appqr", _config_appqr),
+    Route("/api/config/appqr.png", _config_appqr_png),
     Route("/api/config/import", _config_import, methods=["POST"]),
     Route("/api/config/satellite/{mac}", _config_sat_get),
     # (c) Zentrale API-Proxy-Endpunkte (TTS/STT/LLM)

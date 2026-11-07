@@ -67,6 +67,15 @@ footer { margin-top:24px; color:var(--dim); font-size:0.78rem; }
 .sat-override-row h3 { font-size:0.88rem; margin:0 0 8px; color:var(--acc); }
 .cfg-section { display:none; }
 .cfg-section.active { display:block; }
+
+/* QR-Code-Modal (Konfiguration als QR zum Scannen in der App) */
+.qr-modal{position:fixed;inset:0;background:rgba(0,0,0,.66);display:flex;align-items:center;justify-content:center;z-index:1000}
+.qr-modal[hidden]{display:none}
+.qr-box{background:var(--card);border:1px solid #2c3040;border-radius:12px;padding:18px 20px;text-align:center;max-width:90vw}
+.qr-head{display:flex;justify-content:space-between;align-items:center;gap:20px;font-weight:600;margin-bottom:12px}
+.qr-close{background:none;border:none;color:var(--fg);font-size:1.1rem;cursor:pointer;line-height:1}
+.qr-img{width:320px;height:320px;background:#fff;padding:10px;border-radius:8px;image-rendering:pixelated}
+.qr-note{color:var(--dim);font-size:.82rem;margin-top:10px;max-width:340px}
 </style>
 </head>
 <body>
@@ -138,8 +147,17 @@ footer { margin-top:24px; color:var(--dim); font-size:0.78rem; }
   <div class="cfg-save-row">
     <button id="btn-cfg-export" title="Konfiguration als JSON-Datei exportieren (inkl. gespeicherter Secrets)">⬇ Export</button>
     <button id="btn-cfg-import" title="Konfig-Datei importieren (Merge; Satellite-Export →Override für diesen Satellit)">⬆ Import</button>
+    <button id="btn-cfg-qr" title="Aktuelle Konfiguration als QR-Code anzeigen; ein App-Gerät importiert ihn unter Einstellungen -> QR-Code scannen">⚟ QR-Code</button>
     <input type="file" id="cfg-import-file" accept="application/json,.json" hidden>
     <span style="color:var(--dim);font-size:0.82rem">Import merget nur gespeicherte Werte in global + Satellite-Overrides</span>
+  </div>
+</div>
+
+<div id="qr-modal" class="qr-modal" hidden>
+  <div class="qr-box">
+    <div class="qr-head"><span>App-Konfiguration als QR-Code</span><button id="qr-close" class="qr-close" title="Schließen">✕</button></div>
+    <img id="qr-img" class="qr-img" alt="QR-Code der Konfiguration">
+    <div class="qr-note">Mit der App unter „Einstellungen → QR-Code scannen“ importieren (enthält Master-URL + Token; nur im vertrauenswürdigen LAN anzeigen).</div>
   </div>
 </div>
 
@@ -607,6 +625,18 @@ $('btn-rebuild').onclick = async () => {
     if (j.status !== 'started') { b.disabled = false; b.textContent = 'Index neu bauen'; }
   } catch(e) { b.disabled = false; b.textContent = 'Index neu bauen'; }
 };
+
+// ── Konfiguration als QR-Code anzeigen (anderes App-Gerät scannt ihn) ──
+$('btn-cfg-qr').onclick = () => {
+  const img = $('qr-img');
+  img.src = '/api/config/appqr.png?cb=' + Date.now();
+  $('qr-modal').hidden = false;
+};
+$('qr-close').onclick = () => {
+  $('qr-modal').hidden = true;
+  $('qr-img').removeAttribute('src');
+};
+$('qr-modal').addEventListener('click', (e) => { if (e.target === $('qr-modal')) $('qr-close').onclick(); });
 
 refresh();
 connectSSE();
