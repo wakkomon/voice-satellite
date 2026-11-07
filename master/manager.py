@@ -107,14 +107,20 @@ class SatManager:
         with self._lock:
             sat = self.satellites.get((key or "").strip().lower()) \
                 or self.satellites.get(key)
-            kind = str(getattr(sat, "kind", "pi") or "pi")
-            if kind == "pi":
-                k = (key or "").lower()
-                host = (getattr(sat, "hostname", "") or "").lower()
-                if k.startswith("android") or host.startswith("sat-android") \
-                        or host.startswith("android"):
-                    kind = "android"
-            return kind
+            return self._kind_for(key, sat)
+
+    @staticmethod
+    def _kind_for(key, sat) -> str:
+        """Kern der Kind-Erkennung OHNE Lock — fuer Aufrufer, die den
+        Manager-Lock bereits halten (Lock ist nicht rekursiv!)."""
+        kind = str(getattr(sat, "kind", "pi") or "pi")
+        if kind == "pi":
+            k = (key or "").lower()
+            host = (getattr(sat, "hostname", "") or "").lower()
+            if k.startswith("android") or host.startswith("sat-android") \
+                    or host.startswith("android"):
+                kind = "android"
+        return kind
 
     def set_status_callback(self, cb) -> None:
         """Callback(mac, sat) bei jeder Status-/Docker-Änderung (für SSE)."""
