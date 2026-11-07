@@ -38,7 +38,8 @@ from . import proxy
 from . import mcp_gateway
 from .indexer import _build_media_index, load_index_cache, save_index
 from .manager import SatManager
-from .satconfig import store as config_store, EDITABLE_KEYS, GLOBAL_ONLY_KEYS, SECRET_KEYS
+from .satconfig import (store as config_store, EDITABLE_KEYS,
+                          GLOBAL_ONLY_KEYS, SECRET_KEYS, BACKEND_KEYS)
 
 log = logging.getLogger("master.api")
 
@@ -423,7 +424,7 @@ async def _chat_send(req: Request) -> JSONResponse:
     cfg = config_store.get_effective(mac or None)
     rid = str(body.get("rid") or "")[:32] or os.urandom(4).hex()
     import httpx
-    url = master_cfg.LLM_BACKEND_URL
+    url = proxy._upstream_url("LLM_URL", master_cfg.LLM_BACKEND_URL)
     tok = proxy._upstream_token("LLM_TOKEN", proxy.ENV_LLM_TOKEN)
     answer, think, rec = "", "", None
     if not url:
@@ -522,7 +523,7 @@ async def _chat_send(req: Request) -> JSONResponse:
 async def _synth_tts(cfg: dict, text: str) -> bytes | None:
     """Antwort ueber den TTS-Backend sprachlich erzeugen (Voll-WAV)."""
     import httpx
-    url = master_cfg.TTS_BACKEND_URL
+    url = proxy._upstream_url("TTS_URL", master_cfg.TTS_BACKEND_URL)
     if not url:
         return None
     tok = proxy._upstream_token("TTS_TOKEN", proxy.ENV_TTS_TOKEN)
@@ -554,8 +555,24 @@ def _normalize_override(val) -> str | int | float | bool | None:
 
 
 async def _config_get(req: Request) -> JSONResponse:
-    """GET /api/config → Snapshot der zentralen Konfiguration (UI)."""
-    return JSONResponse(config_store.snapshot())
+    """GET /api/config → Snapshot der zentralen Konfiguration (UI).
+
+    Erganzt die Master-Backend-Ziele (*_BACKEND_URL) mit dem WIRKSAMEN Wert
+    (Store vor ENV-Fallback, Loop-Guard), damit die UI das anzeigt, was der
+    Proxy tatsaechlich anpricht — nicht nur einen Store-Rohling.
+    """
+    snap = config_store.snapshot()
+    try:
+        for bk in BACKEND_KEYS:
+            env_key = bk  # ENV heisst genauso; Fallback alt: *_URL im ENV
+            env_val = os.environ.get(env_key, "") or os.environ.get(
+                bk.replace("_BACKEND_URL", "_URL"), "")
+            eff = proxy._upstream_url(bk.replace("_BACKEND_URL", "_URL"), env_val)
+            if eff:
+                snap["global"][bk] = eff
+    except Exception:
+        log.debug("Backend-Ziel-Anzeige fehlgeschlagen", exc_info=True)
+    return JSONResponse(snap)
 
 
 async def _config_put(req: Request) -> JSONResponse:
@@ -574,7 +591,8 @@ async def _config_put(req: Request) -> JSONResponse:
 
     # Nur erlaubte Schlüssel setzen (global: EDITABLE + GLOBAL_ONLY +
     # Secrets; per Satellite: nur EDITABLE_KEYS).
-    g_allowed = set(EDITABLE_KEYS) | set(GLOBAL_ONLY_KEYS) | set(SECRET_KEYS)
+    g_allowed = (set(EDITABLE_KEYS) | set(GLOBAL_ONLY_KEYS)
+                 | set(SECRET_KEYS) | set(BACKEND_KEYS))
     g = {k: v for k, v in (data.get("global") or {}).items() if k in g_allowed}
     sats: dict[str, dict] = {}
     for mac, ov in (data.get("satellites") or {}).items():

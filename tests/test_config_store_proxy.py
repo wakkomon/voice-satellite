@@ -33,7 +33,9 @@ tmp = tempfile.mkdtemp(prefix="vs-store-")
 os.environ["VS_CONFIG_DIR"] = tmp
 from master import satconfig as sc
 
-store = sc.ConfigStore(os.path.join(tmp, "satellites.json"))
+# Wichtig: das Singleton sc.store verwenden — proxy.py liest genau dieses
+# (eine Zweit-Instanz waere am Proxy vorbei geschrieben, Alias-Fehler).
+store = sc.store
 
 print("== Secret-Heimat: nur Master, nur global ==")
 store.set_global({
@@ -68,13 +70,19 @@ ck(store.get_effective()["TTS_MODEL"] == "de-DEXT2-medium",
 ck(store.get_effective("unknown:mac")["TTS_MODEL"] == "de-DEXT2-medium",
    "unbekannter Satellit erhaelt die globalen Defaults")
 
-print("== Backend-Ziele sind keine Store-Keys (Loop-Praevention) ==")
+print("== Backend-Ziele: editierbar, aber loop-guard-behandelt ==")
 before = dict(store._global)
 store.set_global({"TTS_BACKEND_URL": "http://127.0.0.1:8791/proxy/tts",
                   "OPENHAB_URL": "http://192.168.82.33:8080/rest"})
 ck("TTS_BACKEND_URL" not in store._global and "OPENHAB_URL" not in store._global,
-   "*_BACKEND_URL / *_URL sind im Store nicht editierbar (Proxy-Loops unmöglich)")
+   "Proxy-Pfad als Backend-Ziel abgelehnt; *_URL bleiben nicht editierbar")
 ck(store._global == before, "ablehnen laesst den Bestand unveraendert")
+store.set_global({"LLM_BACKEND_URL": "http://litellm:4000/v1/chat/completions"})
+ck(store.get_backend("LLM_BACKEND_URL") == "http://litellm:4000/v1/chat/completions",
+   "*_BACKEND_URL ist Master-seitig speicherbar (UI-Domain Backends)")
+ck("LLM_BACKEND_URL" not in store.get_effective() and
+   "LLM_BACKEND_URL" not in store.get_effective("B8:C7:5D:10:E8:DC"),
+   "Backend-Ziele werden nie an Satelliten ausgeliefert")
 
 print("== Proxy-Loop-Guard ==")
 g = sc.backend_loop_reject
@@ -102,16 +110,20 @@ if px:
 
 print("== Proxy-ENV: Store-Token vor ENV-Token, Backend-ENV vor URL-ENV ==")
 if px:
+    store.set_global({"TTS_TOKEN": "piper"})  # nach dem Leeren fuer Snapshot-Check
     os.environ["TTS_BACKEND_TOKEN"] = "env-token"
-    os.environ["LLM_BACKEND_URL"] = "http://litellm:4000/v1/chat/completions"
+    os.environ["LLM_BACKEND_URL"] = "http://from-env:4000/v1/chat/completions"
     ck(px._upstream_token("TTS_TOKEN", px.ENV_TTS_TOKEN) == "piper",
        "Store-Secret gewinnt gegen ENV-Fallback")
     ck(px._upstream_token("STT_TOKEN", px.ENV_STT_TOKEN) == "",
        "kein Secret nirgends -> '' (Request ohne Authorization)")
     os.environ.pop("TTS_BACKEND_TOKEN", None)
-    ck(px._upstream_url("LLM_URL", px.ENV_LLM_URL) ==
+    ck(px._upstream_url("LLM_URL", "http://from-env:4000/v1/chat/completions") ==
        "http://litellm:4000/v1/chat/completions",
-       "Upstream-Ziel kommt aus ENV, nie aus dem Store")
+       "Upstream-Ziel: Store (*_BACKEND_URL) gewinnt vor ENV-Fallback")
+    ck(px._upstream_url("TTS_URL", "http://from-env:7811/v1/audio/speech") ==
+       "http://from-env:7811/v1/audio/speech",
+       "ohne Store-Wert gewinnt das ENV (alt: .env.master)")
     ck(px._upstream_url("TTS_URL", "http://127.0.0.1:8791/proxy/tts") == "",
        "Self-Proxy-Ziel -> '' -> Proxy antwortet 502 statt Schleife")
 

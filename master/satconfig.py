@@ -36,10 +36,12 @@ CONFIG_PATH = os.path.join(CONFIG_DIR, "satellites.json")
 # Satellite sie). Tokens sind MASTER-SEITIG (Proxy injiziert sie) und werden
 # nur GLOBAL gespeichert, nie pro-Satellite – im Snapshot maskiert.
 # Backend-URLs (TTS_URL, STT_URL, LLM_URL, OPENHAB_URL) sind hier nicht mehr
-# editierbar: Satelliten sprechen ausschliesslich den Master-Proxy an, die
-# echten Ziele kennt nur der Master (ENV TTS_BACKEND_URL/... bzw.
-# OPENHAB_BACKEND_URL). Tokens bleiben als SECRET_KEYS verwaltbar, der Proxy
-# injiziert sie.
+# editierbar: Satelliten sprechen ausschliesslich den Master-Proxy an.
+# Die echten Ziele (*_BACKEND_URL) sind Master-seitig editierbar (UI-Domain
+# "Backends"): Store-Wert gewinnt vor ENV-Fallback, werden NIEMALS an
+# Satelliten ausgeliefert (get_effective filtert sie) und duerfen per
+# Loop-Guard keinen /proxy/-Pfad nennen. Tokens bleiben als SECRET_KEYS
+# verwaltbar, der Proxy injiziert sie.
 EDITABLE_KEYS = (
     "TTS_MODEL", "TTS_VOICE", "TTS_LANGUAGE",
     "TTS_TIMEOUT",
@@ -81,7 +83,7 @@ URL_MODEL = {
     "satellite_keys": URL_KEYS,
     "satellite_value": "<MASTER_URL>/proxy/<llm|stt|tts|openhab>",
     "master_keys": [k.replace("_URL", "_BACKEND_URL") for k in URL_KEYS],
-    "master_source": "ENV/.env.master bzw. Master-UI (PROXY_BACKENDS)",
+    "master_source": "Master-UI (Store *_BACKEND_URL, Domain \"Backends\") bzw. ENV-Fallback",
     "satellite_sends_token": False,
     "token_home": "nur Master (SECRET_KEYS, Proxy injiziert Authorization)",
 }
@@ -173,12 +175,19 @@ class ConfigStore:
                 merged.update(self._sats.get(mac.lower(), {}))
         for k in SECRET_KEYS:
             merged.pop(k, None)
+        for k in BACKEND_KEYS:
+            merged.pop(k, None)  # Master-Ziele: nie an Satelliten ausliefern
         return merged
 
     def get_secret(self, key: str) -> str:
         """Secret (nur global, nur intern – Proxy)."""
         with self._lock:
             return self._global.get(key) or ""
+
+    def get_backend(self, key: str) -> str:
+        """Gespeichertes Master-Backend-Ziel (*_BACKEND_URL), sonst ''."""
+        with self._lock:
+            return str(self._global.get(key) or "")
 
     def snapshot(self) -> dict:
         """Vollständiger Stand für die UI (inkl. Version).
@@ -226,8 +235,14 @@ class ConfigStore:
         self._on_change = cb
 
     def set_global(self, overrides: dict) -> int:
-        """Globale Schlüssel setzen (EDITABLE_KEYS + GLOBAL_ONLY + Secrets)."""
-        allowed = set(EDITABLE_KEYS) | set(GLOBAL_ONLY_KEYS) | SECRET_KEYS
+        """Globale Schluessel setzen (EDITABLE_KEYS + GLOBAL_ONLY + Secrets).
+
+        Zusaetzlich: *_BACKEND_URL (Master-Backend-Ziele, UI-Domain
+        "Backends"). Loop-Guards gelten; *_URL (Proxy-Adressen) bleiben
+        abgelehnt - der Satellit leitet sie aus MASTER_URL selbst ab.
+        """
+        allowed = (set(EDITABLE_KEYS) | set(GLOBAL_ONLY_KEYS) | SECRET_KEYS
+                   | set(BACKEND_KEYS))
         def _m() -> None:
             for k, v in (overrides or {}).items():
                 if k not in allowed:
@@ -306,7 +321,8 @@ class ConfigStore:
         """
         if not isinstance(data, dict):
             raise ValueError("Import-Datei muss ein JSON-Objekt sein")
-        g_allowed = set(EDITABLE_KEYS) | set(GLOBAL_ONLY_KEYS) | set(SECRET_KEYS)
+        g_allowed = (set(EDITABLE_KEYS) | set(GLOBAL_ONLY_KEYS)
+                     | set(SECRET_KEYS) | set(BACKEND_KEYS))
         global_in = data.get("global") if isinstance(data.get("global"), dict) else {}
         sats_in = {str(m).lower(): ov
                    for m, ov in (data.get("satellites") or {}).items()

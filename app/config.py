@@ -441,6 +441,11 @@ API_KEYS = frozenset({
 # erscheinen deshalb nicht als "ignoriert" im Log.
 _LEGACY_API_KEYS = frozenset({
     "TTS_URL", "STT_URL", "LLM_URL", "OPENHAB_URL",
+    # Master-seitige Backend-Ziele: bleiben im Store, werden aber nie an
+    # Satelliten ausgeliefert (get_effective filtert); sicherheitshalber
+    # auch hier als wirkungslos markiert.
+    "TTS_BACKEND_URL", "STT_BACKEND_URL", "LLM_BACKEND_URL",
+    "OPENHAB_BACKEND_URL",
     "TTS_TOKEN", "STT_TOKEN", "LLM_TOKEN", "OPENHAB_TOKEN",
     "FORCE_MASTER_PROXY", "PROXY_PATHS",
     "MASTER_MUSIC_PROXY_URL", "MASTER_MUSIC_AUTH",
