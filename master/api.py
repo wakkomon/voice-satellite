@@ -673,7 +673,10 @@ async def _fanout_broadcast(cfg: dict, text: str) -> None:
                "wait": False}
     with manager._lock:
         targets = [
-            (k, f"http://{s.ip}:{SatManager._web_port(s)}", s.kind)
+            # sat_kind (nicht s.kind): App-Recordes ohne kind-Feld im Heartbeat
+            # (App < 2.4.1) bleiben sonst als 'pi' registriert und bekamen
+            # statt des Audios einen POST auf einen Web-Dienst, den es nicht gibt.
+            (k, f"http://{s.ip}:{SatManager._web_port(s)}", manager.sat_kind(k))
             for k, s in manager.satellites.items()
             if s.status == "online" and s.ip
         ]
@@ -1069,7 +1072,7 @@ async def _sat_control(key: str, endpoint: str, payload: dict | None = None,
     if key in ("", "all", "*"):
         with manager._lock:
             targets = [
-                (k, f"http://{s.ip}:{SatManager._web_port(s)}", s.kind)
+                (k, f"http://{s.ip}:{SatManager._web_port(s)}", manager.sat_kind(k))
                 for k, s in manager.satellites.items()
                 if s.status == "online" and s.ip
             ]
