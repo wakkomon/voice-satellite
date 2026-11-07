@@ -150,20 +150,20 @@ const fmtTs = ts => ts ? new Date(ts*1000).toLocaleTimeString('de-DE') : '–';
 // ── Config domain definitions ──
 const DOMAINS = {
   tts: [
-    { key: "TTS_URL", type: "text", readonly: true, note: "Proxy-Adresse des Masters — vom Satelliten automatisch abgeleitet, nicht editierbar. Echtes Ziel: Tab Backends." },
+    { key: "TTS_URL", type: "text", readonly: true, note: "Altlast aus alter Master-Config: nicht editierbar, fuer Satelliten wirkungslos (Satelliten leiten ihre Proxy-Adresse aus MASTER_URL ab). Echtes Ziel: Tab Backends." },
     { key: "TTS_MODEL", type: "text" },
     { key: "TTS_VOICE", type: "text" },
     { key: "TTS_LANGUAGE", type: "text" },
     { key: "TTS_TIMEOUT", type: "text" },
   ],
   stt: [
-    { key: "STT_URL", type: "text", readonly: true, note: "Proxy-Adresse des Masters — vom Satelliten automatisch abgeleitet, nicht editierbar. Echtes Ziel: Tab Backends." },
+    { key: "STT_URL", type: "text", readonly: true, note: "Altlast aus alter Master-Config: nicht editierbar, fuer Satelliten wirkungslos (Satelliten leiten ihre Proxy-Adresse aus MASTER_URL ab). Echtes Ziel: Tab Backends." },
     { key: "STT_MODEL", type: "text" },
     { key: "STT_LANGUAGE", type: "text" },
     { key: "STT_TIMEOUT", type: "text" },
   ],
   llm: [
-    { key: "LLM_URL", type: "text", readonly: true, note: "Proxy-Adresse des Masters — vom Satelliten automatisch abgeleitet, nicht editierbar. Echtes Ziel: Tab Backends." },
+    { key: "LLM_URL", type: "text", readonly: true, note: "Altlast aus alter Master-Config: nicht editierbar, fuer Satelliten wirkungslos (Satelliten leiten ihre Proxy-Adresse aus MASTER_URL ab). Echtes Ziel: Tab Backends." },
     { key: "LLM_MODEL", type: "text" },
     { key: "LLM_HAS_TOOLS", type: "bool" },
     { key: "LLM_ENABLE_THINKING", type: "bool" },
@@ -172,7 +172,7 @@ const DOMAINS = {
     { key: "INTENTS", type: "textarea" },
   ],
   openhab: [
-    { key: "OPENHAB_URL", type: "text", readonly: true, note: "Proxy-Adresse des Masters — vom Satelliten automatisch abgeleitet, nicht editierbar. Echtes Ziel: Tab Backends." },
+    { key: "OPENHAB_URL", type: "text", readonly: true, note: "Altlast aus alter Master-Config: nicht editierbar, fuer Satelliten wirkungslos (Satelliten leiten ihre Proxy-Adresse aus MASTER_URL ab). Echtes Ziel: Tab Backends." },
     { key: "OPENHAB_CACHE_TTL", type: "text" },
     { key: "DEFAULT_IMAGE_URL", type: "text" },
   ],
