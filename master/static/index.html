@@ -722,9 +722,10 @@ $('qr-modal').addEventListener('click', (e) => { if (e.target === $('qr-modal'))
 // ── Benutzerverwaltung: Login, Rolle, Verwaltung ─────────────
 let ROLE = "";              // 'admin' | 'user' (leer = nicht angemeldet)
 let DISPLAY_NAME = "";
-const $ov = () => $('login-overlay');
+let SETUP_MODE = false;     // true = Store leer -> Formular legt Admin an
 
 function showLogin(needsSetup, msg) {
+  SETUP_MODE = !!needsSetup;
   $('dash').style.display = 'none';
   $('config-page').style.display = 'none';
   $('login-overlay').hidden = false;
@@ -736,6 +737,7 @@ function showLogin(needsSetup, msg) {
   } else {
     $('login-title').textContent = 'Voice-Satellite Master';
     $('login-hint').textContent = 'Bitte anmelden, um fortzufahren.';
+    $('login-pass').setAttribute('autocomplete', 'current-password');
     $('login-btn').textContent = 'Anmelden';
   }
   $('login-err').textContent = msg || '';
@@ -746,29 +748,24 @@ async function doLogin() {
   const pw = $('login-pass').value;
   if (!u || !pw) { $('login-err').textContent = 'Name und Passwort eingeben.'; return; }
   $('login-btn').disabled = true;
+  $('login-err').textContent = '';
+  // SETUP_MODE entscheidet: leeres Konto-Store -> /api/setup (legt Admin an),
+  // sonst /login. Beides setzt dasselbe Session-Cookie.
+  const url = SETUP_MODE ? '/api/setup' : '/login';
   try {
-    let r, j;
-    try {
-      r = await fetch('/login', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-                                  body: JSON.stringify({ username: u, password: pw }) });
-      j = await r.json().catch(() => ({}));
-      if (!r.ok && !j.needs_setup) throw 0;
-    } catch { /* 401 mit needs_setup? -> Setup-Weg */ }
-    let ok = false;
-    if (r && r.ok) ok = true;
-    else if (r && !r.ok) {
-      const errText = (j && j.error) ? j.error : '';
-      if (errText && /Anmeldeangabe|falsch/i.test(errText)) {
-        $('login-err').textContent = errText; ok = false;
-      }
+    const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                 body: JSON.stringify({ username: u, password: pw }) });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok) { enter(j); $('login-btn').disabled = false; return; }
+    if (SETUP_MODE && /abgeschlossen/i.test(j.error || '')) {
+      showLogin(false, 'Es existieren bereits Konten — bitte anmelden.'); return;
     }
-    if (!ok && !$('login-title').textContent.includes('Ersteinrichtung')) {
-      // evtl. Setup erforderlich
-      const st = await fetch('/api/auth/status').then(r => r.json()).catch(() => ({}));
-      if (st.has_users === false) { showLogin(true, ''); return; }
+    if (!SETUP_MODE) {
+      // Store inzwischen leer (z.B. Reset) -> auf Setup umbiegen
+      const st = await fetch('/api/auth/status').then(x => x.json()).catch(() => ({}));
+      if (st.has_users === false) { showLogin(true, 'Noch kein Konto — bitte erstes Admin-Konto anlegen.'); return; }
     }
-    if (ok) enter(j);
-    else if (!$('login-err').textContent) $('login-err').textContent = 'Anmeldung fehlgeschlagen.';
+    $('login-err').textContent = j.error || (SETUP_MODE ? 'Einrichtung fehlgeschlagen.' : 'Anmeldung fehlgeschlagen.');
   } catch (e) {
     $('login-err').textContent = 'Verbindung fehlgeschlagen: ' + e;
   }

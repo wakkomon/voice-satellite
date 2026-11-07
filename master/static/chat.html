@@ -446,7 +446,9 @@ sse.addEventListener("chat_progress", ev => {
 $("chat-input").addEventListener("keydown", e => { if (e.key === "Enter") sendMsg(); });
 
 // ── Benutzerverwaltung: Login vor Chat-Start ──────────────────
+let SETUP_MODE = false;     // true = Store leer -> Formular legt Admin an
 function showLogin(needsSetup, msg) {
+  SETUP_MODE = !!needsSetup;
   document.body.style.overflow = "hidden";
   $("login-overlay").hidden = false;
   if (needsSetup) {
@@ -465,16 +467,24 @@ async function doLogin() {
   const pw = $("login-pass").value;
   if (!u || !pw) { $("login-err").textContent = "Name und Passwort eingeben."; return; }
   $("login-btn").disabled = true;
+  $("login-err").textContent = "";
+  // SETUP_MODE entscheidet: leerer Store -> /api/setup (legt Admin an), sonst /login.
+  const url = SETUP_MODE ? "/api/setup" : "/login";
   try {
-    const r = await fetch("/login", { method: "POST",
+    const r = await fetch(url, { method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username: u, password: pw }) });
     const j = await r.json().catch(() => ({}));
-    if (r.ok) { enter(j); return; }
-    if (j.error && /falsch/i.test(j.error)) { $("login-err").textContent = j.error; return; }
-    const st = await fetch("/api/auth/status").then(x => x.json()).catch(() => ({}));
-    if (st.has_users === false) { showLogin(true, ""); return; }
-    $("login-err").textContent = j.error || "Anmeldung fehlgeschlagen.";
+    if (r.ok) { enter(j); $("login-btn").disabled = false; return; }
+    if (SETUP_MODE && /abgeschlossen/i.test(j.error || "")) {
+      showLogin(false, "Es existieren bereits Konten — bitte anmelden."); return;
+    }
+    if (!SETUP_MODE) {
+      // Store inzwischen leer (z.B. Reset) -> auf Setup umbiegen
+      const st = await fetch("/api/auth/status").then(x => x.json()).catch(() => ({}));
+      if (st.has_users === false) { showLogin(true, "Noch kein Konto — bitte erstes Admin-Konto anlegen."); return; }
+    }
+    $("login-err").textContent = j.error || (SETUP_MODE ? "Einrichtung fehlgeschlagen." : "Anmeldung fehlgeschlagen.");
   } catch (e) { $("login-err").textContent = "Verbindung fehlgeschlagen: " + e; }
   $("login-btn").disabled = false;
 }

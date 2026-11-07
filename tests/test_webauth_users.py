@@ -135,10 +135,33 @@ def test_device_names():
     assert m.set_name("keiner-dieser-keys-existiert", "X") == "Satellit nicht bekannt"
 
 
+def test_setup_ui_flow():
+    # frischer Store: vorherige Tests haben Konten angelegt
+    os.environ["VS_CONFIG_DIR"] = tempfile.mkdtemp(prefix="vs-setup-flow-")
+    webauth._USER_CACHE = None  # Store-Cache auf neues Verzeichnis umhaengen
+    # Regression: WebUI zeigt bei leerem Store das Setup-Formular und ruft
+    # /api/setup auf (nicht /login). Der Test haelt den API-Vertrag fest,
+    # auf dem diese UI-Entscheidung beruht.
+    assert webauth.needs_setup() is True
+    # UI-Pfad A versehentlich /login: -> Ablehnung (das war der Bug-Symptom)
+    assert webauth.verify_login("root", "geheim123") is None
+    # UI-Pfad B (korrekt): /api/setup legt erstes Admin-Konto an
+    assert webauth.create_user("root", "geheim123", role="admin") is None
+    assert webauth.needs_setup() is False
+    me = webauth.session_user(webauth.start_session("root"))
+    assert me and me["role"] == "admin"
+    # Zweiter Setup-Versuch: /api/setup prueft needs_setup() vor create_user
+    # und antwortet dann 403 "Ersteinrichtung bereits abgeschlossen"
+    # (UI biegt daraufhin auf den Login-Schirm um) — Store ist ab jetzt nicht mehr leer.
+    assert webauth.needs_setup() is False
+    # Login funktioniert jetzt
+    assert webauth.verify_login("root", "geheim123") is not None
+
+
 def main():
     for fn in (test_setup_and_create, test_login_and_sessions,
                test_roles_and_protection, test_env_seed, test_rate_limit,
-               test_device_names):
+               test_device_names, test_setup_ui_flow):
         fn()
         print(f"OK  {fn.__name__}")
     print("alle webauth/user-Tests bestanden")
