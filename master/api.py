@@ -397,6 +397,57 @@ async def _chat_recq(req: Request) -> Response:
     return FileResponse(fn, media_type="audio/wav")
 
 
+async def _sat_dm(req: Request) -> JSONResponse:
+    """POST /api/satellite/{mac}/dm {to, text} -> Geräte-zu-Gerät-Direktnachricht.
+
+    Die sendende App meldet sich unter ihrem MAC/Device-ID an; 'to' ist das
+    Zielgerät (MAC/IP/Hostname, 'all' = alle anderen Online-Geräte). Der Text
+    geht OHNE LLM und OHNE TTS als reine Textnachricht in die Pull-Warteschlange
+    des Ziels; das Ziel holt sie beim nächsten Heartbeat ab und zeigt sie mit der
+    Quelle im Chat an. Android-Apps haben keinen Web-Dienst -> Pull statt Push."""
+    mac = req.path_params["mac"].lower()
+    if not _sat_auth_ok(req, mac):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        body = await req.json()
+    except (json.JSONDecodeError, ValueError):
+        body = {}
+    text = str((body.get("text") or "")).strip()[:1000]
+    to = str((body.get("to") or "")).strip().lower()
+    if not text or not to:
+        return JSONResponse({"error": "text und to erforderlich"}, status_code=400)
+    # Quellname: Hostname des sendenden Geräts (aus der Registry), sonst MAC.
+    with manager._lock:
+        s = manager.satellites.get(mac)
+        from_name = (s.hostname if s and s.hostname else mac)[:48]
+    # Ziel auflösen und vormerken. Queue-Key = Registry-Key, den das Ziel beim
+    # Heartbeat drain-t (s. manager.canonical_key). 'all'/* = Broadcast an alle
+    # anderen Online-Geräte.
+    if to in ("all", "*"):
+        with manager._lock:
+            targets = [k for k, sa in manager.satellites.items()
+                       if sa.status == "online" and k != mac]
+        if not targets:
+            return JSONResponse({"ok": False,
+                                 "error": "keine anderen online Geräte"},
+                                status_code=404)
+        for k in targets:
+            manager.queue_for(k, text, speak=False, src=from_name)
+        return JSONResponse({"ok": True, "queued": len(targets),
+                             "targets": targets})
+    hit = manager.sat_target(to)
+    if not hit:
+        return JSONResponse({"ok": False,
+                             "error": "Zielgerät nicht gefunden", "to": to},
+                            status_code=404)
+    target_key = hit[0]
+    if target_key == mac:
+        return JSONResponse({"ok": True, "queued": 0,
+                             "note": "eigenes Gerät"})
+    manager.queue_for(target_key, text, speak=False, src=from_name)
+    return JSONResponse({"ok": True, "queued": 1, "target": target_key})
+
+
 async def _chat_intent(text: str, mac: str, out: str) -> str | None:
     """Intent-Bridge fuer den Master-Chat: vor dem LLM den Intent-Stack
     eines Satelliten fragen (POST /intent, intents_only) — openHAB-,
@@ -632,7 +683,8 @@ async def _fanout_broadcast(cfg: dict, text: str) -> None:
     async def _one(t):
         k, base, kind = t
         if kind == "android":
-            manager.queue_for(k, text, speak=True)
+            manager.queue_for(k, text, speak=True,
+                              audio_b64=payload["audio_b64"])
             return
         try:
             async with _httpx.AsyncClient(timeout=60.0) as c:
@@ -726,6 +778,47 @@ async def _config_export(req: Request) -> Response:
     fname = time.strftime("voice-satellite-config-%Y%m%d-%H%M%S.json")
     headers = {"Content-Disposition": f'attachment; filename="{fname}"'}
     return Response(body, media_type="application/json; charset=utf-8", headers=headers)
+
+
+async def _config_appqr(req: Request) -> Response:
+    """GET /api/config/appqr -> Konfig als App-KEY=WERT-Text (für den QR-Code).
+
+    Baut die aktuelle globale Master-Config in dem KEY=WERT-Format, das die
+    Android-App per Config-Import versteht. Ein neues App-Gerät scannt den QR
+    (Config-Seite) und importiert die Werte - inkl. MASTER_URL + MASTER_TOKEN -
+    und verbindet sich damit selbst am Master. TTS/STT/LLM-Modell + Stimme
+    bleiben bewusst leer: der Master bestimmt sie wie bei den Pi-Satelliten
+    selbst im Proxy-Flow. Enthält das Master-Token -> wie /api/config/export
+    nur im vertrauenswürdigen LAN betreiben."""
+    import os
+    try:
+        g = config_store.get_effective(None) or {}
+    except Exception as e:
+        log.warning("appqr: %s", e)
+        g = {}
+    def val(k):
+        v = g.get(k)
+        return "" if v is None else str(v).strip()
+    # MASTER_URL: Adresse, unter der der Browser das WebUI erreicht (LAN-IP:Port).
+    # Das App-Gerät verbindet sich an dieselbe Adresse.
+    host = (req.url.netloc if req.url else "") or ""
+    scheme = (req.url.scheme if req.url else "http") or "http"
+    master_url = (os.environ.get("MASTER_URL") or f"{scheme}://{host}").strip()
+    token = str(config_store.get_secret("MASTER_TOKEN") or
+                os.environ.get("MASTER_TOKEN", "") or "").strip()
+    lines = ["# voice-satellite App-Konfiguration (aus Master-WebUI, als QR)",
+             "MASTER_URL=" + master_url,
+             "MASTER_TOKEN=" + token,
+             "USE_MASTER=1",
+             "STT_LANGUAGE=" + val("STT_LANGUAGE"),
+             "LLM_MODEL=" + val("LLM_MODEL"),
+             "TTS_LANGUAGE=" + val("TTS_LANGUAGE"),
+             "DEFAULT_IMAGE_URL=" + val("DEFAULT_IMAGE_URL"),
+             "INTENTS=" + val("INTENTS").replace("\n", "\\n"),
+             "WAKE_WORD=" + val("WAKE_WORD")]
+    body = ("\n".join(lines) + "\n").encode("utf-8")
+    return Response(body, media_type="text/plain; charset=utf-8",
+                    headers={"Cache-Control": "no-cache"})
 
 
 async def _config_import(req: Request) -> JSONResponse:
@@ -996,7 +1089,8 @@ async def _sat_control(key: str, endpoint: str, payload: dict | None = None,
         Nachricht vormerken; die App holt sie mit ihrem Heartbeat ab."""
         if endpoint == "/speak":
             manager.queue_for(k, str((payload or {}).get("text") or ""),
-                              speak=True)
+                              speak=True,
+                              audio_b64=str((payload or {}).get("audio_b64") or ""))
             return {"ok": True, "queued": True,
                     "detail": "App ohne Web-Dienst — gewartet bis Heartbeat"}
         return {"ok": False,
@@ -1125,6 +1219,7 @@ routes = [
     # Chat-WebUI
     Route("/chat.html", _chat_ui),
     Route("/api/satellite/{mac}/chat", _chat_push, methods=["POST"]),
+    Route("/api/satellite/{mac}/dm", _sat_dm, methods=["POST"]),
     Route("/api/chat/messages", _chat_messages),
     Route("/api/chat/recs", _chat_recs),
     Route("/api/chat/rec/{key}", _chat_rec),
@@ -1137,6 +1232,7 @@ routes = [
     Route("/api/config", _config_put, methods=["PUT"]),
     Route("/api/config/apply", _config_apply_get, methods=["GET"]),
     Route("/api/config/export", _config_export),
+    Route("/api/config/appqr", _config_appqr),
     Route("/api/config/import", _config_import, methods=["POST"]),
     Route("/api/config/satellite/{mac}", _config_sat_get),
     # (c) Zentrale API-Proxy-Endpunkte (TTS/STT/LLM)

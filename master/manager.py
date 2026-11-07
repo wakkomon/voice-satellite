@@ -71,11 +71,22 @@ class SatManager:
 
     # ── Pull-Warteschlange für Geräte ohne Web-Dienst (Android-App) ──
 
-    def queue_for(self, key: str, text: str, speak: bool = True) -> None:
-        """Nachricht für ein Pull-Gerät vormerken (wird per Heartbeat abgeholt)."""
+    def queue_for(self, key: str, text: str, speak: bool = True,
+                  src: str = "", audio_b64: str = "") -> None:
+        """Nachricht für ein Pull-Gerät vormerken (wird per Heartbeat abgeholt).
+
+        src (optional): Name des Absenders. Bei Geräte-zu-Gerät-Direktnachrichten
+        zeigt das Zielgerät die Quelle damit im Chat an."""
         with self._lock:
             q = self._pending.setdefault(key, [])
-            q.append({"text": text, "speak": bool(speak)})
+            item = {"text": text, "speak": bool(speak)}
+            if src:
+                item["src"] = str(src)[:64]
+            if audio_b64:
+                # Master-seitig synthetisiertes WAV — App spielt identisches
+                # Audio ab statt selbst zu synthetisieren (Betonungs-Paritaet)
+                item["audio_b64"] = str(audio_b64)
+            q.append(item)
             del q[:-50]  # nicht unbegrenzt anwachsen lassen
 
     def drain_pending(self, key: str) -> list[dict]:
@@ -503,6 +514,10 @@ class SatManager:
                     # der Docker-Angabe, die auf dem Host nicht zuverlaessig
                     # war (Container-MACs aendern sich bei jedem Rebuild).
                     "app_version": (s.info.get("version") or ""),
+                    # Meldetyp des Geräts: 'pi' (Web-Dienst) | 'android'
+                    # (Pull-Empfang). Die Android-App filtert ihre
+                    # Direktnachrichten-Zielgeräte darüber auf andere Apps.
+                    "kind": s.kind,
                     "activity": self.activity(s),
                     "phase": ((s.info.get("pipeline") or {}).get("phase") or ""),
                     "last_event": ((s.info.get("pipeline") or {}).get("last_event") or ""),
