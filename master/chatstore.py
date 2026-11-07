@@ -129,6 +129,8 @@ def add_sats_chat(mac: str, entries: list) -> int:
         _append_chat(mac, {"ts": e.get("ts") or time.time(),
                             "kind": kind, "text": e.get("text") or "",
                             "mac": mac,
+                            **({"who": str(e["who"])[:64]}
+                               if e.get("who") else {}),
                             **({"path": e["path"]} if e.get("path") else {})})
         n += 1
         new_last = max(new_last, eid)

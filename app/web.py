@@ -252,10 +252,14 @@ class Handler(BaseHTTPRequestHandler):
             vol = data.get("vol", data.get("volume"))
             wait = bool(data.get("wait", True))
             if p is not None:
+                # src: Absender der Durchsage (Web-UI-Benutzer vom Master,
+                # "Master-Token" o. a.) — erscheint als Quelle im Chat.
+                src = str(data.get("src") or "").strip()[:64]
                 if audio_b64:
-                    ok = p.broadcast_audio(audio_b64, vol=vol, wait=wait)
+                    ok = p.broadcast_audio(audio_b64, vol=vol, wait=wait,
+                                           src=src, text=text)
                 else:
-                    ok = p.broadcast(text, vol=vol, wait=wait)
+                    ok = p.broadcast(text, vol=vol, wait=wait, src=src)
                 return self._send(200 if ok else 502,
                                   {"ok": ok, "text": text[:80]})
             import base64

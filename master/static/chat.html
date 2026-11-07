@@ -9,6 +9,18 @@
 * { box-sizing:border-box; }
 html,body { height:100%; }
 body { margin:0; font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; background:var(--bg); color:var(--fg); display:flex; flex-direction:column; }
+#login-overlay { position:fixed; inset:0; background:var(--bg); display:flex; align-items:center; justify-content:center; z-index:2000; }
+#login-overlay[hidden] { display:none; }
+.login-box { background:var(--card); border:1px solid #2c3040; border-radius:12px; padding:26px 30px; width:340px; }
+.login-box h2 { margin:0 0 4px; font-size:1.1rem; }
+.login-box .hint { color:var(--dim); font-size:0.8rem; margin-bottom:16px; }
+.login-box input { width:100%; background:#0d0f14; border:1px solid #2a2e3a; color:var(--fg); padding:9px 12px; border-radius:6px; font-size:0.9rem; margin-bottom:10px; }
+.login-box input:focus { outline:none; border-color:var(--acc); }
+.login-box .err { color:var(--err); font-size:0.8rem; min-height:1.2em; margin-top:8px; }
+.login-box button { width:100%; padding:9px; font-size:0.92rem; }
+.userchip { display:inline-block; font-size:0.72rem; font-weight:600; padding:2px 10px; border-radius:20px; background:#262a35; color:var(--acc); margin-left:10px; }
+.userchip.admin { background:#173328; color:var(--ok); }
+.userchip.user { color:var(--dim); }
 header { padding:18px 24px 14px; border-bottom:1px solid #2a2e3a; }
 .backbtn { padding:6px 14px;border:1px solid var(--dim);background:transparent;border-radius:6px;cursor:pointer;color:var(--acc);font-size:0.85rem; }
 h1 { font-size:1.15rem; font-weight:600; margin:0; display:flex; align-items:center; gap:10px; }
@@ -49,8 +61,21 @@ h1 .v { color:var(--dim); font-size:0.8rem; font-weight:400; margin-left:auto; }
 </style>
 </head>
 <body>
+<div id="login-overlay" hidden>
+  <div class="login-box">
+    <h2 id="login-title">Chat</h2>
+    <div class="hint" id="login-hint">Bitte anmelden, um den Chat zu nutzen.</div>
+    <input id="login-user" placeholder="Benutzername" autocomplete="username">
+    <input id="login-pass" type="password" placeholder="Passwort" autocomplete="current-password">
+    <button id="login-btn">Anmelden</button>
+    <div class="err" id="login-err"></div>
+  </div>
+</div>
 <header>
-  <h1><button class="backbtn" onclick="location.href='/'">← Zurück</button>💬 Chat <span class="v" id="status">verbinde …</span></h1>
+  <h1><button class="backbtn" onclick="location.href='/'">← Zurück</button>💬 Chat
+    <span class="userchip" id="user-chip" style="display:none"></span>
+    <a id="btn-logout" href="#" style="display:none;font-size:0.8rem;color:var(--dim);margin-left:6px">Abmelden</a>
+    <span class="v" id="status">verbinde …</span></h1>
 </header>
 <div class="controls">
   <span class="clabel">Chat filtern</span>
@@ -208,9 +233,12 @@ function renderEntry(e) {
   if (e.think) {
     thinkHtml = `<details class="think"><summary>💭 Thinking (${e.think.length} Zeichen)</summary><pre>${esc(e.think)}</pre></details>`;
   }
+  // Quelle (e.who): schreibender Web-UI-Benutzer (Benutzerverwaltung) oder
+  // "web" bei älteren Einträgen — bei "web" unsichtbar (Alt-Verhalten).
+  const whoSrc = (e.who && e.who !== "web") ? ` · 👤 ${esc(e.who)}` : "";
   if (kind === "user") {
-    // Eingabe -> Quellgerät (wo es erkannt wurde)
-    who = `<span class="badge in">🎤 ${esc(devname)}</span>`;
+    // Eingabe -> Quellgerät (wo es erkannt wurde) + wer es geschrieben hat
+    who = `<span class="badge in">🎤 ${esc(devname)}${whoSrc}</span>`;
     // Eingabe ist nur Erkanntes, keine Audio-Ausgabe -> kein Abspiel-Button.
     playHtml = "";
   } else if (kind === "assistant") {
@@ -218,7 +246,7 @@ function renderEntry(e) {
     // Eingabegerät. e.out = 'browser' | Satellit-Key; 📢 = an Gerät gebroadcastt.
     const tgt = e.out || e.mac;
     const bcast = e.out && e.out !== "browser";
-    who = `<span class="badge out">${bcast ? "🔊📢" : "🔊"} ${esc(nameOf(tgt))}${bcast ? " · Broadcast" : ""}</span>`;
+    who = `<span class="badge out">${bcast ? "🔊📢" : "🔊"} ${esc(nameOf(tgt))}${bcast ? " · Broadcast" : ""}${whoSrc}</span>`;
     playHtml = `<div class="play"><button>▶ Abspielen</button><span>Ausgabe</span></div>`;
   } else if (kind === "musik") {
     who = `<span class="badge mus">🎵 ${esc(devname)}</span>`;
@@ -416,9 +444,63 @@ sse.addEventListener("chat_progress", ev => {
 });
 
 $("chat-input").addEventListener("keydown", e => { if (e.key === "Enter") sendMsg(); });
-loadSats();
-loadEntries();
-setInterval(() => { if (!$("btn-send").disabled) loadEntries(); }, 10000);
+
+// ── Benutzerverwaltung: Login vor Chat-Start ──────────────────
+function showLogin(needsSetup, msg) {
+  document.body.style.overflow = "hidden";
+  $("login-overlay").hidden = false;
+  if (needsSetup) {
+    $("login-title").textContent = "Ersteinrichtung";
+    $("login-hint").textContent = "Noch kein Benutzerkonto vorhanden — bitte das erste Admin-Konto anlegen:";
+    $("login-btn").textContent = "Admin-Konto anlegen";
+  } else {
+    $("login-title").textContent = "Chat";
+    $("login-hint").textContent = "Bitte anmelden, um den Chat zu nutzen.";
+    $("login-btn").textContent = "Anmelden";
+  }
+  $("login-err").textContent = msg || "";
+}
+async function doLogin() {
+  const u = $("login-user").value.trim();
+  const pw = $("login-pass").value;
+  if (!u || !pw) { $("login-err").textContent = "Name und Passwort eingeben."; return; }
+  $("login-btn").disabled = true;
+  try {
+    const r = await fetch("/login", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: u, password: pw }) });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok) { enter(j); return; }
+    if (j.error && /falsch/i.test(j.error)) { $("login-err").textContent = j.error; return; }
+    const st = await fetch("/api/auth/status").then(x => x.json()).catch(() => ({}));
+    if (st.has_users === false) { showLogin(true, ""); return; }
+    $("login-err").textContent = j.error || "Anmeldung fehlgeschlagen.";
+  } catch (e) { $("login-err").textContent = "Verbindung fehlgeschlagen: " + e; }
+  $("login-btn").disabled = false;
+}
+function enter(user) {
+  const chip = $("user-chip");
+  chip.textContent = (user.display || user.username || "") +
+    (user.role === "admin" ? " · admin" : " · user");
+  chip.className = "userchip " + (user.role === "admin" ? "admin" : "user");
+  chip.style.display = "inline-block";
+  $("btn-logout").style.display = "inline";
+  $("login-overlay").hidden = true;
+  document.body.style.overflow = "";
+  loadSats();
+  loadEntries();
+  setInterval(() => { if (!$("btn-send").disabled) loadEntries(); }, 10000);
+}
+$("login-btn").onclick = doLogin;
+$("login-pass").addEventListener("keydown", e => { if (e.key === "Enter") doLogin(); });
+$("btn-logout").onclick = e => {
+  e.preventDefault();
+  fetch("/logout", { method: "POST" }).finally(() => location.reload());
+};
+fetch("/api/me").then(r => r.json().then(j => {
+  if (r.ok) enter(j);
+  else showLogin(!!j.needs_setup, "");
+})).catch(() => showLogin(false, "Master nicht erreichbar."));
 // Aufnahme-Liste (Info-Zeile)
 (async () => {
   try {

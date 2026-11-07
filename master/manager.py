@@ -49,6 +49,7 @@ class Satellite:
     docker_running: bool = False
     is_known: bool = False   # aus SATELLITES-Konfiguration
     kind: str = "pi"         # 'pi' (hat Web-Dienst) | 'android' (Pull-Empfang)
+    custom_name: str = ""    # persistenter Anzeigename (UI-Zuordnung)
 
 
 class SatManager:
@@ -67,6 +68,12 @@ class SatManager:
         # Durchsagen (/speak, Chat-'out') können nicht zu ihr gepusht werden.
         # Sie holt sich offene Nachrichten mit ihrem nächsten Heartbeat ab.
         self._pending: dict[str, list[dict]] = {}
+        # Persistente Anzeigenamen pro Registry-Key (UI-Editierbar, Admin):
+        # device_names.json im Config-Volume — ueberlebt Rebuilds/Recreates.
+        from . import satconfig
+        cfg_dir = os.environ.get("VS_CONFIG_DIR", "").strip() or satconfig.CONFIG_DIR
+        self._names_path = os.path.join(cfg_dir, "device_names.json")
+        self._names: dict[str, str] = self._load_names()
         self._ensure_ssh_key()
 
     # ── Pull-Warteschlange für Geräte ohne Web-Dienst (Android-App) ──
@@ -161,6 +168,76 @@ class SatManager:
             self._key_local = None
             log.exception("SSH-Key-Setup fehlgeschlagen – Discovery läuft IP-basiert weiter")
 
+    # ── Anzeigenamen (persistent) ───────────────────────────────
+
+    def _load_names(self) -> dict[str, str]:
+        try:
+            with open(self._names_path, encoding="utf-8") as f:
+                data = json.load(f)
+            return {k: str(v) for k, v in data.items()
+                    if isinstance(v, str) and v.strip()}
+        except (OSError, ValueError):
+            return {}
+
+    def _save_names(self) -> None:
+        try:
+            os.makedirs(os.path.dirname(self._names_path), exist_ok=True)
+            tmp = self._names_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self._names, f, ensure_ascii=False, indent=1)
+            os.replace(tmp, self._names_path)
+        except OSError as e:
+            log.warning("Namen-Store nicht schreibbar: %s", e)
+
+    def display_name(self, key: str) -> str:
+        """Anzeigename eines Registry-Keys: custom_name > Hostname > Key.
+
+        Loest auch IP/Hostnamen/custom-Name selbst auf (wie sat_target)."""
+        want = (key or "").strip().lower()
+        with self._lock:
+            sat = self.satellites.get(key) or (
+                self.satellites.get(want) if want else None)
+            if sat is None:
+                for k, s in self.satellites.items():
+                    if (s.ip or "").lower() == want or \
+                            (s.hostname or "").lower() == want or \
+                            (s.custom_name or "").lower() == want or \
+                            k.lower() == want:
+                        sat = s
+                        break
+        if sat is None:
+            return (key or "").strip()
+        return (sat.custom_name or sat.hostname or key or "").strip()
+
+    def set_name(self, key: str, name: str) -> str | None:
+        """Persistenter Anzeigename eines Satelliten (leer = loeschen).
+
+        Gibt None bei Erfolg, sonst Fehlerstring. Der Name wird auch als
+        Ziel-Bezeichner gelöst (sat_target) und als DM-Quellname verwendet."""
+        name = (name or "").strip()[:48]
+        want = (key or "").strip().lower()
+        with self._lock:
+            target = None
+            for k, s in self.satellites.items():
+                if k.lower() == want or (s.ip or "").lower() == want \
+                        or (s.hostname or "").lower() == want \
+                        or (s.custom_name or "").lower() == want:
+                    target = k
+                    break
+            if target is None:
+                return "Satellit nicht bekannt"
+            if name:
+                self._names[target] = name
+            else:
+                self._names.pop(target, None)
+            sat = self.satellites.get(target)
+            if sat is not None:
+                sat.custom_name = name
+        self._save_names()
+        log.info("Satellit %s: Anzeigename %s", target,
+                 f"→ '{name}'" if name else "geloescht")
+        return None
+
     # ── Registrierung (keine Discovery) ─────────────────────────
     #
     # Auto-Discovery (Subnetz-Scan) ist entfernt: Satelliten melden sich
@@ -197,6 +274,7 @@ class SatManager:
                         mac=key, ip=ip,
                         hostname=f"sat-{ip.rsplit('.', 1)[-1]}",
                         status="unknown", is_known=True,
+                        custom_name=self._names.get(key, ""),
                     )
                     self.satellites[key] = sat
                     log.info("Satellit %s: registriert (wartet auf Heartbeat)", sat.hostname)
@@ -311,18 +389,27 @@ class SatManager:
                     if old_sat.hostname:
                         keep.hostname = old_sat.hostname
                     keep.info = old_sat.info or keep.info
+                    if old_sat.custom_name and not keep.custom_name:
+                        keep.custom_name = old_sat.custom_name
                     # Event-Seq uebernehmen (Live-Log-Dupe-Filter)
                     self._event_seqs[existing] = max(
                         self._event_seqs.get(existing, 0),
                         self._event_seqs.get(key, 0))
                     log.info("Satellit %s: Duplikat zusammengefuehrt (aus %s)",
                              existing, key)
+                # Persistenter Anzeigename: zum ueberlebenden Key migrieren
+                if key in self._names:
+                    if not self._names.get(existing):
+                        self._names[existing] = self._names[key]
+                    self._names.pop(key, None)
+                    self._save_names()
                 key = existing
             elif key not in self.satellites:
                 self.satellites[key] = Satellite(
                     mac=mac,
                     ip=ip,
                     hostname=data.get("hostname") or f"sat-{key}",
+                    custom_name=self._names.get(key, ""),
                 )
             # Merge: auch wenn der KEY bereits existiert (z.B. MAC-Eintrag),
             # aktualisiere die IP auf die echte Host-IP (NAT-Quelle), falls
@@ -343,6 +430,7 @@ class SatManager:
                 sat.kind = kind
             sat.info = data
             sat.is_known = True  # Herzschlag = bekannt
+            sat.custom_name = self._names.get(key, sat.custom_name or "")
         # Status-Update an UI (außerhalb des Locks)
         self._notify(key, sat)
 
@@ -475,7 +563,8 @@ class SatManager:
                 for k, s in self.satellites.items():
                     host = (s.hostname or "").lower()
                     if (s.ip or "").lower() == want or host == want \
-                            or host.split(".")[0] == want or k.lower() == want:
+                            or host.split(".")[0] == want or k.lower() == want \
+                            or (s.custom_name or "").lower() == want:
                         sat, key = s, k
                         break
             if sat is None or not sat.ip:
@@ -508,6 +597,7 @@ class SatManager:
                     "mac": s.mac,
                     "ip": s.ip,
                     "hostname": s.hostname,
+                    "custom_name": s.custom_name,
                     "status": s.status,
                     "last_seen": s.last_seen,
                     "docker_running": s.docker_running,

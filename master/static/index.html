@@ -68,6 +68,29 @@ footer { margin-top:24px; color:var(--dim); font-size:0.78rem; }
 .cfg-section { display:none; }
 .cfg-section.active { display:block; }
 
+/* Login-Overlay (Benutzerverwaltung) */
+#login-overlay{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:2000}
+#login-overlay[hidden]{display:none}
+.login-box{background:var(--card);border:1px solid #2c3040;border-radius:12px;padding:26px 30px;width:340px}
+.login-box h2{margin:0 0 4px;font-size:1.1rem}
+.login-box .hint{color:var(--dim);font-size:0.8rem;margin-bottom:16px}
+.login-box input{width:100%;background:#0d0f14;border:1px solid #2a2e3a;color:var(--fg);padding:9px 12px;border-radius:6px;font-size:0.9rem;margin-bottom:10px}
+.login-box input:focus{outline:none;border-color:var(--acc)}
+.login-box .err{color:var(--err);font-size:0.8rem;min-height:1.2em;margin-top:8px}
+.login-box button{width:100%;padding:9px;font-size:0.92rem}
+.userchip{display:inline-block;font-size:0.72rem;font-weight:600;padding:2px 10px;border-radius:20px;background:#262a35;color:var(--acc);margin-left:10px;vertical-align:middle}
+.userchip.admin{background:#173328;color:var(--ok)}
+.userchip.user{background:#262a35;color:var(--dim)}
+body:not(.admin) .admin-only{display:none !important}
+body.readonly .cfg-readonly-hint{display:block}
+.cfg-readonly-hint{display:none;font-size:0.8rem;color:var(--warn);margin-bottom:10px}
+.satname{width:100%;min-width:110px;background:#0d0f14;border:1px solid #2a2e3a;color:var(--fg);padding:3px 8px;border-radius:5px;font-size:0.82rem}
+.satname:focus{outline:none;border-color:var(--acc)}
+.userrow input.userpw{width:120px;background:#0d0f14;border:1px solid #2a2e3a;color:var(--fg);padding:3px 8px;border-radius:5px;font-size:0.78rem}
+.userrow select{background:#0d0f14;border:1px solid #2a2e3a;color:var(--fg);padding:3px 6px;border-radius:5px;font-size:0.78rem}
+.newuser-row{display:flex;gap:6px;margin-top:10px;flex-wrap:wrap}
+.newuser-row input,.newuser-row select{background:#0d0f14;border:1px solid #2a2e3a;color:var(--fg);padding:5px 8px;border-radius:5px;font-size:0.8rem}
+.newuser-row input{flex:1;min-width:80px}
 /* QR-Code-Modal (Konfiguration als QR zum Scannen in der App) */
 .qr-modal{position:fixed;inset:0;background:rgba(0,0,0,.66);display:flex;align-items:center;justify-content:center;z-index:1000}
 .qr-modal[hidden]{display:none}
@@ -79,12 +102,26 @@ footer { margin-top:24px; color:var(--dim); font-size:0.78rem; }
 </style>
 </head>
 <body>
+<div id="login-overlay" hidden>
+  <div class="login-box">
+    <h2 id="login-title">Voice-Satellite Master</h2>
+    <div class="hint" id="login-hint">Bitte anmelden, um fortzufahren.</div>
+    <input id="login-user" placeholder="Benutzername" autocomplete="username">
+    <input id="login-pass" type="password" placeholder="Passwort" autocomplete="current-password">
+    <button id="login-btn">Anmelden</button>
+    <div class="err" id="login-err"></div>
+  </div>
+</div>
+
 <div id="dash">
 <h1>Voice-Satellite Master <span class="v" id="version">–</span>
   <button onclick="location.href='/chat.html'" style="float:right;padding:6px 14px;margin:4px 6px 0 0;border:1px solid var(--dim);background:transparent;border-radius:4px;cursor:pointer;color:var(--acc);font-size:0.85rem">💬 Chat</button>
   <button id="btn-open-config" style="float:right;padding:6px 14px;border:1px solid var(--dim);background:transparent;border-radius:4px;cursor:pointer;color:var(--acc);font-size:0.85rem;margin-top:4px">⚙ Konfiguration</button>
 </h1>
-<div class="sub" id="hostline">dev-Server · Port 8791</div>
+<div class="sub" id="hostline">dev-Server · Port 8791
+  <span id="user-chip" class="userchip" style="display:none"></span>
+  <a id="btn-logout" href="#" style="display:none;margin-left:8px">Abmelden</a>
+</div>
 
 <div class="grid">
   <div class="card">
@@ -95,7 +132,7 @@ footer { margin-top:24px; color:var(--dim); font-size:0.78rem; }
     <div class="row"><span class="k">Audiotracks</span><span class="num" id="idx-mp3">–</span></div>
     <div class="row"><span class="k">Uptime</span><span class="k num" id="master-uptime">–</span></div>
     <div class="row"><span class="k">Startzeit</span><span class="k num" id="master-start">–</span></div>
-    <div style="margin-top:12px">
+    <div class="admin-only" style="margin-top:12px">
       <button id="btn-rebuild">Index neu bauen</button>
     </div>
   </div>
@@ -106,6 +143,24 @@ footer { margin-top:24px; color:var(--dim); font-size:0.78rem; }
       <thead><tr><th>Satellit</th><th>IP</th><th>Aktivität</th><th>Aktion</th></tr></thead>
       <tbody id="sat-body"><tr><td colspan="5" style="color:var(--dim)">lade …</td></tr></tbody>
     </table>
+  </div>
+
+  <div class="card admin-only" id="users-card">
+    <h2>Benutzer</h2>
+    <table>
+      <thead><tr><th>Benutzer</th><th>Rolle</th><th></th></tr></thead>
+      <tbody id="users-body"><tr><td colspan="3" style="color:var(--dim)">lade …</td></tr></tbody>
+    </table>
+    <div class="newuser-row">
+      <input id="nu-name" placeholder="Name">
+      <input id="nu-pass" type="password" placeholder="Passwort">
+      <select id="nu-role"><option value="user">user</option><option value="admin">admin</option></select>
+      <button id="btn-user-add">Hinzufügen</button>
+    </div>
+    <div style="margin-top:8px;font-size:0.72rem;color:var(--dim)">
+      <b>admin</b>: Config lesen/ändern, Geräte steuern und umbenennen, Benutzer verwalten ·
+      <b>user</b>: nur lesen und chatten.
+    </div>
   </div>
 </div>
 
@@ -135,16 +190,17 @@ footer { margin-top:24px; color:var(--dim); font-size:0.78rem; }
   </div>
 
   <!-- Global config -->
+  <div class="cfg-readonly-hint">⚠ Nur-Lesezugriff — als <b>user</b> kann die Konfiguration nicht geändert werden (Admin nötig).</div>
   <table class="cfg-table" id="cfg-table">
     <thead><tr><th class="key-col">Schlüssel</th><th class="type-col">Typ</th><th>Wert</th></tr></thead>
     <tbody id="cfg-tbody"></tbody>
   </table>
   <div class="cfg-save-row">
-    <button id="btn-save-global" disabled>Speichern</button>
+    <button id="btn-save-global" class="admin-only" disabled>Speichern</button>
     <span style="color:var(--dim);font-size:0.82rem">Satelliten ziehen Config beim Neustart automatisch → kein Push nötig</span>
     <span id="cfg-status" class="cfg-status"></span>
   </div>
-  <div class="cfg-save-row">
+  <div class="cfg-save-row admin-only">
     <button id="btn-cfg-export" title="Konfiguration als JSON-Datei exportieren (inkl. gespeicherter Secrets)">⬇ Export</button>
     <button id="btn-cfg-import" title="Konfig-Datei importieren (Merge; Satellite-Export →Override für diesen Satellit)">⬆ Import</button>
     <button id="btn-cfg-qr" title="Aktuelle Konfiguration als QR-Code anzeigen; ein App-Gerät importiert ihn unter Einstellungen -> QR-Code scannen">⚟ QR-Code</button>
@@ -268,6 +324,10 @@ async function loadConfig() {
     globalConfig = j.global || {};
     allSats = j.satellites || {};
     renderConfigTable();
+    // User-Rolle: nur lesen — alle Eingaben sperren.
+    if (ROLE !== 'admin')
+      document.querySelectorAll('#cfg-tbody .cfg-input')
+        .forEach(i => i.disabled = true);
   } catch (e) {
     showStatus('cfg-status', 'Laden fehlgeschlagen: ' + e, 'err');
   }
@@ -519,17 +579,38 @@ async function refresh() {
           ? '<span style="color:var(--dim)">offline</span>'
           : '<span style="color:var(--dim)">bereit</span>');
 
+      // Name (admin): editierbares Feld → PUT /api/satellite/{key}/name.
+      const dispName = s.custom_name || s.hostname || s.ip || '';
+      const nameCell = ROLE === 'admin'
+        ? `<input class="satname" data-key="${esc(s.mac)}" data-orig="${esc(dispName)}" value="${esc(s.custom_name || '')}" placeholder="${esc(s.hostname || s.ip)}" title="Anzeigename (leer = Hostname)">`
+        : esc(dispName);
       return `<tr>
-        <td><span class="dot ${dotCls}"></span>${esc(s.hostname || s.ip)}</td>
+        <td><span class="dot ${dotCls}"></span>${nameCell}</td>
         <td class="num">${esc(s.ip)}</td>
         <td style="font-size:0.82rem;line-height:1.4">${activityHtml}</td>
         <td>
+          <span class="admin-only">
           <button onclick="act('${esc(s.mac)}','restart')">Start</button>
           <button class="warn" onclick="act('${esc(s.mac)}','pause')">Pause</button>
+          </span>
         </td>
       </tr>`;
     }).join('')
       : '<tr><td colspan="4" style="color:var(--dim)">keine Satelliten konfiguriert</td></tr>';
+    // Namens-Felder binden (nur Admin): Enter oder Blur → speichern
+    $('sat-body').querySelectorAll('.satname').forEach(inp => {
+      const save = async () => {
+        const val = inp.value.trim();
+        if (val === (inp.dataset.orig || '')) return;
+        const r = await fetch(`/api/satellite/${encodeURIComponent(inp.dataset.key)}/name`, {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: val })});
+        if (!r.ok) { const j = await r.json().catch(() => ({})); alert(j.error || r.status); inp.value = inp.dataset.orig; }
+        else inp.dataset.orig = val;
+      };
+      inp.addEventListener('change', save);
+      inp.addEventListener('keydown', e => { if (e.key === 'Enter') inp.blur(); });
+    });
   } catch (e) {
     $('idx-status').className='badge err'; $('idx-status').textContent='nicht erreichbar';
   }
@@ -638,10 +719,148 @@ $('qr-close').onclick = () => {
 };
 $('qr-modal').addEventListener('click', (e) => { if (e.target === $('qr-modal')) $('qr-close').onclick(); });
 
-refresh();
-connectSSE();
-connectLiveLog();
-setInterval(refresh, 30000);
+// ── Benutzerverwaltung: Login, Rolle, Verwaltung ─────────────
+let ROLE = "";              // 'admin' | 'user' (leer = nicht angemeldet)
+let DISPLAY_NAME = "";
+const $ov = () => $('login-overlay');
+
+function showLogin(needsSetup, msg) {
+  $('dash').style.display = 'none';
+  $('config-page').style.display = 'none';
+  $('login-overlay').hidden = false;
+  if (needsSetup) {
+    $('login-title').textContent = 'Ersteinrichtung';
+    $('login-hint').textContent = 'Noch kein Benutzerkonto vorhanden — bitte das erste Admin-Konto anlegen:';
+    $('login-pass').setAttribute('autocomplete', 'new-password');
+    $('login-btn').textContent = 'Admin-Konto anlegen';
+  } else {
+    $('login-title').textContent = 'Voice-Satellite Master';
+    $('login-hint').textContent = 'Bitte anmelden, um fortzufahren.';
+    $('login-btn').textContent = 'Anmelden';
+  }
+  $('login-err').textContent = msg || '';
+}
+
+async function doLogin() {
+  const u = $('login-user').value.trim();
+  const pw = $('login-pass').value;
+  if (!u || !pw) { $('login-err').textContent = 'Name und Passwort eingeben.'; return; }
+  $('login-btn').disabled = true;
+  try {
+    let r, j;
+    try {
+      r = await fetch('/login', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ username: u, password: pw }) });
+      j = await r.json().catch(() => ({}));
+      if (!r.ok && !j.needs_setup) throw 0;
+    } catch { /* 401 mit needs_setup? -> Setup-Weg */ }
+    let ok = false;
+    if (r && r.ok) ok = true;
+    else if (r && !r.ok) {
+      const errText = (j && j.error) ? j.error : '';
+      if (errText && /Anmeldeangabe|falsch/i.test(errText)) {
+        $('login-err').textContent = errText; ok = false;
+      }
+    }
+    if (!ok && !$('login-title').textContent.includes('Ersteinrichtung')) {
+      // evtl. Setup erforderlich
+      const st = await fetch('/api/auth/status').then(r => r.json()).catch(() => ({}));
+      if (st.has_users === false) { showLogin(true, ''); return; }
+    }
+    if (ok) enter(j);
+    else if (!$('login-err').textContent) $('login-err').textContent = 'Anmeldung fehlgeschlagen.';
+  } catch (e) {
+    $('login-err').textContent = 'Verbindung fehlgeschlagen: ' + e;
+  }
+  $('login-btn').disabled = false;
+}
+
+function enter(user) {
+  ROLE = user.role || '';
+  DISPLAY_NAME = user.display || user.username || '';
+  document.body.classList.toggle('admin', ROLE === 'admin');
+  document.body.classList.toggle('readonly', ROLE !== 'admin');
+  const chip = $('user-chip');
+  chip.textContent = DISPLAY_NAME + (ROLE === 'admin' ? ' · admin' : ' · user');
+  chip.className = 'userchip ' + (ROLE === 'admin' ? 'admin' : 'user');
+  chip.style.display = 'inline-block';
+  $('btn-logout').style.display = 'inline';
+  $('login-overlay').hidden = true;
+  $('dash').style.display = '';
+  if (ROLE === 'admin') loadUsers();
+}
+
+function boot() {
+  fetch('/api/me').then(r => r.json().then(j => {
+    if (r.ok) { enter(j); }
+    else { showLogin(!!j.needs_setup, ''); return; }
+    refresh();
+    connectSSE();
+    connectLiveLog();
+    setInterval(refresh, 30000);
+  })).catch(() => showLogin(false, 'Master nicht erreichbar.'));
+}
+
+$('login-btn').onclick = doLogin;
+$('login-pass').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+$('btn-logout').onclick = e => {
+  e.preventDefault();
+  fetch('/logout', { method: 'POST' }).finally(() => location.reload());
+};
+
+// ── Benutzerverwaltung (nur Admin) ─────────────────────────────
+async function loadUsers() {
+  try {
+    const r = await fetch('/api/users');
+    if (!r.ok) return;
+    const d = await r.json();
+    $('users-body').innerHTML = (d.users || []).map(u => `
+      <tr class="userrow">
+        <td><b>${esc(u.display || u.username)}</b>
+            <span style="color:var(--dim);font-size:0.72rem">(${esc(u.username)})</span></td>
+        <td><select data-un="${esc(u.username)}" ${u.username === DISPLAY_NAME.toLowerCase() ? 'disabled title="eigene Rolle"' : ''}>
+          <option value="user" ${u.role === 'user' ? 'selected' : ''}>user</option>
+          <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>admin</option>
+        </select></td>
+        <td style="text-align:right">
+          <button class="warn" style="padding:3px 10px" onclick="delUser('${esc(u.username)}')" ${u.username === DISPLAY_NAME.toLowerCase() ? 'disabled' : ''}>Löschen</button>
+        </td>
+      </tr>`).join('');
+    $('users-body').querySelectorAll('select[data-un]').forEach(sel => {
+      sel.onchange = async () => {
+        const r = await fetch('/api/users/' + encodeURIComponent(sel.dataset.un), {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ role: sel.value })});
+        if (!r.ok) { const j = await r.json().catch(() => ({})); alert(j.error || r.status); }
+        else loadUsers();
+      };
+    });
+  } catch {}
+}
+
+async function delUser(name) {
+  if (!confirm(`Benutzer „${name}“ wirklich löschen?`)) return;
+  const r = await fetch('/api/users/' + encodeURIComponent(name), { method: 'DELETE' });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) alert(j.error || r.status);
+  loadUsers();
+}
+
+$('btn-user-add').onclick = async () => {
+  const name = $('nu-name').value.trim();
+  const pw = $('nu-pass').value;
+  const role = $('nu-role').value;
+  if (!name || !pw) { alert('Name und Passwort eingeben.'); return; }
+  const r = await fetch('/api/users', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: name, password: pw, role })});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { alert(j.error || r.status); return; }
+  $('nu-name').value = ''; $('nu-pass').value = '';
+  loadUsers();
+};
+
+boot();
 </script>
 </body>
 </html>

@@ -418,13 +418,15 @@ class Pipeline:
         # der Master wuerde sonst pro Satellit deren Timeout abwarten.
         play_thread.join(timeout=30 if wait else 0)
 
-    def broadcast(self, text, vol=None, wait=False):
+    def broadcast(self, text, vol=None, wait=False, src=""):
         """Durchsage von ausserhalb (openHAB, Master-API): Text ohne
         Wake-Word und ohne LLM direkt auf den Lautsprecher.
 
         vol:  0-100 = Lautstaerke NUR fuer diese Durchsage (danach zurueck);
               None = die eingestellte Lautstaerke behalten.
         wait: True = bis zum Ende der Wiedergabe blockieren.
+        src:  Absender (z. B. Web-UI-Benutzer vom Master) — wird als
+              Quelle in den Master-Chat mitgemeldet.
 
         Wie beim Web-TTS: Wake-Loop waehrend der Ausgabe taub, Player-Hold
         (Musik pausiert statt ins bereits belegte Geraet zu schreiben),
@@ -435,8 +437,9 @@ class Pipeline:
             return False
         # Externe Durchsage als Ausgabetext in den Master-Chat melden
         # (Zielgeraet = wir), damit sie wie LLM-Antworten erscheinbar sind.
+        # src = wer sie ausgelöst hat (Web-UI-Benutzer, "Master-Token" …).
         try:
-            chatlog.emit("assistant", text)
+            chatlog.emit("assistant", text, who=src)
         except Exception:
             pass
         if not wait:
@@ -450,10 +453,13 @@ class Pipeline:
             return True
         return self._broadcast_blocking(text, vol)
 
-    def broadcast_audio(self, audio_b64, vol=None, wait=False):
+    def broadcast_audio(self, audio_b64, vol=None, wait=False,
+                        src="", text=""):
         """Durchsage mit fertigem Audio (base64-WAV): der Master hat schon
         synthetisiert (Broadcast "an alle" = 1x TTS, parallele Ausgabe).
-        Wiedergabe laeuft wie bei broadcast() — Ducking, Pause, Aufraeumen."""
+        Wiedergabe laeuft wie bei broadcast() — Ducking, Pause, Aufraeumen.
+        text/src: nur zur Chat-Meldung (Quelle anzeigen), fuer die
+        Wiedergabe selbst nicht relevant."""
         import base64
         try:
             wav = base64.b64decode(audio_b64)
@@ -461,6 +467,12 @@ class Pipeline:
             return False
         if not wav:
             return False
+        if text and src:
+            # Broadcast-Weg: Quelle wie bei broadcast() sichtbar machen.
+            try:
+                chatlog.emit("assistant", text, who=src)
+            except Exception:
+                pass
         if not wait:
             threading.Thread(target=self._broadcast_wav,
                              args=(wav, vol), daemon=True).start()

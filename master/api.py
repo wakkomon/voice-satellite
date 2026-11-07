@@ -36,6 +36,7 @@ from . import config as master_cfg
 from . import __version__ as MASTER_VERSION
 from . import proxy
 from . import mcp_gateway
+from . import webauth
 from .indexer import _build_media_index, load_index_cache, save_index
 from .manager import SatManager
 from .satconfig import (store as config_store, EDITABLE_KEYS,
@@ -310,6 +311,142 @@ async def _sat_heartbeat(req: Request) -> JSONResponse:
                          "messages": msgs})
 
 
+# ── Benutzerverwaltung: Login, Session, Rollen ───────────────
+# Menschlicher WebUI-Zugriff (Browser) wird hier gefuehrt; die
+# Maschinen-Seite (Satelliten, Apps, openHAB-curl) bleibt bei
+# MASTER_TOKEN und wird unten im Gate ausgenommen.
+
+async def _login(req: Request) -> JSONResponse:
+    """POST /login {username, password} → Session-Cookie 'vs_sid'."""
+    try:
+        body = await req.json()
+    except (json.JSONDecodeError, ValueError):
+        return JSONResponse({"error": "ungueltiges JSON"}, status_code=400)
+    username = str(body.get("username") or body.get("user") or "")
+    password = str(body.get("password") or "")
+    role = webauth.verify_login(username, password)
+    if role is None:
+        return JSONResponse({"error": "Anmeldeangabe falsch"},
+                            status_code=401)
+    name = username.strip().lower()
+    tok = webauth.start_session(name)
+    resp = JSONResponse({"ok": True, "username": name, "role": role})
+    resp.set_cookie("vs_sid", tok, httponly=True, samesite="lax",
+                    path="/", max_age=webauth.SESSION_TTL_SEC)
+    return resp
+
+
+async def _logout(req: Request) -> JSONResponse:
+    tok = req.cookies.get("vs_sid", "")
+    if tok:
+        webauth.end_session(tok)
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie("vs_sid", path="/")
+    return resp
+
+
+async def _me(req: Request) -> JSONResponse:
+    """GET /api/me → eingeloggter Benutzer oder 401 (+needs_setup)."""
+    user = _req_user(req)
+    if user:
+        return JSONResponse(user)
+    return JSONResponse({"error": "unauthorized",
+                         "needs_setup": webauth.needs_setup()},
+                        status_code=401)
+
+
+async def _auth_status(req: Request) -> JSONResponse:
+    """GET /api/auth/status → ob ein Konto existiert (Ersteinrichtung-UI)."""
+    return JSONResponse({"has_users": not webauth.needs_setup()})
+
+
+async def _setup(req: Request) -> JSONResponse:
+    """POST /api/setup {username, password} → erstes Admin-Konto.
+
+    Nur waehrend der Store leer ist (Ersteinrichtung) — danach 403."""
+    if not webauth.needs_setup():
+        return JSONResponse(
+            {"error": "Ersteinrichtung bereits abgeschlossen"},
+            status_code=403)
+    try:
+        body = await req.json()
+    except (json.JSONDecodeError, ValueError):
+        return JSONResponse({"error": "ungueltiges JSON"}, status_code=400)
+    err = webauth.create_user(str(body.get("username") or ""),
+                              str(body.get("password") or ""), "admin")
+    if err:
+        return JSONResponse({"error": err}, status_code=400)
+    name = str(body.get("username") or "").strip().lower()
+    tok = webauth.start_session(name)
+    resp = JSONResponse({"ok": True, "username": name, "role": "admin"})
+    resp.set_cookie("vs_sid", tok, httponly=True, samesite="lax",
+                    path="/", max_age=webauth.SESSION_TTL_SEC)
+    return resp
+
+
+async def _users_list(req: Request) -> JSONResponse:
+    """GET /api/users → Konten (Admin, keine Hashes)."""
+    return JSONResponse({"users": webauth.list_users()})
+
+
+async def _users_create(req: Request) -> JSONResponse:
+    """POST /api/users {username, password, role, display?} (Admin)."""
+    try:
+        body = await req.json()
+    except (json.JSONDecodeError, ValueError):
+        return JSONResponse({"error": "ungueltiges JSON"}, status_code=400)
+    err = webauth.create_user(
+        str(body.get("username") or ""), str(body.get("password") or ""),
+        str(body.get("role") or "user"),
+        display=str(body.get("display") or ""))
+    if err:
+        return JSONResponse({"error": err}, status_code=400)
+    return JSONResponse({"ok": True, "users": webauth.list_users()})
+
+
+async def _users_update(req: Request) -> JSONResponse:
+    """PUT /api/users/{name} {password?, role?, display?} (Admin).
+
+    Felder fehlen = unveraendert (wie Config-PUTs: leer lassen)."""
+    name = req.path_params["name"]
+    try:
+        body = await req.json()
+    except (json.JSONDecodeError, ValueError):
+        return JSONResponse({"error": "ungueltiges JSON"}, status_code=400)
+    err = webauth.update_user(
+        name,
+        password=str(body.get("password") or ""),
+        role=str(body.get("role") or ""),
+        display="" if body.get("display") is None
+        else str(body.get("display") or ""))
+    if err:
+        return JSONResponse({"error": err}, status_code=400)
+    return JSONResponse({"ok": True, "users": webauth.list_users()})
+
+
+async def _users_delete(req: Request) -> JSONResponse:
+    """DELETE /api/users/{name} (Admin)."""
+    err = webauth.delete_user(req.path_params["name"])
+    if err:
+        return JSONResponse({"error": err}, status_code=400)
+    return JSONResponse({"ok": True, "users": webauth.list_users()})
+
+
+async def _sat_name_put(req: Request) -> JSONResponse:
+    """PUT /api/satellite/{key}/name {name} (Admin) → Anzeigename setzen.
+
+    Leerer Name loescht den Eintrag. key = MAC/IP/Hostnamen/custom-Name."""
+    key = req.path_params["mac"]
+    try:
+        body = await req.json()
+    except (json.JSONDecodeError, ValueError):
+        body = {}
+    err = manager.set_name(key, str(body.get("name") or ""))
+    if err:
+        return JSONResponse({"error": err}, status_code=404)
+    return JSONResponse({"ok": True, "name": manager.display_name(key)})
+
+
 # ── Chat-WebUI ────────────────────────────────────────────────
 # Chatfenster im WebUI: Eintraege der Satelliten (Sprech-Turne + Musik,
 # gepusht per Push/Heartbeat), TTS-Aufnahmen (Master zeichnet ueber den
@@ -416,10 +553,8 @@ async def _sat_dm(req: Request) -> JSONResponse:
     to = str((body.get("to") or "")).strip().lower()
     if not text or not to:
         return JSONResponse({"error": "text und to erforderlich"}, status_code=400)
-    # Quellname: Hostname des sendenden Geräts (aus der Registry), sonst MAC.
-    with manager._lock:
-        s = manager.satellites.get(mac)
-        from_name = (s.hostname if s and s.hostname else mac)[:48]
+    # Quellname: Anzeigename (custom > Hostname) des sendenden Geräts.
+    from_name = (manager.display_name(mac) or mac)[:48]
     # Ziel auflösen und vormerken. Queue-Key = Registry-Key, den das Ziel beim
     # Heartbeat drain-t (s. manager.canonical_key). 'all'/* = Broadcast an alle
     # anderen Online-Geräte.
@@ -505,7 +640,10 @@ async def _chat_send(req: Request) -> JSONResponse:
         out = "browser"
     if not text:
         return JSONResponse({"error": "leere Nachricht"}, status_code=400)
-    chatstore.add_chat(mac or "web", "user", text, who="web")
+    # Web-UI-Login-Name als Quelle (Benutzerverwaltung): erscheint in der
+    # Chat-Anzeige und wandert als 'src' in den Zielgeräten mit.
+    who = _req_user(req).get("display") or "web"
+    chatstore.add_chat(mac or "web", "user", text, who=who)
     _chat_progress("thinking")
 
     cfg = config_store.get_effective(mac or None)
@@ -590,7 +728,7 @@ async def _chat_send(req: Request) -> JSONResponse:
             log.warning("Chat-TTS: %s", e)
             rec = None
     entry = chatstore.add_chat(mac or "web", "assistant", answer,
-                               rec=rec, out=out, think=think)
+                               rec=rec, out=out, think=think, who=who)
     # Langzeitgedächtnis: Fakten aus dem Turn extrahieren (Daemon-Thread,
     # blockiert die Antwort nicht). Nur bei echten Antworten, nicht bei
     # Fehler-Platzhaltern.
@@ -606,14 +744,15 @@ async def _chat_send(req: Request) -> JSONResponse:
         # "An alle": die Antwort wird GENAU EINMAL im Master synthetisiert
         # und das fertige Audio dann gleichzeitig an alle Online-Saetlinge
         # geschickt (statt jeder Saetling synthetisiert einzeln — das war
-        # langsam und redundante Backend-Last).
-        task = asyncio.create_task(_fanout_broadcast(cfg, answer))
+        # langsam und redundante Backend-Last). src = schreibender Benutzer.
+        task = asyncio.create_task(_fanout_broadcast(cfg, answer, src=who))
         _bg_tasks.add(task)
         task.add_done_callback(_bg_tasks.discard)
         broadcast = "started"
     elif want_tts and out != "browser":
         task = asyncio.create_task(_sat_control(
-            out, "/speak", {"text": answer, "wait": False}, timeout=60))
+            out, "/speak", {"text": answer, "wait": False, "src": who},
+            timeout=60))
         _bg_tasks.add(task)
         task.add_done_callback(_bg_tasks.discard)
         broadcast = "started"
@@ -649,7 +788,7 @@ async def _synth_tts(cfg: dict, text: str) -> bytes | None:
         return r.content
 
 
-async def _fanout_broadcast(cfg: dict, text: str) -> None:
+async def _fanout_broadcast(cfg: dict, text: str, src: str = "") -> None:
     """Broadcast "an alle": 1x TTS, fertiges WAV parallel an alle Online-
     Satelliten.
 
@@ -665,12 +804,17 @@ async def _fanout_broadcast(cfg: dict, text: str) -> None:
         wav = None
     if not wav:
         # Fallback: alte Route — jeder Satellit synthetisiert selbst
-        await _sat_control("all", "/speak", {"text": text, "wait": False},
+        await _sat_control("all", "/speak",
+                           {"text": text, "wait": False, "src": src},
                            timeout=60)
         return
     payload = {"text": text,
                "audio_b64": base64.b64encode(wav).decode("ascii"),
                "wait": False}
+    if src:
+        # Quelle (schreibender Web-UI-Benutzer) — die Geräte zeigen sie
+        # in ihrem Chat an.
+        payload["src"] = src
     with manager._lock:
         targets = [
             # sat_kind (nicht s.kind): App-Recordes ohne kind-Feld im Heartbeat
@@ -687,7 +831,7 @@ async def _fanout_broadcast(cfg: dict, text: str) -> None:
     async def _one(t):
         k, base, kind = t
         if kind == "android":
-            manager.queue_for(k, text, speak=True,
+            manager.queue_for(k, text, speak=True, src=src,
                               audio_b64=payload["audio_b64"])
             return
         try:
@@ -1020,6 +1164,11 @@ async def _live_log(req: Request) -> StreamingResponse:
 # ── App Setup ───────────────────────────────────────────────────
 
 manager = SatManager()
+# Erster Start: leeren User-Store aus ENV bevoelkern (WEB_ADMIN_USER/PASSWORD)
+try:
+    webauth.seed_admin_from_env()
+except Exception:
+    log.exception("Admin-Konto aus ENV nicht angelegt")
 
 
 # Zuletzt an die UI gemeldeter Status pro Satellit (Live-Log-Dedupe)
@@ -1128,6 +1277,7 @@ async def _sat_control(key: str, endpoint: str, payload: dict | None = None,
         if endpoint == "/speak":
             manager.queue_for(k, str((payload or {}).get("text") or ""),
                               speak=True,
+                              src=str((payload or {}).get("src") or ""),
                               audio_b64=str((payload or {}).get("audio_b64") or ""))
             return {"ok": True, "queued": True,
                     "detail": "App ohne Web-Dienst — gewartet bis Heartbeat"}
@@ -1185,6 +1335,9 @@ async def _openhab_broadcast(req: Request) -> JSONResponse:
     payload = {"text": text, "wait": bool(body.get("wait", True))}
     if body.get("vol") is not None:
         payload["vol"] = int(body["vol"])
+    user = _req_user(req)
+    if user.get("display") and user.get("username") != "master-token":
+        payload["src"] = user["display"]
     return await _sat_control(body.get("sat") or "", "/speak", payload,
                               timeout=max(5.0, float(body.get("wait_ms", 60.0)) / 1000.0 + 30.0))
 
@@ -1256,6 +1409,17 @@ routes = [
     Route("/api/satellite/{mac}/heartbeat", _sat_heartbeat, methods=["POST"]),
     # Chat-WebUI
     Route("/chat.html", _chat_ui),
+    # Benutzerverwaltung (Login/Session/Rollen + Verwaltung)
+    Route("/login", _login, methods=["POST"]),
+    Route("/logout", _logout, methods=["POST"]),
+    Route("/api/me", _me),
+    Route("/api/auth/status", _auth_status),
+    Route("/api/setup", _setup, methods=["POST"]),
+    Route("/api/users", _users_list),
+    Route("/api/users", _users_create, methods=["POST"]),
+    Route("/api/users/{name}", _users_update, methods=["PUT"]),
+    Route("/api/users/{name}", _users_delete, methods=["DELETE"]),
+    Route("/api/satellite/{mac}/name", _sat_name_put, methods=["PUT"]),
     Route("/api/satellite/{mac}/chat", _chat_push, methods=["POST"]),
     Route("/api/satellite/{mac}/dm", _sat_dm, methods=["POST"]),
     Route("/api/chat/messages", _chat_messages),
@@ -1298,6 +1462,128 @@ routes = [
 ]
 
 app = Starlette(routes=routes)
+
+
+# ── WebUI-Zugriff: Benutzerverwaltung (Login/Session/Rollen) ───
+# Das Gate deckt die menschlichen WebUI-Routen ab. Ausgenommen bleiben
+# die Maschinen-Routen: Satelliten/Apps (eigene Bearer-Pruefung am
+# Endpunkt), Proxy (Backend-Zugang), MCP (wie bisher), Musik-Index.
+# Automatisierung (openHAB-curl) kommt an den Steuer-Endpunkten mit
+# Bearer MASTER_TOKEN weiter durch.
+
+_PUBLIC_PATHS = {
+    "/", "/chat.html", "/healthz", "/login", "/logout",
+    "/api/me", "/api/auth/status", "/api/setup",
+}
+
+
+def _gate_public(path: str) -> bool:
+    """Routen ohne WebUI-Login (statisch, Maschinen, Ersteinrichtung)."""
+    if path in _PUBLIC_PATHS:
+        return True
+    if path in ("/proxy", "/mcp") or \
+            path.startswith(("/proxy/", "/mcp")):
+        return True
+    if path in ("/api/music", "/api/music/search"):
+        return True
+    if path.startswith("/api/satellite/") and \
+            path.endswith(("/heartbeat", "/chat", "/dm")):
+        return True
+    if path == "/api/config/apply":
+        return True
+    return False
+
+
+def _token_allowed(path: str) -> bool:
+    """Steuer-Endpunkte, fuer die Bearer MASTER_TOKEN reicht (openHAB-curl)."""
+    if path == "/api/broadcast":
+        return True
+    if path.startswith("/api/satellite/"):
+        return path.rsplit("/", 1)[-1] in ("volume", "output")
+    return False
+
+
+def _needs_admin(path: str, method: str) -> bool:
+    """Nur Admin-Session (oder Token): Schreibaktionen der WebUI."""
+    if path.startswith("/api/users"):
+        return True
+    if path in ("/api/config/export", "/api/config/import", "/index/rebuild"):
+        return True
+    if path.startswith("/api/config/appqr"):      # enthaelt MASTER_TOKEN
+        return True
+    if path == "/api/config" and method in ("PUT", "POST"):
+        return True
+    if path.startswith("/api/satellite/"):
+        tail = path.rsplit("/", 1)[-1]
+        return tail in ("restart", "pause", "unpause", "name",
+                        "volume", "output")
+    return False
+
+
+class _WebGateMiddleware:
+    """Reines ASGI-Middleware (versionstabil, kein BaseHTTPMiddleware).
+
+    Loest den WebUI-Benutzer aus Session-Cookie bzw. Bearer MASTER_TOKEN
+    und legt ihn als scope['webauth_user'] ab (Handler: _req_user())."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        path = scope.get("path", "")
+        method = scope.get("method", "GET")
+        from starlette.requests import Request
+        req = Request(scope, receive, send)
+        # Session immer auflösen (auch auf publicen Routen wie /api/me),
+        # damit sich die UI über den eigenen Status informieren kann.
+        user = None
+        tok = req.cookies.get("vs_sid", "")
+        if tok:
+            user = webauth.session_user(tok)
+        if not _gate_public(path):
+            if user is None and _token_allowed(path):
+                user = _token_user(req)
+            if user is None:
+                resp = JSONResponse({"error": "unauthorized",
+                                     "detail": "Login erforderlich"},
+                                    status_code=401)
+                await resp(scope, receive, send)
+                return
+            if _needs_admin(path, method) and user["role"] != "admin":
+                resp = JSONResponse({"error": "forbidden",
+                                     "detail": "Admin-Berechtigung erforderlich"},
+                                    status_code=403)
+                await resp(scope, receive, send)
+                return
+        if user is not None:
+            scope["webauth_user"] = user
+        await self.app(scope, receive, send)
+
+
+def _token_user(req: Request) -> dict | None:
+    """Bearer MASTER_TOKEN → Automatisierungs-Zugang (Rolle admin)."""
+    tok = _sat_token()
+    if not tok:
+        return None
+    got = req.headers.get("authorization", "")
+    if got.startswith("Bearer "):
+        got = got[7:]
+    import hmac as _hmac
+    if got and _hmac.compare_digest(got, tok):
+        return {"username": "master-token", "role": "admin",
+                "display": "Master-Token"}
+    return None
+
+
+def _req_user(req: Request) -> dict:
+    """Eingeloggter WebUI-Benutzer eines Requests (leeres Dict, wenn keiner)."""
+    return req.scope.get("webauth_user") or {}
+
+
+app.add_middleware(_WebGateMiddleware)
 
 
 def start_indexer_background() -> threading.Thread:

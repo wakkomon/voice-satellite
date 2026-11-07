@@ -36,7 +36,12 @@ def _db() -> sqlite3.Connection:
         _conn.execute(
             "CREATE TABLE IF NOT EXISTS chat ("
             "eid INTEGER PRIMARY KEY AUTOINCREMENT,"
-            " ts REAL, role TEXT, text TEXT, path TEXT)")
+            " ts REAL, role TEXT, text TEXT, path TEXT, who TEXT)")
+        # Migration: who-Spalte (Quelle, z. B. Web-UI-Benutzer) nachtraegen
+        try:
+            _conn.execute("ALTER TABLE chat ADD COLUMN who TEXT")
+        except sqlite3.OperationalError:
+            pass  # Spalte vorhanden
         _conn.commit()
     return _conn
 
@@ -46,11 +51,13 @@ def enabled() -> bool:
     return bool(config.MASTER_URL)
 
 
-def emit(role: str, text: str, path: str = "") -> int | None:
+def emit(role: str, text: str, path: str = "", who: str = "") -> int | None:
     """Eintrag anlegen und asynchronen Push triggern.
 
     role: user | assistant | musik | system
     path: zusaetzlicher Pfad/URL (z.B. Musikdatei, fuer den Player).
+    who:  Quelle (z.B. Web-UI-Benutzer bei externen Durchsagen) — wird
+          von der Master-Chat-Anzeige als Absender angezeigt.
     Gibt die eid zurueck oder None, falls nicht gespeichert.
     """
     text = (text or "").strip()
@@ -59,8 +66,9 @@ def emit(role: str, text: str, path: str = "") -> int | None:
     try:
         with _lock:
             cur = _db().execute(
-                "INSERT INTO chat (ts, role, text, path) VALUES (?,?,?,?)",
-                (time.time(), role, text[:500], path[:500]))
+                "INSERT INTO chat (ts, role, text, path, who) "
+                "VALUES (?,?,?,?,?)",
+                (time.time(), role, text[:500], path[:500], who[:64]))
             eid = int(cur.lastrowid)
             _conn.commit()
     except Exception as e:
@@ -91,10 +99,11 @@ def pending() -> list:
     try:
         with _lock:
             rows = _db().execute(
-                "SELECT eid, ts, role, text, path FROM chat"
+                "SELECT eid, ts, role, text, path, who FROM chat"
                 " WHERE eid > ? ORDER BY eid LIMIT 50", (_ack,)).fetchall()
         return [{"eid": r[0], "ts": r[1], "role": r[2],
-                 "text": r[3], "path": r[4]} for r in rows]
+                 "text": r[3], "path": r[4],
+                 **({"who": r[5]} if r[5] else {})} for r in rows]
     except Exception:
         return []
 
