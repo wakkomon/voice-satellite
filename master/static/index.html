@@ -70,6 +70,7 @@ footer { margin-top:24px; color:var(--dim); font-size:0.78rem; }
 </style>
 </head>
 <body>
+<div id="dash">
 <h1>Voice-Satellite Master <span class="v" id="version">–</span>
   <button onclick="location.href='/chat.html'" style="float:right;padding:6px 14px;margin:4px 6px 0 0;border:1px solid var(--dim);background:transparent;border-radius:4px;cursor:pointer;color:var(--acc);font-size:0.85rem">💬 Chat</button>
   <button id="btn-open-config" style="float:right;padding:6px 14px;border:1px solid var(--dim);background:transparent;border-radius:4px;cursor:pointer;color:var(--acc);font-size:0.85rem;margin-top:4px">⚙ Konfiguration</button>
@@ -105,9 +106,11 @@ footer { margin-top:24px; color:var(--dim); font-size:0.78rem; }
   <div class="log" id="live-log"><div><span class="t">–</span>verbinde …</div></div>
 </div>
 
+</div><!-- /dash -->
+
 <!-- CONFIG PAGE (hidden by default) -->
 <div id="config-page" style="display:none">
-  <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+  <div style="display:flex;align-items:center;gap:12px;border-bottom:1px solid #2a2e3a;padding-bottom:12px;margin-bottom:14px">
     <button id="btn-config-back" class="backbtn">← Zurück</button>
     <h2 style="margin:0;font-size:1.15rem">Konfiguration</h2>
   </div>
@@ -224,13 +227,17 @@ document.getElementById('cfg-tabs').addEventListener('click', e => {
 
 // ── Config page toggle ──
 document.getElementById('btn-open-config').addEventListener('click', () => {
-  document.querySelector('.grid').style.display = 'none';
+  // Dashboard komplett ausblenden: Konfiguration ist wie Chat eine eigene
+  // Seite mit Zurueck-Button oben links (einheitlicher Aufbau).
+  $('dash').style.display = 'none';
   $('config-page').style.display = 'block';
+  window.scrollTo(0, 0);
   loadConfig();
 });
 document.getElementById('btn-config-back').addEventListener('click', () => {
   $('config-page').style.display = 'none';
-  document.querySelector('.grid').style.display = 'block';
+  $('dash').style.display = 'block';
+  window.scrollTo(0, 0);
 });
 
 // ── Config load & render ──
