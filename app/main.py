@@ -450,8 +450,29 @@ class Pipeline:
             return True
         return self._broadcast_blocking(text, vol)
 
+    def broadcast_audio(self, audio_b64, vol=None, wait=False):
+        """Durchsage mit fertigem Audio (base64-WAV): der Master hat schon
+        synthetisiert (Broadcast "an alle" = 1x TTS, parallele Ausgabe).
+        Wiedergabe laeuft wie bei broadcast() — Ducking, Pause, Aufraeumen."""
+        import base64
+        try:
+            wav = base64.b64decode(audio_b64)
+        except Exception:
+            return False
+        if not wav:
+            return False
+        if not wait:
+            threading.Thread(target=self._broadcast_wav,
+                             args=(wav, vol), daemon=True).start()
+            return True
+        return self._broadcast_wav(wav, vol)
+
     def _broadcast_blocking(self, text, vol=None):
-        """Blockinger Teil von broadcast(): vol + TTS + Wiedergabe + Aufräumen."""
+        """Blockender Teil von broadcast(): TTS-Synthese, dann Wiedergabe."""
+        return self._broadcast_wav(None, vol, synth_text=text)
+
+    def _broadcast_wav(self, wav, vol=None, synth_text=None):
+        """vol + (bei synth_text erst TTS) + Wiedergabe + Aufräumen."""
         prev = None
         if vol is not None:
             try:
@@ -461,11 +482,13 @@ class Pipeline:
                 log.warning("broadcast: ungueltige Lautstaerke %r", vol)
                 prev = None
         self.web_audio_busy = True
-        self.set_phase(f"Durchsage: »{text[:60]}«")
+        label = synth_text[:60] if synth_text else "Audio"
+        self.set_phase(f"Durchsage: »{label}«")
         playback.player.pause()
         ok = False
         try:
-            wav = tts.synthesize(text)     # TTS laeuft wie alles ueber Master
+            if wav is None:
+                wav = tts.synthesize(synth_text)  # TTS ueber Master-Proxy
             if wav:
                 audio.play_wav(wav)
                 ok = True

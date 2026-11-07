@@ -149,6 +149,7 @@ footer { margin-top:24px; color:var(--dim); font-size:0.78rem; }
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmtTs = ts => ts ? new Date(ts*1000).toLocaleTimeString('de-DE') : '–';
+const agoTxt = ts => { const d = Math.max(0, Math.round(Date.now()/1000 - ts)); if (d < 60) return d + ' Sek'; if (d < 3600) return Math.round(d/60) + ' Min'; if (d < 86400) return Math.round(d/3600) + ' Std'; return Math.round(d/86400) + ' Tgd'; };
 
 // ── Config domain definitions ──
 const DOMAINS = {
@@ -475,6 +476,9 @@ async function refresh() {
         const busy = !/^(bereit|ready|idle|offline|–)$/i.test(phaseTxt);
         parts.push(`<b>${esc(phaseTxt)}</b>${busy ? ' <span style="color:var(--accent)">▸ aktiv</span>' : ''}`);
       }
+      // Letzter Heartbeat: absolute Zeit + relativ, damit erkennbar ist,
+      // wann der Satellit sich zuletzt gemeldet hat.
+      parts.push(`<span style="color:var(--dim)">Heartbeat: ${s.last_seen ? fmtTs(s.last_seen) + ' (vor ' + agoTxt(s.last_seen) + ')' : 'noch nie'}</span>`);
       if (s.app_version) parts.push(`<span style="color:var(--dim)">v${esc(s.app_version)}</span>`);
       if (s.system) parts.push(`System: ${esc(s.system.hostname || '–')} (Last: ${(s.system.cpu_load ?? 0).toFixed(1)})`);
       // components als kleine Badges

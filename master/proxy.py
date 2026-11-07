@@ -153,7 +153,8 @@ def _fill_tts_defaults(req: Request, body: bytes) -> bytes:
         return body
     eff = config_store.get_effective(None)
     changed = False
-    for field, key in (("model", "TTS_MODEL"), ("voice", "TTS_VOICE")):
+    for field, key in (("model", "TTS_MODEL"), ("voice", "TTS_VOICE"),
+                       ("language", "TTS_LANGUAGE")):
         if not str(payload.get(field) or "").strip():
             val = str(eff.get(key) or "").strip()
             if val:

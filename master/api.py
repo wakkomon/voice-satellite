@@ -551,7 +551,16 @@ async def _chat_send(req: Request) -> JSONResponse:
     # (/speak, wait=false). Feuer-und-vergiss, damit die Chat-Antwort nicht
     # auf dem Gerät blockiert (wie /api/broadcast).
     broadcast = None
-    if want_tts and out != "browser":
+    if want_tts and out == "all":
+        # "An alle": die Antwort wird GENAU EINMAL im Master synthetisiert
+        # und das fertige Audio dann gleichzeitig an alle Online-Saetlinge
+        # geschickt (statt jeder Saetling synthetisiert einzeln — das war
+        # langsam und redundante Backend-Last).
+        task = asyncio.create_task(_fanout_broadcast(cfg, answer))
+        _bg_tasks.add(task)
+        task.add_done_callback(_bg_tasks.discard)
+        broadcast = "started"
+    elif want_tts and out != "browser":
         task = asyncio.create_task(_sat_control(
             out, "/speak", {"text": answer, "wait": False}, timeout=60))
         _bg_tasks.add(task)
@@ -571,8 +580,13 @@ async def _synth_tts(cfg: dict, text: str) -> bytes | None:
     tok = proxy._upstream_token("TTS_TOKEN", proxy.ENV_TTS_TOKEN)
     model = cfg.get("TTS_MODEL") or ""
     voice = cfg.get("TTS_VOICE") or ""
+    # Payload wie beim Satelliten (app/tts.py): ohne language waehlt das
+    # Qwen3-TTS-Backend ggf. eine andere Stimme als die gewohnte.
     payload = {"model": model, "voice": voice, "input": text,
                "response_format": "wav"}
+    lang = str(cfg.get("TTS_LANGUAGE") or "").strip()
+    if lang:
+        payload["language"] = lang
     headers = {"Content-Type": "application/json"}
     if tok:
         headers["Authorization"] = f"Bearer {tok}"
@@ -582,6 +596,53 @@ async def _synth_tts(cfg: dict, text: str) -> bytes | None:
             log.warning("Chat-TTS: HTTP %d", r.status_code)
             return None
         return r.content
+
+
+async def _fanout_broadcast(cfg: dict, text: str) -> None:
+    """Broadcast "an alle": 1x TTS, fertiges WAV parallel an alle Online-
+    Satelliten.
+
+    Neue Satelliten spielen audio_b64 direkt ab; alte Satelliten ignorieren
+    das Feld und sprechen den Text selbst (text bleibt als Notbehelf im
+    Payload — Abwaertskompatibilitaet ohne Versionspruefung). Android-Apps
+    haben keinen Web-Dienst: wie bisher Text in die Pull-Warteschlange."""
+    import base64
+    try:
+        wav = await _synth_tts(cfg, text)
+    except Exception as e:
+        log.warning("Broadcast-TTS: %s", e)
+        wav = None
+    if not wav:
+        # Fallback: alte Route — jeder Satellit synthetisiert selbst
+        await _sat_control("all", "/speak", {"text": text, "wait": False},
+                           timeout=60)
+        return
+    payload = {"text": text,
+               "audio_b64": base64.b64encode(wav).decode("ascii"),
+               "wait": False}
+    with manager._lock:
+        targets = [
+            (k, f"http://{s.ip}:{SatManager._web_port(s)}", s.kind)
+            for k, s in manager.satellites.items()
+            if s.status == "online" and s.ip
+        ]
+    if not targets:
+        return
+
+    async def _one(t):
+        k, base, kind = t
+        if kind == "android":
+            manager.queue_for(k, text, speak=True)
+            return
+        try:
+            async with _httpx.AsyncClient(timeout=60.0) as c:
+                r = await c.post(base + "/speak", json=payload)
+                if r.status_code != 200:
+                    log.warning("Broadcast %s: HTTP %d", k, r.status_code)
+        except Exception as e:
+            log.warning("Broadcast %s: %s", k, e)
+
+    await asyncio.gather(*(_one(t) for t in targets))
 
 
 # ── Zentrale Konfigurationsverwaltung (b) ──────────────────────

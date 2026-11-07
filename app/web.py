@@ -236,7 +236,11 @@ class Handler(BaseHTTPRequestHandler):
         data = self._read_json()
         text = (data.get("text") or "").strip()
         if self.path == "/speak":
-            if not text:
+            # audio_b64: fertiges WAV (base64) z.B. vom Master-Broadcast
+            # ("an alle": 1x synthetisiert, an alle gleichzeitig). text
+            # bleibt Pflichtfeld fuer alte Master und als Notbehelf.
+            audio_b64 = str(data.get("audio_b64") or "")
+            if not text and not audio_b64:
                 return self._send(400, {"error": "text fehlt"})
             # Beschriftung statt "TTS direkt": der Text geht ohne
             # Intent/LLM-Pipeline direkt in die Sprachausgabe — der
@@ -248,11 +252,20 @@ class Handler(BaseHTTPRequestHandler):
             vol = data.get("vol", data.get("volume"))
             wait = bool(data.get("wait", True))
             if p is not None:
-                ok = p.broadcast(text, vol=vol, wait=wait)
+                if audio_b64:
+                    ok = p.broadcast_audio(audio_b64, vol=vol, wait=wait)
+                else:
+                    ok = p.broadcast(text, vol=vol, wait=wait)
                 return self._send(200 if ok else 502,
                                   {"ok": ok, "text": text[:80]})
-            self._ev(f"Web: \"{text[:60]}\" (Speak ohne Pipeline, TTS via Master)")
-            wav = tts.synthesize(text)
+            import base64
+            if audio_b64:
+                self._ev(f"Web: Durchsage mit Master-Audio "
+                         f"(ohne Pipeline, {len(audio_b64)} B64-Zeichen)")
+                wav = base64.b64decode(audio_b64)
+            else:
+                self._ev(f"Web: \"{text[:60]}\" (Speak ohne Pipeline, TTS via Master)")
+                wav = tts.synthesize(text)
             if not wav:
                 return self._send(502, {"error": "TTS leer"})
             threading.Thread(target=self._play, args=(wav,), daemon=True).start()
