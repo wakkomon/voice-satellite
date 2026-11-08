@@ -32,6 +32,6 @@ USER master
 EXPOSE 8791
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s \
-  CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8791/healthz', timeout=3).status==200 else 1)"
+  CMD python -c "import urllib.request,ssl,sys; c=ssl._create_unverified_context(); sys.exit(0 if urllib.request.urlopen('https://127.0.0.1:8791/healthz', timeout=3, context=c).status==200 else 1)"
 
 CMD ["python", "-m", "master.main"]

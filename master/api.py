@@ -380,7 +380,7 @@ async def _login(req: Request) -> JSONResponse:
     name = username.strip().lower()
     tok = webauth.start_session(name)
     resp = JSONResponse({"ok": True, "username": name, "role": role})
-    resp.set_cookie("vs_sid", tok, httponly=True, samesite="lax",
+    resp.set_cookie("vs_sid", tok, httponly=True, samesite="lax", secure=True,
                     path="/", max_age=webauth.SESSION_TTL_SEC)
     return resp
 
@@ -428,7 +428,7 @@ async def _setup(req: Request) -> JSONResponse:
     name = str(body.get("username") or "").strip().lower()
     tok = webauth.start_session(name)
     resp = JSONResponse({"ok": True, "username": name, "role": "admin"})
-    resp.set_cookie("vs_sid", tok, httponly=True, samesite="lax",
+    resp.set_cookie("vs_sid", tok, httponly=True, samesite="lax", secure=True,
                     path="/", max_age=webauth.SESSION_TTL_SEC)
     return resp
 
@@ -929,7 +929,7 @@ async def _fanout_broadcast(cfg: dict, text: str, src: str = "") -> None:
             # sat_kind (nicht s.kind): App-Recordes ohne kind-Feld im Heartbeat
             # (App < 2.4.1) bleiben sonst als 'pi' registriert und bekamen
             # statt des Audios einen POST auf einen Web-Dienst, den es nicht gibt.
-            (k, f"http://{s.ip}:{SatManager._web_port(s)}",
+            (k, f"https://{s.ip}:{SatManager._web_port(s)}",
              SatManager._kind_for(k, s))
             for k, s in manager.satellites.items()
             if s.status == "online" and s.ip and not s.disabled
@@ -944,7 +944,7 @@ async def _fanout_broadcast(cfg: dict, text: str, src: str = "") -> None:
                               audio_b64=payload["audio_b64"])
             return
         try:
-            async with _httpx.AsyncClient(timeout=60.0) as c:
+            async with _httpx.AsyncClient(timeout=60.0, verify=False) as c:
                 r = await c.post(base + "/speak", json=payload)
                 if r.status_code != 200:
                     log.warning("Broadcast %s: HTTP %d", k, r.status_code)
@@ -1084,36 +1084,25 @@ def _split_export(kind: str):
 
 
 def _appqr_text(req: Request) -> str:
-    """Aktuelle globale Master-Config als App-KEY=WERT-Text (für den QR-Code).
+    """Minimale App-Config als KEY=WERT-Text (für den QR-Code).
 
-    Baut genau den Text, den die Android-App per Config-Import versteht
-    (MASTER_URL + MASTER_TOKEN + Sprach-/Modellfelder). Geteilt von
+    Bewusst nur MASTER_URL + MASTER_TOKEN — alle übrigen Einstellungen
+    (Sprache/Modell/Intents/Wake-Word/...) kommen per Config-Sync vom
+    Master, nicht über den QR. Dadurch bleibt der QR-Code klein und grob
+    genug, dass das App-Gerät ihn zuverlässig scannen kann. Geteilt von
     /api/config/appqr (Text) und /api/config/appqr.png (QR-Bild)."""
     import os
-    try:
-        g = config_store.get_effective(None) or {}
-    except Exception as e:
-        log.warning("appqr: %s", e)
-        g = {}
-    def val(k):
-        v = g.get(k)
-        return "" if v is None else str(v).strip()
-    # MASTER_URL: Adresse, unter der der Browser das WebUI erreicht (LAN-IP:Port).
-    # Das App-Gerät verbindet sich an dieselbe Adresse.
-    master_url = _master_url_for(req)
+    host = (req.url.netloc if req.url else "") or ""
+    env_url = os.environ.get("MASTER_URL", "").strip()
+    if env_url:
+        master_url = env_url
+    else:
+        # Master laeuft HTTPS-only (SSL-Zert am API-Server): plain http://
+        # ist nicht erreichbar, daher immer https://{host}.
+        master_url = "https://" + host
     token = str(config_store.get_secret("MASTER_TOKEN") or
                 os.environ.get("MASTER_TOKEN", "") or "").strip()
-    lines = ["# voice-satellite App-Konfiguration (aus Master-WebUI, als QR)",
-             "MASTER_URL=" + master_url,
-             "MASTER_TOKEN=" + token,
-             "USE_MASTER=1",
-             "STT_LANGUAGE=" + val("STT_LANGUAGE"),
-             "LLM_MODEL=" + val("LLM_MODEL"),
-             "TTS_LANGUAGE=" + val("TTS_LANGUAGE"),
-             "DEFAULT_IMAGE_URL=" + val("DEFAULT_IMAGE_URL"),
-             "INTENTS=" + val("INTENTS").replace("\n", "\\n"),
-             "WAKE_WORD=" + val("WAKE_WORD")]
-    return "\n".join(lines) + "\n"
+    return "MASTER_URL=" + master_url + "\n" + "MASTER_TOKEN=" + token + "\n"
 
 
 async def _config_appqr_png(req: Request) -> Response:
@@ -1408,7 +1397,7 @@ async def _sat_control(key: str, endpoint: str, payload: dict | None = None,
     if key in ("", "all", "*"):
         with manager._lock:
             targets = [
-                (k, f"http://{s.ip}:{SatManager._web_port(s)}",
+                (k, f"https://{s.ip}:{SatManager._web_port(s)}",
              SatManager._kind_for(k, s))
                 for k, s in manager.satellites.items()
                 if s.status == "online" and s.ip and not s.disabled
@@ -1448,7 +1437,7 @@ async def _sat_control(key: str, endpoint: str, payload: dict | None = None,
             return k, (200 if res.get("ok") else 400), res
         url = base + endpoint
         try:
-            async with _httpx.AsyncClient(timeout=timeout) as c:
+            async with _httpx.AsyncClient(timeout=timeout, verify=False) as c:
                 r = await c.post(url, json=(payload or {}))
                 try:
                     body = r.json()
@@ -1516,7 +1505,7 @@ async def _openhab_volume_get(req: Request) -> JSONResponse:
                             status_code=404)
     key, base = hit
     try:
-        async with _httpx.AsyncClient(timeout=10.0) as c:
+        async with _httpx.AsyncClient(timeout=10.0, verify=False) as c:
             r = await c.get(base + "/volume")
             return JSONResponse(r.json(), status_code=r.status_code)
     except Exception as e:
@@ -1542,7 +1531,7 @@ async def _openhab_output_get(req: Request) -> JSONResponse:
                             status_code=404)
     key, base = hit
     try:
-        async with _httpx.AsyncClient(timeout=15.0) as c:
+        async with _httpx.AsyncClient(timeout=15.0, verify=False) as c:
             r = await c.get(base + "/audio/out")
             return JSONResponse(r.json(), status_code=r.status_code)
     except Exception as e:

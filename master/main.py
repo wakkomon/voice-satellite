@@ -9,7 +9,7 @@ import logging
 import sys
 import uvicorn
 
-from . import config as cfg
+from . import certgen, config as cfg
 from .api import app, manager, start_indexer_background, _append_log_line
 import logging
 
@@ -42,7 +42,12 @@ def main() -> None:
         level=getattr(logging, cfg.LOG_LEVEL, logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    log.info("Master-Server startet (API auf %s:%d)", cfg.API_HOST, cfg.API_PORT)
+    log.info("Master-Server startet (API auf %s:%d, TLS)", cfg.API_HOST, cfg.API_PORT)
+    # TLS: selfsigned-Zertifikat sicherstellen (neu, wenn fehlt/ablaufend) und
+    # den Server als HTTPS betreiben — der gesamte LAN-Verkehr (Satelliten,
+    # WebUI, MCP, Proxy) laeuft verschluesselt.
+    certfile, keyfile = certgen.ensure_cert()
+    log.info("HTTPS aktiv (Zertifikat: %s)", certfile)
 
     # Raspi-Manager starten (Satelliten-Anmeldung + Heartbeat) — Singleton aus api.py
     manager.start()
@@ -58,6 +63,8 @@ def main() -> None:
         app,
         host=cfg.API_HOST,
         port=cfg.API_PORT,
+        ssl_certfile=certfile,
+        ssl_keyfile=keyfile,
         log_level=cfg.LOG_LEVEL.lower(),
     )
 

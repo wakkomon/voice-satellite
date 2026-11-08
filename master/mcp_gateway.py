@@ -255,9 +255,11 @@ def _mcp_url(ip: str) -> str:
 
 
 def _auth_error(req: Request):
-    if not proxy_mod.AUTH_TOKEN:
-        return None
-    if req.headers.get("authorization", "") == f"Bearer {proxy_mod.AUTH_TOKEN}":
+    # Wie der Proxy: Token (AUTH_TOKEN ODER MASTER_TOKEN) ist Pflicht, sobald
+    # mindestens eines gesetzt ist. Damit ist das MCP-Gateway genauso
+    # token-geschuetzt wie API/Proxy (vorher: nur AUTH_TOKEN, d.h. offen,
+    # wenn nur MASTER_TOKEN gesetzt war).
+    if proxy_mod._authorized(req):
         return None
     return JSONResponse({"error": "unauthorized"}, status_code=401)
 
@@ -359,7 +361,7 @@ async def _t_get_volume(params: dict) -> dict:
     if not hit:
         return {"ok": False, "error": "Satellit nicht bekannt"}
     try:
-        async with httpx.AsyncClient(timeout=10.0) as c:
+        async with httpx.AsyncClient(timeout=10.0, verify=False) as c:
             r = await c.get(hit[1] + "/volume")
         return _resp_body_from_bytes(r.content, r.status_code)
     except Exception as e:
@@ -392,7 +394,7 @@ async def _t_get_output(params: dict) -> dict:
     if not hit:
         return {"ok": False, "error": "Satellit nicht bekannt"}
     try:
-        async with httpx.AsyncClient(timeout=10.0) as c:
+        async with httpx.AsyncClient(timeout=10.0, verify=False) as c:
             r = await c.get(hit[1] + "/audio/out")
         return _resp_body_from_bytes(r.content, r.status_code)
     except Exception as e:

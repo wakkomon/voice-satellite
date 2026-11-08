@@ -658,7 +658,7 @@ class SatManager:
                         break
             if sat is None or not sat.ip:
                 return None
-            return key, f"http://{sat.ip}:{self._web_port(sat)}"
+            return key, f"https://{sat.ip}:{self._web_port(sat)}"
 
     def canonical_key(self, mac: str, ip: str = "") -> str | None:
         """Kanonischer Registry-Key fuer ein (mac, ip)-Paar – genau so, wie
