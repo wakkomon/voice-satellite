@@ -53,6 +53,15 @@ footer { margin-top:24px; color:var(--dim); font-size:0.78rem; }
 #users-card{display:none}
 #config-page.showing-users #users-card{display:block}
 #config-page.showing-users .cfg-table,#config-page.showing-users .cfg-readonly-hint,#config-page.showing-users .cfg-save-row{display:none}
+#memory-card{display:none}
+#config-page.showing-memory #memory-card{display:block}
+#config-page.showing-memory .cfg-table,#config-page.showing-memory .cfg-readonly-hint,#config-page.showing-memory .cfg-save-row{display:none}
+#mem-facts{width:100%;background:#0d0f14;border:1px solid #2a2e3a;color:var(--fg);padding:6px 8px;border-radius:4px;font-size:0.83rem;font-family:inherit;resize:vertical}
+.mem-hist{max-height:280px;overflow:auto;border:1px solid #2a2e3a;border-radius:4px;padding:6px 8px;margin:6px 0;font-size:0.8rem}
+.mem-hist .u{color:var(--acc)}
+.mem-hist .when{color:var(--dim);font-size:0.72rem}
+.mem-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+.mem-row select{background:#0d0f14;border:1px solid #2a2e3a;color:var(--fg);padding:4px 8px;border-radius:4px;font-size:0.83rem}
 .backbtn { padding:6px 14px;border:1px solid var(--dim);background:transparent;border-radius:6px;cursor:pointer;color:var(--acc);font-size:0.85rem; }
 .cfg-table { width:100%; border-collapse:collapse; font-size:0.85rem; }
 .cfg-table th { text-align:left; color:var(--dim); font-size:0.72rem; padding:3px 6px; border-bottom:1px solid #2a2e3a; }
@@ -173,6 +182,7 @@ body.readonly .cfg-readonly-hint{display:block}
     <button data-domain="openhab">OpenHAB</button>
     <button data-domain="secrets">🔑 Secrets</button>
     <button data-domain="system">System</button>
+    <button data-domain="memory" class="admin-only">Gedächtnis</button>
     <button data-domain="users" class="admin-only">Benutzer</button>
   </div>
 
@@ -209,6 +219,29 @@ body.readonly .cfg-readonly-hint{display:block}
     <div style="margin-top:8px;font-size:0.72rem;color:var(--dim)">
       <b>admin</b>: Config lesen/ändern, Geräte steuern und umbenennen, Benutzer verwalten ·
       <b>user</b>: nur lesen und chatten.
+    </div>
+  </div>
+  <div class="card admin-only" id="memory-card">
+    <h2>Gedächtnis</h2>
+    <div class="mem-row">
+      <label style="color:var(--dim);font-size:0.82rem">Gerät:</label>
+      <select id="mem-dev"></select>
+      <button id="btn-mem-refresh">Aktualisieren</button>
+      <span id="mem-status" class="cfg-status"></span>
+    </div>
+    <h3 style="margin:10px 0 4px;font-size:0.95rem">Fakten (Langzeitgedächtnis)</h3>
+    <textarea id="mem-facts" rows="10" spellcheck="false" placeholder="Ein Fakt pro Zeile — was soll sich das Gerät merken?"></textarea>
+    <div class="cfg-save-row">
+      <button id="btn-mem-save">Fakten speichern</button>
+      <span style="color:var(--dim);font-size:0.82rem">Eine Zeile = ein Fakt. Gelöschte Zeilen entfernen den Fakt.</span>
+    </div>
+    <h3 style="margin:14px 0 4px;font-size:0.95rem">Letzter Gesprächsverlauf <span id="mem-hist-n" style="color:var(--dim);font-weight:normal"></span></h3>
+    <div id="mem-history" class="mem-hist">–</div>
+    <button id="btn-mem-clear">Verlauf löschen</button>
+    <div style="margin-top:8px;font-size:0.72rem;color:var(--dim)">
+      Zentrale Ablage auf dem Master: Web-Chat („web“) und jeder Satellit („Master-Modus“) —
+      die Geräte selbst speichern im Master-Modus nichts mehr. Satelliten übernehmen Fakten
+      automatisch nach jeder LLM-Antwort.
     </div>
   </div>
 </div>
@@ -301,8 +334,17 @@ document.getElementById('cfg-tabs').addEventListener('click', e => {
   document.querySelectorAll('#cfg-tabs button').forEach(b => b.classList.remove('active'));
   e.target.classList.add('active');
   currentDomain = e.target.dataset.domain;
-  if (currentDomain === 'users') { $('config-page').classList.add('showing-users'); return; }
+  if (currentDomain === 'users') {
+    $('config-page').classList.remove('showing-memory');
+    $('config-page').classList.add('showing-users'); return;
+  }
+  if (currentDomain === 'memory') {
+    $('config-page').classList.remove('showing-users');
+    $('config-page').classList.add('showing-memory');
+    loadMemory(); return;
+  }
   $('config-page').classList.remove('showing-users');
+  $('config-page').classList.remove('showing-memory');
   renderConfigTable();
 });
 
@@ -879,6 +921,57 @@ $('btn-user-add').onclick = async () => {
   if (!r.ok) { alert(j.error || r.status); return; }
   $('nu-name').value = ''; $('nu-pass').value = '';
   loadUsers();
+};
+
+// ── Zentrales Gedaechtnis (nur Admin): Fakten + Verlauf pro Geraet ───
+let memDevices = [];
+let memSel = '';
+
+async function loadMemory() {
+  try {
+    const r = await fetch('/api/memory');
+    if (!r.ok) { showStatus('mem-status', 'Laden fehlgeschlagen: ' + r.status, 'err'); return; }
+    memDevices = (await r.json()).devices || [];
+    if (!memDevices.some(d => d.key === memSel)) memSel = (memDevices[0] || {}).key || '';
+    renderMemory();
+  } catch (e) {
+    showStatus('mem-status', 'Laden fehlgeschlagen: ' + e, 'err');
+  }
+}
+
+function renderMemory() {
+  $('mem-dev').innerHTML = memDevices.map(d =>
+    `<option value="${esc(d.key)}" ${d.key === memSel ? 'selected' : ''}>${esc(d.name)} (${esc(d.key)})</option>`
+  ).join('');
+  const d = memDevices.find(x => x.key === memSel) || { facts: [], history: [] };
+  $('mem-facts').value = (d.facts || []).join('\n');
+  const hist = d.history || [];
+  $('mem-hist-n').textContent = hist.length ? '(' + hist.length + ' letzte Eintraege)' : '';
+  $('mem-history').innerHTML = hist.length
+    ? hist.map(h =>
+        `<div><span class="when">${h.ts ? fmtTs(h.ts) : ''}${h.channel && h.channel !== 'web' ? ' · ' + esc(h.channel) : ''}</span> <span class="u">${h.role === 'user' ? 'Frage:' : 'Antwort:'}</span> ${esc(h.content || '')}</div>`
+      ).join('')
+    : '<span style="color:var(--dim)">kein Verlauf</span>';
+}
+
+$('mem-dev').onchange = () => { memSel = $('mem-dev').value; renderMemory(); };
+$('btn-mem-refresh').onclick = loadMemory;
+$('btn-mem-save').onclick = async () => {
+  const facts = $('mem-facts').value.split('\n').map(s => s.trim()).filter(s => s);
+  const r = await fetch('/api/memory/facts', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key: memSel, facts })});
+  if (r.ok) showStatus('mem-status', 'Fakten gespeichert.', 'ok');
+  else { const j = await r.json().catch(() => ({})); showStatus('mem-status', j.error || r.status, 'err'); }
+  loadMemory();
+};
+$('btn-mem-clear').onclick = async () => {
+  if (!confirm('Gesprächsverlauf dieses Geräts wirklich löschen? Fakten bleiben erhalten.')) return;
+  const r = await fetch('/api/memory/history/clear', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key: memSel })});
+  if (!r.ok) { const j = await r.json().catch(() => ({})); alert(j.error || r.status); }
+  loadMemory();
 };
 
 boot();

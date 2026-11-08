@@ -842,7 +842,8 @@ async def _chat_send_core(text: str, mac: str, speak: bool, out: str,
     if (master_cfg.CHAT_MEMORY_ENABLED and url and answer
             and intent_hit is None and not answer.startswith("LLM")):
         llmmemory.extract_facts_async(text, answer,
-                                      cfg.get("LLM_MODEL") or "")
+                                      cfg.get("LLM_MODEL") or "",
+                                      key=mac or "web")
     # Zielgerät-Broadcast: Ausgewählter Satellit spricht die Antwort laut
     # (/speak, wait=false). Feuer-und-vergiss, damit die Chat-Antwort nicht
     # auf dem Gerät blockiert (wie /api/broadcast).
@@ -1572,6 +1573,149 @@ async def _image_push(req: Request) -> JSONResponse:
     return JSONResponse(data, status_code=code)
 
 
+
+# ── Zentrales Gedaechtnis (Master-Modus: Web-Chat + alle Satelliten) ──
+# Geraete-Meldungen (Maschinenrouten, Bearer MASTER_TOKEN) schreiben in
+# dieselbe sqlite wie der Web-Chat; die WebUI verwaltet alles unter
+# Konfiguration -> Gedaechtnis (Admin). Keys = kanonische Registry-Keys.
+
+def _memory_dev_key(req: Request) -> str:
+    """Registry-Key eines Geraets aus mac-Query + Quell-IP (wie Heartbeat)."""
+    mac = (req.query_params.get("mac") or "").strip().lower()
+    ip = (req.client.host if req.client else "") or ""
+    return (manager.canonical_key(mac, ip) or mac)
+
+
+def _memory_sat_denied(req: Request) -> JSONResponse | None:
+    if _sat_auth_ok(req, "memory"):
+        return None
+    return JSONResponse({"error": "unauthorized",
+                         "detail": "MASTER_TOKEN fehlt oder falsch"},
+                        status_code=401)
+
+
+async def _memory_sat_facts(req: Request) -> JSONResponse:
+    """GET /api/memory/sat/facts?mac= — Fakten dieses Geraets (Satelliten)."""
+    denied = _memory_sat_denied(req)
+    if denied:
+        return denied
+    key = _memory_dev_key(req)
+    if not key:
+        return JSONResponse({"error": "mac fehlt"}, status_code=400)
+    return JSONResponse({"facts": llmmemory.load_facts(key)})
+
+
+async def _memory_sat_history(req: Request) -> JSONResponse:
+    """GET /api/memory/sat/history?mac=&channel= — Kurzzeitgedaechtnis."""
+    denied = _memory_sat_denied(req)
+    if denied:
+        return denied
+    key = _memory_dev_key(req)
+    if not key:
+        return JSONResponse({"error": "mac fehlt"}, status_code=400)
+    ch = (req.query_params.get("channel") or "").strip().lower()
+    msgs = [{"role": m["role"], "content": m["content"]}
+            for m in llmmemory.exchange_history(key, ch)]
+    return JSONResponse({"messages": msgs})
+
+
+async def _memory_sat_exchange(req: Request) -> JSONResponse:
+    """POST /api/memory/sat/exchange {mac, channel, user, assistant}.
+
+    Der Satellit meldt seinen Gedaechnis-Austausch — im Master-Modus
+    liegt das Gedaechtnis ausschliesslich zentral hier."""
+    denied = _memory_sat_denied(req)
+    if denied:
+        return denied
+    try:
+        body = await req.json()
+    except (json.JSONDecodeError, ValueError):
+        return JSONResponse({"error": "ungueltiges JSON"}, status_code=400)
+    key = _memory_dev_key(req) or str(body.get("mac") or "").strip().lower()
+    if not key:
+        return JSONResponse({"error": "mac fehlt"}, status_code=400)
+    channel = str(body.get("channel") or "voice").strip().lower()
+    user_msg = str(body.get("user") or "")[:2000]
+    assistant_msg = str(body.get("assistant") or "")[:4000]
+    if not user_msg or not assistant_msg:
+        return JSONResponse({"error": "user und assistant erforderlich"},
+                            status_code=400)
+    llmmemory.add_exchange(key, channel, user_msg, assistant_msg)
+    return JSONResponse({"ok": True})
+
+
+async def _memory_sat_extract(req: Request) -> JSONResponse:
+    """POST /api/memory/sat/extract {mac, user, assistant, model} —
+    die Fakten-Extraktion laeuft zentral am Master (entlastet den Pi)."""
+    denied = _memory_sat_denied(req)
+    if denied:
+        return denied
+    try:
+        body = await req.json()
+    except (json.JSONDecodeError, ValueError):
+        return JSONResponse({"error": "ungueltiges JSON"}, status_code=400)
+    key = _memory_dev_key(req) or str(body.get("mac") or "").strip().lower()
+    if not key:
+        return JSONResponse({"error": "mac fehlt"}, status_code=400)
+    user_msg = str(body.get("user") or "")
+    assistant_msg = str(body.get("assistant") or "")
+    if user_msg and assistant_msg:
+        llmmemory.extract_facts_async(user_msg, assistant_msg,
+                                      str(body.get("model") or ""), key=key)
+    return JSONResponse({"ok": True})
+
+
+async def _memory_snapshot(req: Request) -> JSONResponse:
+    """GET /api/memory — Gedaechtnis aller Geraete fuer die WebUI
+    (Konfiguration -> Gedaechtnis, nur Admin)."""
+    keys = {"web"} | set(llmmemory.fact_keys()) | set(llmmemory.history_keys())
+    with manager._lock:
+        keys |= set(manager.satellites.keys())
+    devices = []
+    for k in sorted(keys):
+        if k == "web":
+            hist = [{"role": m["role"], "content": m["content"],
+                     "channel": "web"}
+                    for m in llmmemory.history("web", limit=12)]
+        else:
+            hist = llmmemory.exchange_history(k, limit=12)
+        devices.append({"key": k,
+                        "name": manager.display_name(k) or k,
+                        "facts": llmmemory.load_facts(k),
+                        "history": hist})
+    return JSONResponse({"devices": devices})
+
+
+async def _memory_facts_put(req: Request) -> JSONResponse:
+    """PUT /api/memory/facts {key, facts:[...]} — Faktenliste ersetzen."""
+    try:
+        body = await req.json()
+    except (json.JSONDecodeError, ValueError):
+        return JSONResponse({"error": "ungueltiges JSON"}, status_code=400)
+    key = str(body.get("key") or "").strip().lower()
+    facts = body.get("facts")
+    if not key or not isinstance(facts, list):
+        return JSONResponse({"error": "key und facts[] erforderlich"},
+                            status_code=400)
+    llmmemory.replace_facts(key, [str(f) for f in facts[:200]])
+    return JSONResponse({"ok": True})
+
+
+async def _memory_history_clear(req: Request) -> JSONResponse:
+    """POST /api/memory/history/clear {key, channel?} — Verlauf loeschen
+    (Fakten bleiben erhalten)."""
+    try:
+        body = await req.json()
+    except (json.JSONDecodeError, ValueError):
+        return JSONResponse({"error": "ungueltiges JSON"}, status_code=400)
+    key = str(body.get("key") or "").strip().lower()
+    if not key:
+        return JSONResponse({"error": "key erforderlich"}, status_code=400)
+    channel = str(body.get("channel") or "").strip().lower()
+    llmmemory.clear_history(key, channel)
+    return JSONResponse({"ok": True})
+
+
 routes = [
     Route("/", _ui),
     Route("/healthz", lambda req: JSONResponse({"ok": True})),
@@ -1622,6 +1766,14 @@ routes = [
     Route("/api/config/appqr.png", _config_appqr_png),
     Route("/api/config/import", _config_import, methods=["POST"]),
     Route("/api/config/satellite/{mac}", _config_sat_get),
+    Route("/api/memory", _memory_snapshot),
+    Route("/api/memory/facts", _memory_facts_put, methods=["PUT"]),
+    Route("/api/memory/history/clear", _memory_history_clear,
+          methods=["POST"]),
+    Route("/api/memory/sat/facts", _memory_sat_facts),
+    Route("/api/memory/sat/history", _memory_sat_history),
+    Route("/api/memory/sat/exchange", _memory_sat_exchange, methods=["POST"]),
+    Route("/api/memory/sat/extract", _memory_sat_extract, methods=["POST"]),
     # (c) Zentrale API-Proxy-Endpunkte (TTS/STT/LLM)
     Route("/proxy/tts", proxy.proxy_tts, methods=["GET", "HEAD", "POST"]),
     Route("/proxy/stt", proxy.proxy_stt, methods=["GET", "HEAD", "POST"]),
@@ -1675,6 +1827,8 @@ def _gate_public(path: str) -> bool:
         return True
     if path == "/api/config/apply":
         return True
+    if path.startswith("/api/memory/sat/"):  # Geraete-Meldungen (Token im Handler)
+        return True
     return False
 
 
@@ -1694,6 +1848,8 @@ def _token_allowed(path: str) -> bool:
     if path.startswith("/api/satellite/"):
         return path.rsplit("/", 1)[-1] in ("volume", "output",
                                            "disable", "enable")
+    if path.startswith("/api/memory"):
+        return True
     return False
 
 
@@ -1711,6 +1867,8 @@ def _needs_admin(path: str, method: str) -> bool:
         tail = path.rsplit("/", 1)[-1]
         return tail in ("restart", "pause", "unpause", "name",
                         "volume", "output", "disable", "enable")
+    if path.startswith("/api/memory") and not path.startswith("/api/memory/sat/"):
+        return True
     return False
 
 

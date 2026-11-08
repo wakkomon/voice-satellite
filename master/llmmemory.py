@@ -1,22 +1,29 @@
-"""Gedaechtnis des Master-Chat-WebUIs (analog app/memory.py auf dem Satellite).
+"""Zentrales Gedaechtnis des Masters — Geraete-Speicher (Master-Modus).
 
-- Kurzzeit: die letzten N Eintraege eines Chats (aus dem Chat-JSONL,
-  kanalgetrennt pro mac/"web") wandern als messages in den LLM-Request.
-- Langzeit: nach jeder Chat-Antwort extrahiert ein kleiner LLM-Call Fakten
-  ("Nutzer heisst …") in eine sqlite-Tabelle; bis zu MAX_FACTS davon
-  stehen im Systemprompt.
+Im Master-Modus liegt das Gedaechtnis AUSSCHLIESSLICH hier: der Web-Chat
+des Masters UND alle Satelliten (deren app/memory.py ruft im Master-Modus
+nur noch /api/memory/sat/* auf). Key pro Geraet = kanonischer
+Registry-Key (Host-IP bzw. MAC) bzw. "web" fuer den Browser-Chat.
 
-Der Master hat kein SQLite-Chatlog — das JSONL der Chat-UI ist die
-Historie; hier wird nur daraus gelesen (nur user/assistant mit Text).
+- Kurzzeit: Web-Chat -> die letzten N Eintraege aus dem Chat-JSONL;
+  Satelliten -> history-Tabelle (key+channel), vom Geraet per
+  POST /api/memory/sat/exchange gemeldet.
+- Langzeit: Fakten in einer sqlite-Tabelle mit key-Spalte (pro Geraet bis
+  CHAT_MAX_FACTS); extrahiert der Master nach Chat-Antworten und nach
+  Satelliten-Turns (POST /api/memory/sat/extract).
+
+Der Master fuehrt kein SQLite-Chatlog fuer den Web-Chat — das JSONL der
+Chat-UI ist dessen Historie; hier wird nur daraus gelesen (nur
+user/assistant mit Text).
 """
 from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import sqlite3
 import threading
+import time
 
 from . import chatstore, config
 
@@ -33,14 +40,30 @@ _SYSTEM_PROMPT = (
 
 def _conn() -> sqlite3.Connection:
     con = sqlite3.connect(config.CHAT_MEMORY_DB)
-    con.execute("CREATE TABLE IF NOT EXISTS facts (ts INTEGER, fact TEXT UNIQUE)")
+    cols = [r[1] for r in con.execute("PRAGMA table_info(facts)")]
+    if not cols:
+        con.execute("CREATE TABLE facts (ts INTEGER, fact TEXT, "
+                    "key TEXT DEFAULT 'web', UNIQUE(fact, key))")
+    elif "key" not in cols:
+        # Altes Schema: Fakten global ohne Geraet-Schluessel (fact UNIQUE).
+        # Neues Schema mit key-Spalte; bestehende Fakten stammen aus dem
+        # Web-Chat und bekommen "web".
+        con.execute("CREATE TABLE facts_new (ts INTEGER, fact TEXT, "
+                    "key TEXT DEFAULT 'web', UNIQUE(fact, key))")
+        con.execute("INSERT OR IGNORE INTO facts_new (ts, fact, key) "
+                    "SELECT ts, fact, 'web' FROM facts")
+        con.execute("DROP TABLE facts")
+        con.execute("ALTER TABLE facts_new RENAME TO facts")
+    con.execute("CREATE TABLE IF NOT EXISTS history (ts INTEGER, role TEXT, "
+                "content TEXT, key TEXT, channel TEXT DEFAULT 'voice')")
     con.commit()
     return con
 
 
 def history(chat_key: str, limit: int | None = None) -> list:
-    """Kurzzeitgedaechtnis: letzte limit Nachrichten des Chats als
-    [{role, content}] in Zeitreihenfolge (neueste zuletzt).
+    """Kurzzeitgedaechtnis des WEB-CHATS: letzte limit Nachrichten des
+    Chats als [{role, content}] in Zeitreihenfolge (neueste zuletzt).
+    (Satelliten-Historie liegt in der history-Tabelle -> exchange_history.)
 
     Nur user/assistant-Eintraege mit Text — musik/system-Kacheln und
     leerer Text sind kein Promptmaterial."""
@@ -69,37 +92,119 @@ def build_messages(chat_key: str, text: str, limit: int | None = None) -> list:
     nach der Antwort als assistant-Eintrag gespeichert, die Frage selbst
     kommt hier explizit als letztes Message hinzu."""
     msgs = []
-    facts = load_facts()
+    facts = load_facts(chat_key)
     if facts:
-        system = _SYSTEM_PROMPT
-        if config.CHAT_MEMORY_FACTS_ENABLED and facts:
-            system += ("\n\nDas weisst du bereits ueber den Nutzer:\n- "
-                       + "\n- ".join(facts[:config.CHAT_MAX_FACTS]))
+        system = _SYSTEM_PROMPT + ("\n\nDas weisst du bereits ueber den "
+                                   "Nutzer:\n- "
+                                   + "\n- ".join(facts[:config.CHAT_MAX_FACTS]))
         msgs.append({"role": "system", "content": system})
     msgs.extend(history(chat_key, limit))
     msgs.append({"role": "user", "content": text})
     return msgs
 
 
-def load_facts() -> list:
+# ── Langzeit: Fakten, pro Geraet-Schluessel getrennt ───────────────
+
+def load_facts(key: str = "web") -> list:
     if not config.CHAT_MEMORY_FACTS_ENABLED:
         return []
     with _lock, _conn() as con:
         # rowid als Tiebreak: mehrere Fakten in derselben Sekunde waeren
         # sonst in der Cap-/Reihenfolge-Auswahl indeterminiert.
         return [f for (f,) in con.execute(
-            "SELECT fact FROM facts ORDER BY ts DESC, rowid DESC")]
+            "SELECT fact FROM facts WHERE key=? ORDER BY ts DESC, rowid DESC",
+            (key,))]
 
 
-def add_facts(facts: list) -> None:
+def add_facts(facts: list, key: str = "web") -> None:
     with _lock, _conn() as con:
+        now = int(time.time())
         for f in facts:
-            con.execute("INSERT OR IGNORE INTO facts (ts, fact) VALUES (?,?)",
-                        (int(__import__("time").time()), f))
+            con.execute("INSERT OR IGNORE INTO facts (ts, fact, key) VALUES (?,?,?)",
+                        (now, f, key))
         con.execute(
-            "DELETE FROM facts WHERE rowid NOT IN "
-            "(SELECT rowid FROM facts ORDER BY rowid DESC LIMIT ?)",
-            (config.CHAT_MAX_FACTS,))
+            "DELETE FROM facts WHERE key=? AND rowid NOT IN "
+            "(SELECT rowid FROM facts WHERE key=? ORDER BY rowid DESC LIMIT ?)",
+            (key, key, config.CHAT_MAX_FACTS))
+        con.commit()
+
+
+def replace_facts(key: str, facts: list) -> int:
+    """Faktenliste eines Geraets komplett ersetzen (WebUI-Editor).
+    Dupes werden entfernt, Cap ist CHAT_MAX_FACTS. Gibt die Anzahl der
+    gespeicherten Fakten zurueck."""
+    clean = list(dict.fromkeys(str(f).strip() for f in facts if str(f).strip()))
+    kept = clean[:config.CHAT_MAX_FACTS]
+    with _lock, _conn() as con:
+        con.execute("DELETE FROM facts WHERE key=?", (key,))
+        now = int(time.time())
+        for f in kept:
+            con.execute("INSERT OR IGNORE INTO facts (ts, fact, key) VALUES (?,?,?)",
+                        (now, f, key))
+        con.commit()
+    return len(kept)
+
+
+def fact_keys() -> list:
+    """Alle Geraet-Schluessel, fuer die Fakten existieren."""
+    with _lock, _conn() as con:
+        return [k for (k,) in con.execute("SELECT DISTINCT key FROM facts")]
+
+
+# ── Kurzzeit der Satelliten (Tabelle; Web-Chat bleibt das JSONL) ────
+
+def add_exchange(key: str, channel: str, user_msg: str,
+                 assistant_msg: str) -> None:
+    """Ein Frage-Antwort-Paar eines Geraets (Kanale voice/web getrennt),
+    pro key+channel auf CHAT_MAX_HISTORY*2 Eintraege begrenzt."""
+    with _lock, _conn() as con:
+        now = int(time.time())
+        con.execute("INSERT INTO history VALUES (?,?,?,?,?)",
+                    (now, "user", user_msg, key, channel))
+        con.execute("INSERT INTO history VALUES (?,?,?,?,?)",
+                    (now, "assistant", assistant_msg, key, channel))
+        con.execute(
+            "DELETE FROM history WHERE key=? AND channel=? AND rowid NOT IN "
+            "(SELECT rowid FROM history WHERE key=? AND channel=? "
+            "ORDER BY ts DESC, rowid DESC LIMIT ?)",
+            (key, channel, key, channel, config.CHAT_MAX_HISTORY * 2))
+        con.commit()
+
+
+def exchange_history(key: str, channel: str = "",
+                     limit: int | None = None) -> list:
+    """Kurzzeit-Historie eines Geraets als [{ts, role, content, channel}]
+    in Zeitreihenfolge. channel='' = alle Kanale."""
+    limit = limit or config.CHAT_MAX_HISTORY
+    q = "SELECT ts, role, content, channel FROM history WHERE key=?"
+    args: list = [key]
+    if channel:
+        q += " AND channel=?"
+        args.append(channel)
+    q += " ORDER BY ts DESC, rowid DESC LIMIT ?"
+    args.append(limit * 2)
+    with _lock, _conn() as con:
+        rows = con.execute(q, args).fetchall()
+    return [{"ts": t, "role": r, "content": c, "channel": ch}
+            for t, r, c, ch in reversed(rows)]
+
+
+def clear_history(key: str, channel: str = "") -> None:
+    """Verlauf eines Geraets loeschen (Fakten bleiben)."""
+    q = "DELETE FROM history WHERE key=?"
+    args: list = [key]
+    if channel:
+        q += " AND channel=?"
+        args.append(channel)
+    with _lock, _conn() as con:
+        con.execute(q, args)
+        con.commit()
+
+
+def history_keys() -> list:
+    """Alle Geraet-Schluessel mit Kurzzeit-Historie."""
+    with _lock, _conn() as con:
+        return [k for (k,) in con.execute("SELECT DISTINCT key FROM history")]
 
 
 def parse_facts(raw: str) -> list:
@@ -124,11 +229,11 @@ MEMORY_EXTRACT_PROMPT = (
 )
 
 
-def extract_facts(user_msg: str, assistant_msg: str, model: str = "") -> list:
+def extract_facts(user_msg: str, assistant_msg: str, model: str = "",
+                  key: str = "web") -> list:
     """Synchroner Fakten-Extraktor (blockiert kurz — deshalb async-Callsite).
 
-    Liefern nur, wenn das Upstream-LLM erreichbar ist; sonst [] + Log.
-    """
+    Liefern nur, wenn das Upstream-LLM erreichbar ist; sonst [] + Log."""
     if not config.CHAT_MEMORY_FACTS_ENABLED:
         return []
     url = config.LLM_BACKEND_URL
@@ -160,15 +265,17 @@ def extract_facts(user_msg: str, assistant_msg: str, model: str = "") -> list:
         raw = data["choices"][0]["message"]["content"]
         facts = parse_facts(raw)
         if facts:
-            add_facts(facts)
-            log.info("Chat-Fakten gespeichert: %s", facts)
+            add_facts(facts, key)
+            log.info("Fakten gespeichert (%s): %s", key, facts)
         return facts
     except Exception as e:
-        log.warning("Chat-Fakten-Extraktion fehlgeschlagen: %s", e)
+        log.warning("Fakten-Extraktion fehlgeschlagen (%s): %s", key, e)
         return []
 
 
-def extract_facts_async(user_msg: str, assistant_msg: str, model: str = "") -> None:
+def extract_facts_async(user_msg: str, assistant_msg: str, model: str = "",
+                        key: str = "web") -> None:
     t = threading.Thread(target=extract_facts,
-                         args=(user_msg, assistant_msg, model), daemon=True)
+                         args=(user_msg, assistant_msg, model, key),
+                         daemon=True)
     t.start()

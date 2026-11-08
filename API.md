@@ -158,7 +158,40 @@ Shell-Variante mit JSON-Escaping und Fehlerbehandlung:
 ./scripts/openhab_voice.sh tone alarm 3
 ```
 
+## Zentrales Gedaechtnis (Master)
+
+Im Master-Modus liegt das Gedaechtnis ausschliesslich am Master
+(`CHAT_MEMORY_DB`, Default `<CHAT_DIR>/memory.db`), pro Geraet getrennt —
+die Geraete selbst (`app/memory.py`) schreiben im Master-Modus nichts
+mehr und senden nur API-Aufrufe (Beweis: Fakten + Verlauf sind im
+Master-WebUI unter Konfiguration -> Gedächtnis editierbar).
+
+| Endpoint | Berechtigung | Beschreibung |
+|---|---|---|
+| `POST /api/memory/sat/exchange` | Bearer MASTER_TOKEN | `{mac, channel, user, assistant}` — Kurzzeit-Austausch des Geraets speichern |
+| `POST /api/memory/sat/extract` | Bearer MASTER_TOKEN | `{mac, user, assistant, model}` — Fakten extrahieren (der Master macht es, entlastet den Pi) |
+| `GET /api/memory/sat/facts?mac=` | Bearer MASTER_TOKEN | Fakten des Geraets |
+| `GET /api/memory/sat/history?mac=&channel=` | Bearer MASTER_TOKEN | Kurzzeit-Verlauf des Geraets (`channel` voice/web) |
+| `GET /api/memory` | Admin (Web-Login oder MASTER_TOKEN) | Snapshot: Fakten + Verlauf aller Geraete ("web" + Registry) |
+| `PUT /api/memory/facts` | Admin | `{key, facts: [...]}` — Faktenliste eines Geraets ersetzen |
+| `POST /api/memory/history/clear` | Admin | `{key, channel?}` — Verlauf loeschen (Fakten bleiben) |
+
+`key` = kanonischer Registry-Key (Host-IP oder MAC); `web` = Browser-Chat.
+Die alte globale Fakten-Tabelle wird beim naechsten Start einmal migriert
+(Bestehende Fakten -> `web`).
+
+```bash
+# Fakten eines Geraets setzen (Tooling mit MASTER_TOKEN)
+curl -X PUT http://MASTER:8791/api/memory/facts \
+  -H "Authorization: Bearer ***" -H "Content-Type: application/json" \
+  -d '{"key":"192.168.82.32","facts":["Wohnt in der Rosenstrasse 12"]}'
+
+# Gedaechtnis aller Geraete anzeigen
+curl -s http://MASTER:8791/api/memory -H "Authorization: Bearer ***" | jq
+```
+
 ## offene Fragen / Edge-Cases
+
 - `repeat` wird auf max. 20 begrenzt; hohere Werte werden gekappt statt abgelehnt.
 - `/speak` und `/tone` blockieren nicht — der Speaker ist mit dem
   Pipeline-Audio geteilt; gleichzeitige Ausgaben werden von ALSA
