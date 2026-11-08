@@ -596,6 +596,14 @@ async function refresh() {
     // Satelliten
     const known = sats.filter(s => s.known);
     $('sat-count').textContent = `(${known.filter(s=>s.status==='online').length} online / ${known.length} bekannt)`;
+    // Re-render der Satellitentabelle ueberspringen, solange der Nutzer einen
+    // Anzeigenamen editiert: sonst zerstoert der 30-s-Poll oder ein SSE-
+    // sat_status-Ereignis (bei aktiven Satelliten wie display01 haeufig) das
+    // Eingabefeld mitten in der Eingabe — das change-Event feuert nie, der PUT
+    // unterbleibt, der Name laesst sich 'nicht speichern'. Nach blur/Enter baut
+    // der naechste Durchlauf die Tabelle wieder auf (Name ist dann gesetzt).
+    const _ae = document.activeElement;
+    if (_ae && _ae.classList && _ae.classList.contains('satname')) return;
     $('sat-body').innerHTML = known.length ? known.map(s => {
       // Aktivität: was läuft grade (Phase vor Ausführung), Version, Last
       const act = s.activity || (s.pipeline ? (s.pipeline.phase || s.pipeline.state || '') : '');
