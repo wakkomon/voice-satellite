@@ -696,9 +696,36 @@ def start(pipeline):
     def serve():
         try:
             srv = ThreadingHTTPServer(("0.0.0.0", config.WEB_PORT), Handler)
-            log.info("Web-Interface auf :%d", config.WEB_PORT)
+            if config.WEB_TLS:
+                _wrap_tls(srv)
+            else:
+                log.info("Web-Interface auf :%d", config.WEB_PORT)
             srv.serve_forever()
         except Exception as e:
             log.error("Web-Interface nicht gestartet: %s", e)
 
     threading.Thread(target=serve, daemon=True).start()
+
+
+def _wrap_tls(srv):
+    """Selfsigniertes TLS um den Web-Server legen (https://<pi-ip>:8770).
+    Bei Fehler (openssl fehlt / Zert-Erzeugung scheitert) bleibt der Server
+    plain-HTTP, damit die Web-UI nicht komplett wegfaellt."""
+    import ssl as _ssl
+    from . import certgen
+    pk = certgen.ensure_cert()
+    if not pk:
+        log.warning("WEB_TLS aktiv, aber kein Zertifikat — Web-UI bleibt auf HTTP :%d",
+                    config.WEB_PORT)
+        return
+    cert_path, key_path = pk
+    try:
+        ctx = _ssl.SSLContext(_ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(cert_path, key_path)
+        srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+    except Exception as e:
+        log.error("TLS-Setup fehlgeschlagen (%s) — Web-UI bleibt auf HTTP :%d",
+                  e, config.WEB_PORT)
+        return
+    log.info("Web-Interface auf https:// :%d (selfsigniertes TLS, Zert: %s)",
+             config.WEB_PORT, cert_path)

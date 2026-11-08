@@ -250,6 +250,14 @@ RTSP_PASS       = _env("RTSP_PASS", "", fallback_empty=True)
 
 # ── Web ────────────────────────────────────────────────────────
 WEB_PORT        = int(_env("WEB_PORT", "8770"))
+# Web-UI per selfsigniertem TLS (https://<pi-ip>:8770). Default an;
+# WEB_TLS=0 schaltet die Web-UI zurueck auf plain HTTP.
+WEB_TLS         = _env("WEB_TLS", "1") in ("1", "true", "yes", "on")
+# Zert-Ordner (Default DATA_DIR/certs = /data/certs) + SANs. VS_CERT_SANS
+# die Pi-IP rein, z. B. IP:192.168.82.32,DNS:voice-satellite — dann zeigt
+# der Browser nur die Selbstsigniert-Warnung (keine Host-Mismatch).
+VS_CERT_DIR     = _env("VS_CERT_DIR", "")
+VS_CERT_SANS    = _env("VS_CERT_SANS", "")
 
 # ── MCP (HTTP-Remote-Steuerung) ──────────────────────────────
 MCP_ENABLED     = _env("MCP_ENABLED", "1") in ("1", "true", "yes", "on")

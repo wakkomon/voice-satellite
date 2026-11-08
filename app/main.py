@@ -21,6 +21,7 @@ import sys
 import threading
 import time
 
+from . import sslctx  # noqa: F401  # Trust-all-TLS fuer den Master (HTTPS)
 from . import (audio, chatlog, config, display, duck, memory, playback, router, stt,
                tones, tts, volume, wake, web)
 

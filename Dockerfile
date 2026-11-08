@@ -18,6 +18,7 @@ RUN apt-get update -qq && \
         alsa-utils \
         mpg123 \
         curl \
+        openssl \
         build-essential \
         libjpeg-dev \
         zlib1g-dev \
@@ -63,6 +64,6 @@ USER sat
 EXPOSE 8770
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s \
-  CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8770/health', timeout=3).status==200 else 1)"
+  CMD sh -c "curl -skf -m 3 https://127.0.0.1:8770/health >/dev/null 2>&1 || curl -sf -m 3 http://127.0.0.1:8770/health >/dev/null 2>&1"
 
 CMD ["python", "-m", "app.main"]
