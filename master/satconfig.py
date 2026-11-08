@@ -346,10 +346,16 @@ class ConfigStore:
         """Minimum fuer ein neues Geraet (Pi/App), das den Master erreichen
         soll: nur MASTER_URL (Adresse) + MASTER_TOKEN (Zugang). Keine
         Modell-/Sprach-/Intent-Konfiguration — die zieht das Geraet per
-        Heartbeat selbst vom Master. include_secrets=False laesst den Token
-        weg (dann nur noch die Adresse)."""
+        Heartbeat selbst vom Master. Der Token folgt dem effektiven Master-
+        Token (Store-Wert, sonst ENV MASTER_TOKEN). include_secrets=False
+        laesst den Token weg (dann nur noch die Adresse)."""
         with self._lock:
-            token = self._global.get("MASTER_TOKEN") or ""
+            # Effektiver Token wie beim Master (_sat_token/get_secret +
+            # ENV-Fallback): in Deployments wird MASTER_TOKEN oft nur per
+            # ENV gesetzt; ohne Fallback waere die Satelliten-Export-Datei
+            # fuer ein neues Geraet unbrauchbar (kein Zugang).
+            token = (self._global.get("MASTER_TOKEN")
+                     or os.environ.get("MASTER_TOKEN", "").strip())
             version = self._version
         g: dict = {}
         payload = {

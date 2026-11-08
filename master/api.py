@@ -1071,6 +1071,18 @@ async def _config_export_split(req: Request, kind: str) -> Response:
     return Response(body, media_type="application/json; charset=utf-8", headers=headers)
 
 
+def _split_export(kind: str):
+    """Factory fuer die getrennten Export-Routen.
+
+    _config_export_split ist async — ein sync-Lambda-Wrapper wuerde die
+    Koroutine nur erzeugen, aber nie awaiten (Starlette: sync-Endpoint),
+    was zu 'coroutine object is not callable' / HTTP 500 fuehrt. Stattdessen
+    wird hier ein async-Handler zurueckgegeben."""
+    async def handler(req: Request) -> Response:
+        return await _config_export_split(req, kind)
+    return handler
+
+
 def _appqr_text(req: Request) -> str:
     """Aktuelle globale Master-Config als App-KEY=WERT-Text (für den QR-Code).
 
@@ -1794,10 +1806,8 @@ routes = [
     Route("/api/config", _config_put, methods=["PUT"]),
     Route("/api/config/apply", _config_apply_get, methods=["GET"]),
     Route("/api/config/export", _config_export),
-    Route("/api/config/export-sat",
-          lambda req: _config_export_split(req, "satellite")),
-    Route("/api/config/export-master",
-          lambda req: _config_export_split(req, "master")),
+    Route("/api/config/export-sat", _split_export("satellite")),
+    Route("/api/config/export-master", _split_export("master")),
     Route("/api/config/appqr", _config_appqr),
     Route("/api/config/appqr.png", _config_appqr_png),
     Route("/api/config/import", _config_import, methods=["POST"]),

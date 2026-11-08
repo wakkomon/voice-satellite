@@ -115,4 +115,21 @@ ck(r2["unknown_keys"] == [], f"keine unknown_keys ({r2['unknown_keys']})")
 ck(fresh2.get_secret("MASTER_TOKEN") == "master-token", "MASTER_TOKEN gesetzt")
 ck(fresh2._global.get("LLM_MODEL") in (None, ""), "keine Modell-Keys durchgezogen")
 
+print("== Satelliten-Export: ENV-Fallback, wenn der Store keinen Token haelt ==")
+# Deployment-Fall: MASTER_TOKEN nur per ENV gesetzt (Store selbst leer).
+# Ohne Fallback waere die Satelliten-Export-Datei fuer ein neues Geraet
+# unbrauchbar (kein Zugang) — genau der Bug, den der Fix schliesst.
+os.environ["MASTER_TOKEN"] = "env-deploy-token"
+envstore = sc.ConfigStore(os.path.join(os.environ["VS_CONFIG_DIR"], "env.json"))
+ck(not envstore._global.get("MASTER_TOKEN"), "Store selbst haelt keinen MASTER_TOKEN")
+es = envstore.export_satellites(master_url="http://192.168.82.24:8791")
+ck(es["global"].get("MASTER_TOKEN") == "env-deploy-token"
+   and es.get("master_token") == "env-deploy-token",
+   "effektiver Token (ENV) wird exportiert")
+es0 = envstore.export_satellites(include_secrets=False,
+                                 master_url="http://192.168.82.24:8791")
+ck("MASTER_TOKEN" not in es0["global"] and "master_token" not in es0,
+   "secrets=0: auch ENV-Token raus")
+del os.environ["MASTER_TOKEN"]
+
 sys.exit(1 if fails else 0)
