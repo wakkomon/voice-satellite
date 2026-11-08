@@ -4,6 +4,8 @@ Endpoints:
   GET    /api/heartbeat        → Status + Sat-Liste
   POST   /api/satellite/{mac}/restart
   POST   /api/satellite/{mac}/pause
+  POST   /api/satellite/{mac}/disable|enable → Satellit an-/abschalten
+  POST   /api/image            → Bild an ein Gerät / alle Geräte pushen
   GET    /events               → SSE stream (index_done, sat_status)
   GET    /api/music            → Index-Payload (gzip optional)
   POST   /index/rebuild        → Trigger Rebuild
@@ -264,6 +266,14 @@ async def _sat_heartbeat(req: Request) -> JSONResponse:
     # Die echte Host-IP (von NAT) statt der Container-IP aus dem Payload
     if req.client:
         payload["ip"] = req.client.host
+    # Deaktivierter Satellit (Pi oder App) darf keine Meldungen mehr an den
+    # Master senden — Heartbeat wird abgelehnt, das Gerät fällt im Monitor
+    # auf offline und bekommt keine Warteschlange mehr ab.
+    if manager.is_disabled_for(mac, str(payload.get("ip") or "")):
+        return JSONResponse(
+            {"error": "deaktiviert",
+             "detail": "Satellit ist vom Master deaktiviert"},
+            status_code=403)
     # Live-Log-Events des Satelliten: vorher herausloesen, damit sie nicht im
     # Status-Objekt (UI/Config-Export) landen. Der Master loggt sie erst nach
     # dem Heartbeat, damit sein Satellitenname schon bekannt ist.
@@ -447,6 +457,28 @@ async def _sat_name_put(req: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "name": manager.display_name(key)})
 
 
+async def _sat_disable(req: Request) -> JSONResponse:
+    """POST /api/satellite/{key}/disable (Admin) — Satellit abschalten.
+
+    Deaktivierter Satellit (Pi oder App): keine Pushes mehr (Broadcast, DM,
+    Chat-out, Bild-Push) und keine Meldungen an den Master (Heartbeat/Chat/
+    DM → 403 'deaktiviert'). Persistenz: sat_disabled.json im Config-Volume."""
+    key = req.path_params["mac"]
+    err = manager.set_disabled(key, True)
+    if err:
+        return JSONResponse({"error": err}, status_code=404)
+    return JSONResponse({"ok": True, "mac": key, "disabled": True})
+
+
+async def _sat_enable(req: Request) -> JSONResponse:
+    """POST /api/satellite/{key}/enable (Admin) — Satellit wieder aktivieren."""
+    key = req.path_params["mac"]
+    err = manager.set_disabled(key, False)
+    if err:
+        return JSONResponse({"error": err}, status_code=404)
+    return JSONResponse({"ok": True, "mac": key, "disabled": False})
+
+
 # ── Chat-WebUI ────────────────────────────────────────────────
 # Chatfenster im WebUI: Eintraege der Satelliten (Sprech-Turne + Musik,
 # gepusht per Push/Heartbeat), TTS-Aufnahmen (Master zeichnet ueber den
@@ -480,6 +512,12 @@ async def _chat_push(req: Request) -> JSONResponse:
     # Match fuer s.ip.
     ip = str(payload.get("ip") or "") if isinstance(payload, dict) else ""
     ip = ip or (req.client.host if req.client else "") or ""
+    # Deaktiviertes Gerät meldet keine Chats mehr.
+    if manager.is_disabled_for(mac, ip):
+        return JSONResponse(
+            {"error": "deaktiviert",
+             "detail": "Satellit ist vom Master deaktiviert"},
+            status_code=403)
     # Kanonischer Registry-Key (stabile IP statt Bridge-MAC), wie beim
     # Heartbeat – sonst findet die WebUI die Eintraege bei Geratefilter nicht.
     canon = manager.canonical_key(mac, ip) or mac
@@ -534,6 +572,37 @@ async def _chat_recq(req: Request) -> Response:
     return FileResponse(fn, media_type="audio/wav")
 
 
+async def _dm_core(from_key: str, from_name: str, to: str,
+                   text: str) -> tuple[int, dict]:
+    """Kern der Geräte-zu-Gerät-Direktnachricht (auch MCP-Tool 'send_dm').
+
+    Deaktivierte Geräte werden übersprungen (kein 'all'-Ziel, kein
+    Einzel-Ziel) — sie sind vom Admin abgeschaltet und empfangen nichts."""
+    if not text or not to:
+        return 400, {"ok": False, "error": "text und to erforderlich"}
+    if to in ("all", "*"):
+        with manager._lock:
+            targets = [k for k, sa in manager.satellites.items()
+                       if sa.status == "online" and k != from_key
+                       and not sa.disabled]
+        if not targets:
+            return 404, {"ok": False, "error": "keine anderen online Geräte"}
+        for k in targets:
+            manager.queue_for(k, text, speak=False, src=from_name)
+        return 200, {"ok": True, "queued": len(targets), "targets": targets}
+    hit = manager.sat_target(to)
+    if not hit:
+        return 404, {"ok": False, "error": "Zielgerät nicht gefunden",
+                     "to": to}
+    target_key = hit[0]
+    if target_key == from_key:
+        return 200, {"ok": True, "queued": 0, "note": "eigenes Gerät"}
+    if manager.is_disabled(target_key):
+        return 403, {"ok": False, "error": "Zielgerät ist deaktiviert"}
+    manager.queue_for(target_key, text, speak=False, src=from_name)
+    return 200, {"ok": True, "queued": 1, "target": target_key}
+
+
 async def _sat_dm(req: Request) -> JSONResponse:
     """POST /api/satellite/{mac}/dm {to, text} -> Geräte-zu-Gerät-Direktnachricht.
 
@@ -551,36 +620,17 @@ async def _sat_dm(req: Request) -> JSONResponse:
         body = {}
     text = str((body.get("text") or "")).strip()[:1000]
     to = str((body.get("to") or "")).strip().lower()
-    if not text or not to:
-        return JSONResponse({"error": "text und to erforderlich"}, status_code=400)
+    # Deaktiviertes Gerät sendet keine Nachrichten mehr (auch keine DMs).
+    ip = (req.client.host if req.client else "") or ""
+    if manager.is_disabled_for(mac, ip):
+        return JSONResponse(
+            {"error": "deaktiviert",
+             "detail": "Gerät ist vom Master deaktiviert"},
+            status_code=403)
     # Quellname: Anzeigename (custom > Hostname) des sendenden Geräts.
     from_name = (manager.display_name(mac) or mac)[:48]
-    # Ziel auflösen und vormerken. Queue-Key = Registry-Key, den das Ziel beim
-    # Heartbeat drain-t (s. manager.canonical_key). 'all'/* = Broadcast an alle
-    # anderen Online-Geräte.
-    if to in ("all", "*"):
-        with manager._lock:
-            targets = [k for k, sa in manager.satellites.items()
-                       if sa.status == "online" and k != mac]
-        if not targets:
-            return JSONResponse({"ok": False,
-                                 "error": "keine anderen online Geräte"},
-                                status_code=404)
-        for k in targets:
-            manager.queue_for(k, text, speak=False, src=from_name)
-        return JSONResponse({"ok": True, "queued": len(targets),
-                             "targets": targets})
-    hit = manager.sat_target(to)
-    if not hit:
-        return JSONResponse({"ok": False,
-                             "error": "Zielgerät nicht gefunden", "to": to},
-                            status_code=404)
-    target_key = hit[0]
-    if target_key == mac:
-        return JSONResponse({"ok": True, "queued": 0,
-                             "note": "eigenes Gerät"})
-    manager.queue_for(target_key, text, speak=False, src=from_name)
-    return JSONResponse({"ok": True, "queued": 1, "target": target_key})
+    code, data = await _dm_core(mac, from_name, to, text)
+    return JSONResponse(data, status_code=code)
 
 
 async def _chat_intent(text: str, mac: str, out: str) -> str | None:
@@ -596,7 +646,8 @@ async def _chat_intent(text: str, mac: str, out: str) -> str | None:
         # haben keinen Web-Dienst und koennen /intent nicht bedienen).
         with manager._lock:
             sats = [(k, sa) for k, sa in manager.satellites.items()
-                    if sa.status == "online" and sa.ip and sa.kind != "android"]
+                    if sa.status == "online" and sa.ip and sa.kind != "android"
+                    and not sa.disabled]
         if not sats:
             return None
         key = sats[0][0]
@@ -619,7 +670,7 @@ async def _chat_intent(text: str, mac: str, out: str) -> str | None:
 
 
 async def _chat_send(req: Request) -> JSONResponse:
-    """POST /api/chat/send {text, mac, speak} → LLM-Antwort (+TTS-Aufnahme).
+    """POST /api/chat/send {text, mac, speak, out} → LLM-Antwort (+TTS-Aufnahme).
 
     mac (optional): Konfig des gewaehlten Satelliten verwenden (LLM/TTS-
     Modelle), sonst globale. TTS-Antwort wird aufgezeichnet und mit
@@ -632,9 +683,6 @@ async def _chat_send(req: Request) -> JSONResponse:
     text = (body.get("text") or "").strip()
     mac = (body.get("mac") or "").lower().strip()
     speak = bool(body.get("speak", True))
-    # Zielgerät der Ausgabe: 'browser' | '' (=browser) | 'all' (=alle
-    # Online-Satelliten) | MAC/IP/Hostname eines Satelliten. Bestimmt, WO
-    # der Ausgabetext (Antwort) gesprochen wird.
     out = (body.get("out") or "").strip().lower()
     if out in ("", "web"):
         out = "browser"
@@ -643,11 +691,31 @@ async def _chat_send(req: Request) -> JSONResponse:
     # Web-UI-Login-Name als Quelle (Benutzerverwaltung): erscheint in der
     # Chat-Anzeige und wandert als 'src' in den Zielgeräten mit.
     who = _req_user(req).get("display") or "web"
+    # rid: Request-Id der WebUI (Live-Rendering gegen Gleichzeitigkeit)
+    rid = str(body.get("rid") or "")[:32]
+    result = await _chat_send_core(text, mac, speak, out, who, rid)
+    return JSONResponse(result)
+
+
+async def _chat_send_core(text: str, mac: str, speak: bool, out: str,
+                          who: str = "web", rid: str = "") -> dict:
+    """Kern des Chat-Sendens — wird auch vom MCP-Tool 'chat_send' genutzt.
+
+    mac: Konfig des gewaehlten Satelliten (LLM/TTS), sonst globale.
+    out: wo die Antwort gesprochen wird (browser | Satellit | all).
+    rid: Request-Id (WebUI-Live-Rendering; leer = Master generiert neue).
+    """
+    mac = (mac or "").lower().strip()
+    out = (out or "browser").strip().lower()
+    if out in ("", "web"):
+        out = "browser"
+    if not text:
+        raise ValueError("leere Nachricht")
     chatstore.add_chat(mac or "web", "user", text, who=who)
     _chat_progress("thinking")
 
     cfg = config_store.get_effective(mac or None)
-    rid = str(body.get("rid") or "")[:32] or os.urandom(4).hex()
+    rid = (rid or "")[:32] or os.urandom(4).hex()
     import httpx
     url = proxy._upstream_url("LLM_URL", master_cfg.LLM_BACKEND_URL)
     tok = proxy._upstream_token("LLM_TOKEN", proxy.ENV_LLM_TOKEN)
@@ -757,8 +825,9 @@ async def _chat_send(req: Request) -> JSONResponse:
         task.add_done_callback(_bg_tasks.discard)
         broadcast = "started"
     _chat_progress("done")
-    return JSONResponse({"answer": answer, "rec": rec, "ts": entry["ts"],
-                         "out": out, "broadcast": broadcast})
+    return {"answer": answer, "rec": rec, "ts": entry["ts"],
+            "out": out, "broadcast": broadcast}
+
 
 
 async def _synth_tts(cfg: dict, text: str) -> bytes | None:
@@ -823,7 +892,7 @@ async def _fanout_broadcast(cfg: dict, text: str, src: str = "") -> None:
             (k, f"http://{s.ip}:{SatManager._web_port(s)}",
              SatManager._kind_for(k, s))
             for k, s in manager.satellites.items()
-            if s.status == "online" and s.ip
+            if s.status == "online" and s.ip and not s.disabled
         ]
     if not targets:
         return
@@ -1258,12 +1327,15 @@ async def _sat_control(key: str, endpoint: str, payload: dict | None = None,
                 (k, f"http://{s.ip}:{SatManager._web_port(s)}",
              SatManager._kind_for(k, s))
                 for k, s in manager.satellites.items()
-                if s.status == "online" and s.ip
+                if s.status == "online" and s.ip and not s.disabled
             ]
     else:
         hit = manager.sat_target(key)
         kind = manager.sat_kind(key) if hit else None
         targets = [(hit[0], hit[1], kind)] if hit else []
+        if hit and manager.is_disabled(hit[0]):
+            return JSONResponse({"ok": False, "error": "Satellit deaktiviert"},
+                                status_code=403)
     if not targets:
         return JSONResponse(
             {"ok": False,
@@ -1393,6 +1465,74 @@ async def _openhab_output_get(req: Request) -> JSONResponse:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=502)
 
 
+async def image_push_core(sat_key: str, url: str, ttl: int = 60,
+                          text: str = "", src: str = "") -> tuple[int, dict]:
+    """Kern des Bild-Pushes — wird auch vom MCP-Tool 'push_image' genutzt.
+
+    Apps (Android) bekommen Bild-URL + ttl in die Pull-Warteschlange; die
+    App zeigt das Bild so lange an (Default 60 s). Pi-Satelliten haben
+    (noch) keine Bildanzeige — sie werden pro Ziel gemeldet.
+    text (optional): Begleittext, wird zusätzlich gesprochen/Durchsage."""
+    url = str(url or "").strip()
+    if not url.lower().startswith(("http://", "https://")):
+        return 400, {"ok": False, "error": "url (http/https) fehlt"}
+    try:
+        ttl = int(ttl or 0)
+    except (TypeError, ValueError):
+        ttl = 0
+    ttl = min(max(ttl, 5), 600) if ttl else 60
+    text = str(text or "").strip()[:500]
+    sat_key = (sat_key or "").strip().lower()
+
+    if sat_key in ("", "all", "*"):
+        with manager._lock:
+            targets = [(k, sa) for k, sa in manager.satellites.items()
+                       if sa.status == "online" and sa.ip and not sa.disabled]
+        if not targets:
+            return 404, {"ok": False, "error": "keine bekannten, online Satelliten"}
+    else:
+        hit = manager.sat_target(sat_key)
+        if not hit:
+            return 404, {"ok": False, "error": "kein Satellit gefunden",
+                         "sat": sat_key}
+        key = hit[0]
+        if manager.is_disabled(key):
+            return 403, {"ok": False, "error": "Satellit deaktiviert"}
+        targets = [(key, manager.satellites[key])]
+
+    results = []
+    for k, sa in targets:
+        kind = SatManager._kind_for(k, sa)
+        if kind == "android":
+            manager.queue_for(k, text, speak=bool(text), src=src,
+                              image=url, ttl=ttl)
+            results.append({"sat": k, "ok": True,
+                            "detail": "vorgemerkt, abholbar beim naechsten Heartbeat"})
+        else:
+            results.append({"sat": k, "ok": False,
+                            "detail": "Bild-Anzeige auf Pi-Satelliten noch nicht verfuegbar"})
+    ok = any(r["ok"] for r in results)
+    return (200 if ok else 501), {"ok": ok, "targets": results}
+
+
+async def _image_push(req: Request) -> JSONResponse:
+    """POST /api/image {sat?, url, ttl?, text?, src?} — Bild an Gerät(e).
+
+    Apps zeigen das Bild für ttl Sekunden (Default 60, Max 600) an; der
+    optionale Begleittext wird zusätzlich gesprochen. Deaktivierte Geräte
+    werden übersprungen; Pi-Satelliten werden pro Ziel gemeldet (noch ohne
+    Bildanzeige)."""
+    body = await _ctl_body(req)
+    user = _req_user(req)
+    src = str(body.get("src") or "").strip()[:48]
+    if not src and user.get("display") and user.get("username") != "master-token":
+        src = user["display"]
+    code, data = await image_push_core(
+        str(body.get("sat") or ""), str(body.get("url") or ""),
+        body.get("ttl") or 0, str(body.get("text") or ""), src)
+    return JSONResponse(data, status_code=code)
+
+
 routes = [
     Route("/", _ui),
     Route("/healthz", lambda req: JSONResponse({"ok": True})),
@@ -1420,6 +1560,9 @@ routes = [
     Route("/api/users/{name}", _users_update, methods=["PUT"]),
     Route("/api/users/{name}", _users_delete, methods=["DELETE"]),
     Route("/api/satellite/{mac}/name", _sat_name_put, methods=["PUT"]),
+    Route("/api/satellite/{mac}/disable", _sat_disable, methods=["POST"]),
+    Route("/api/satellite/{mac}/enable", _sat_enable, methods=["POST"]),
+    Route("/api/image", _image_push, methods=["POST"]),
     Route("/api/satellite/{mac}/chat", _chat_push, methods=["POST"]),
     Route("/api/satellite/{mac}/dm", _sat_dm, methods=["POST"]),
     Route("/api/chat/messages", _chat_messages),
@@ -1498,8 +1641,11 @@ def _token_allowed(path: str) -> bool:
     """Steuer-Endpunkte, fuer die Bearer MASTER_TOKEN reicht (openHAB-curl)."""
     if path == "/api/broadcast":
         return True
+    if path == "/api/image":
+        return True
     if path.startswith("/api/satellite/"):
-        return path.rsplit("/", 1)[-1] in ("volume", "output")
+        return path.rsplit("/", 1)[-1] in ("volume", "output",
+                                           "disable", "enable")
     return False
 
 
@@ -1516,7 +1662,7 @@ def _needs_admin(path: str, method: str) -> bool:
     if path.startswith("/api/satellite/"):
         tail = path.rsplit("/", 1)[-1]
         return tail in ("restart", "pause", "unpause", "name",
-                        "volume", "output")
+                        "volume", "output", "disable", "enable")
     return False
 
 

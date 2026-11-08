@@ -50,6 +50,7 @@ class Satellite:
     is_known: bool = False   # aus SATELLITES-Konfiguration
     kind: str = "pi"         # 'pi' (hat Web-Dienst) | 'android' (Pull-Empfang)
     custom_name: str = ""    # persistenter Anzeigename (UI-Zuordnung)
+    disabled: bool = False   # Admin deaktiviert: kein Push, kein Upload (403)
 
 
 class SatManager:
@@ -74,16 +75,25 @@ class SatManager:
         cfg_dir = os.environ.get("VS_CONFIG_DIR", "").strip() or satconfig.CONFIG_DIR
         self._names_path = os.path.join(cfg_dir, "device_names.json")
         self._names: dict[str, str] = self._load_names()
+        # Persistente De-/Aktivierung pro Registry-Key (UI-Button, Admin):
+        # sat_disabled.json im Config-Volume, ueberlebt Rebuilds/Recreates.
+        # Deaktivierte Satelliten (Pi UND App) senden den Master NICHT mehr
+        # an (Heartbeat/Chat/DM = 403) und bekommen keine Pushes mehr.
+        self._disabled_path = os.path.join(cfg_dir, "sat_disabled.json")
+        self._disabled: set[str] = self._load_disabled()
         self._ensure_ssh_key()
 
     # ── Pull-Warteschlange für Geräte ohne Web-Dienst (Android-App) ──
 
     def queue_for(self, key: str, text: str, speak: bool = True,
-                  src: str = "", audio_b64: str = "") -> None:
+                  src: str = "", audio_b64: str = "",
+                  image: str = "", ttl: int = 0) -> None:
         """Nachricht für ein Pull-Gerät vormerken (wird per Heartbeat abgeholt).
 
         src (optional): Name des Absenders. Bei Geräte-zu-Gerät-Direktnachrichten
-        zeigt das Zielgerät die Quelle damit im Chat an."""
+        zeigt das Zielgerät die Quelle damit im Chat an.
+        image (optional): Bild-URL, die das Gerät für ttl Sekunden (Default 60)
+        anzeigen soll (Bild-Push); text darf leer sein (reines Bild)."""
         with self._lock:
             q = self._pending.setdefault(key, [])
             item = {"text": text, "speak": bool(speak)}
@@ -93,6 +103,9 @@ class SatManager:
                 # Master-seitig synthetisiertes WAV — App spielt identisches
                 # Audio ab statt selbst zu synthetisieren (Betonungs-Paritaet)
                 item["audio_b64"] = str(audio_b64)
+            if image:
+                item["image"] = str(image)[:2000]
+                item["ttl"] = int(ttl or 0)
             q.append(item)
             del q[:-50]  # nicht unbegrenzt anwachsen lassen
 
@@ -238,6 +251,79 @@ class SatManager:
                  f"→ '{name}'" if name else "geloescht")
         return None
 
+    # ── De-/Aktivierung (persistent) ────────────────────────────
+
+    def _load_disabled(self) -> set[str]:
+        try:
+            with open(self._disabled_path, encoding="utf-8") as f:
+                data = json.load(f)
+            return {str(k).lower() for k in (data.get("disabled") or [])}
+        except (OSError, ValueError):
+            return set()
+
+    def _save_disabled(self) -> None:
+        try:
+            os.makedirs(os.path.dirname(self._disabled_path), exist_ok=True)
+            tmp = self._disabled_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"disabled": sorted(self._disabled)}, f, indent=1)
+            os.replace(tmp, self._disabled_path)
+        except OSError as e:
+            log.warning("Deaktivierungs-Store nicht schreibbar: %s", e)
+
+    def set_disabled(self, key: str, disabled: bool) -> str | None:
+        """Satelliten deaktivieren/aktivieren (Admin).
+
+        Deaktiviert: das Geraet empfaengt keine Pushes mehr (Broadcast, DM,
+        Chat-out, Bild-Push) und der Master verwaedert seine Meldungen
+        (Heartbeat/Chat/DM -> 403 'deaktiviert') — egal ob Pi oder App.
+        Gibt None bei Erfolg, sonst Fehlerstring."""
+        want = (key or "").strip().lower()
+        with self._lock:
+            target = None
+            for k, s in self.satellites.items():
+                if k.lower() == want or (s.ip or "").lower() == want                         or (s.hostname or "").lower() == want                         or (s.custom_name or "").lower() == want:
+                    target = k
+                    break
+            if target is None:
+                return "Satellit nicht bekannt"
+            if disabled:
+                self._disabled.add(target)
+            else:
+                self._disabled.discard(target)
+            sat = self.satellites.get(target)
+            if sat is not None:
+                sat.disabled = disabled
+                if disabled:
+                    # Nicht mehr "online": der Monitor bringt es auf offline,
+                    # aber die UI soll sofort wechseln.
+                    sat.status = "offline"
+        self._save_disabled()
+        log.info("Satellit %s: %s", target,
+                 "DEAKTIVIERT (kein Push, kein Upload)" if disabled
+                 else "aktiviert")
+        return None
+
+    def is_disabled(self, key: str) -> bool:
+        """True, wenn der Registry-Key deaktiviert ist."""
+        with self._lock:
+            return (key or "").lower() in self._disabled
+
+    def is_disabled_for(self, mac: str, ip: str = "") -> bool:
+        """Gatter fuer Uploads eines Satelliten (Heartbeat/Chat/DM).
+
+        Prueft den MAC-/Device-ID-Key UND den IP-key, weil der Registry-Key
+        bei Docker-Satelliten die Host-IP ist (Bridge-MAC ≠ Key)."""
+        with self._lock:
+            m = (mac or "").lower().strip()
+            if m and m in self._disabled:
+                return True
+            if ip:
+                for k, s in self.satellites.items():
+                    if (s.ip or "") == ip and k in self._disabled:
+                        return True
+        return False
+
     # ── Registrierung (keine Discovery) ─────────────────────────
     #
     # Auto-Discovery (Subnetz-Scan) ist entfernt: Satelliten melden sich
@@ -275,6 +361,7 @@ class SatManager:
                         hostname=f"sat-{ip.rsplit('.', 1)[-1]}",
                         status="unknown", is_known=True,
                         custom_name=self._names.get(key, ""),
+                        disabled=key in self._disabled,
                     )
                     self.satellites[key] = sat
                     log.info("Satellit %s: registriert (wartet auf Heartbeat)", sat.hostname)
@@ -423,6 +510,8 @@ class SatManager:
                 sat.hostname = data["hostname"]
             sat.status = "online"
             sat.last_seen = time.time()
+            # De-/Aktivierungs-Flag aus dem Store uebernehmen (UI-Button).
+            sat.disabled = key in self._disabled
             if "docker_running" in data:
                 sat.docker_running = bool(data["docker_running"])
             kind = str(data.get("kind") or "").strip().lower()
@@ -598,6 +687,7 @@ class SatManager:
                     "ip": s.ip,
                     "hostname": s.hostname,
                     "custom_name": s.custom_name,
+                    "disabled": s.disabled,
                     "status": s.status,
                     "last_seen": s.last_seen,
                     "docker_running": s.docker_running,

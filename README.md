@@ -501,8 +501,22 @@ aus `.env.master` (via `docker-compose.master.yml`). Gelesen werden sie von
 | `AUTH_TOKEN` | leer | *optional*: eigener Zugangs-Token nur für die Proxy-Endpunkte (`/proxy/*`); leer = Proxy offen |
 
 Das Volume `/data` (bzw. `VS_CONFIG_DIR`) hält `satellites.json` – den zentralen
-Config-Store. Musik liegt am Master unter `MUSIC_ROOT` (Standard `/m`), nicht
-unter einem `DATA_DIR`; eine Variable `DATA_DIR` liest der Master-Code **nicht**.
+Config-Store (dazu `device_names.json` für Anzeigenamen und `sat_disabled.json`
+für deaktivierte Satelliten). Musik liegt am Master unter `MUSIC_ROOT`
+(Standard `/m`), nicht unter einem `DATA_DIR`; eine Variable `DATA_DIR` liest
+der Master-Code **nicht**.
+
+### Master-Steuerung (openHAB / curl / MCP)
+
+Der Master steuert alle Satelliten zentral — `POST /api/broadcast`
+(Durchsage), `POST /api/image` (Bild an App-Geräte, 1 Min. Anzeige),
+`POST /api/satellite/{key}/disable|enable` (Satellit an-/abschalten),
+`…/dm` (Geräte-zu-Gerät-Nachricht), `…/volume`, `…/output` und das
+zentrale **MCP-Gateway** `GET /mcp/tools` + `POST /mcp` (bündelt die
+Satellite-Tools und die Master-Tools: Broadcast, Chat, Direktnachricht,
+Bild-Push, Lautstärke, De-/Aktivierung, Container-Aktionen). Details,
+Beispiele und openHAB-Regeln: **[`API.md`](API.md)** (Kapitel
+„Master-Steuerung (openHAB / curl)“).
 
 Die Herzschlag-Parameter sind pro Satellit im Config-Store editierbar; ENV
 (`master/manager.py`) liefert nur den Global-Default: `SATELLITE_HEARTBEAT_SEC`

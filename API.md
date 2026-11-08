@@ -176,6 +176,10 @@ jeweiligen Satelliten weiter (Port aus Heartbeat, sonst `8770`).
 
 `MASTER=http://<master-ip>:<master-port>` · `TOKEN=<MASTER_TOKEN>`
 
+Alle Steuer-Endpunkte unten akzeptieren `Authorization: Bearer <TOKEN>`
+(Master-Token, aus der WebUI „Secrets"); die WebUI-Buttons brauchen einen
+Web-Login (Rolle Admin).
+
 ### `POST /api/broadcast` — Durchsage (wichtigster Fall)
 {text, sat?, vol?} → spricht ohne Wake-Word/LLM. `sat` leer = **alle**
 bekannten, online Satelliten (Haus-Durchsage); sonst MAC/IP/Hostnamen.
@@ -188,6 +192,14 @@ curl -s -X POST $MASTER/api/broadcast \
 curl -s -X POST $MASTER/api/broadcast \
      -H "Authorization: Bearer ***" \
      -d '{"sat":"wohnzimmer","text":"Essen ist fertig"}'
+```
+openHAB-Regel (Exec-Binding) für Durchsage + Bild:
+```java
+val master = "http://192.168.1.24:8791"
+val token  = "<MASTER_TOKEN>"
+// Rauchmelder: Durchsage an alle + Bild der Rauchmelder-Kamera 2 Minuten
+executeCommandLine("curl@@-sf@@-X@@POST@@" + master + "/api/broadcast@@-H@@Authorization: Bearer " + token + "@@-d@@{\"text\":\"Achtung, Rauchmelder!\"}")
+executeCommandLine("curl@@-sf@@-X@@POST@@" + master + "/api/image@@-H@@Authorization: Bearer " + token + "@@-d@@{\"url\":\"http://192.168.1.33/kamera/rauchmelder/snapshot.jpg\",\"ttl\":120}")
 ```
 
 ### Web-Chat: Antwort an Zielgerät (`out`)
@@ -252,6 +264,103 @@ curl -s -X POST $MASTER/api/satellite/wohnzimmer/output \
 # Aktuelle + verfügbare Geräte:
 curl -s $MASTER/api/satellite/wohnzimmer/output -H "Authorization: Bearer $TOKEN"
 ```
+
+### `POST /api/image` — Bild an die Geräte pushen
+`{sat?, url, ttl?, text?, src?}` → Apps (Android) zeigen das Bild für
+`ttl` Sekunden (Default **60**, Range 5-600) groß an; `text` (optional)
+wird zusätzlich gesprochen. `sat` leer = alle online App-Geräte, sonst
+MAC/IP/Hostnamen. Deaktivierte Geräte werden übersprungen. Pi-Satelliten
+haben (noch) keine Bildanzeige und werden im `targets`-Report gemeldet.
+```bash
+# Wetter- oder Kamera-Bild für 1 Minute an ein Tablet:
+curl -s -X POST $MASTER/api/image \
+     -H "Authorization: Bearer ***" \
+     -d '{"sat":"badezimmer","url":"http://192.168.1.33/kamera/snapshot.jpg","ttl":60,"text":"Kuehlschrank steht offen"}'
+# An alle App-Geräte:
+curl -s -X POST $MASTER/api/image \
+     -H "Authorization: Bearer ***" \
+     -d '{"url":"http://192.168.1.33/kamera/snapshot.jpg"}'
+```
+Antwort: `{"ok": true, "targets": [{"sat": "<key>", "ok": true, "detail": "vorgemerkt …"}]}`.
+
+### `POST /api/satellite/{key}/disable` · `/enable` — Satellit an-/abschalten
+Key = MAC/IP/Hostnamen/custom-Name (Admin bzw. Master-Token). Ein
+**deaktivierter** Satellit (egal ob Pi oder App):
+- bekommt **keine Pushes** mehr (Broadcast, Direktnachricht, Chat-Ausgabe,
+  Bild-Push, MCP-Steuerung — Passthrough antwortet mit `target disabled`),
+- kann **nichts mehr an den Master senden** (Heartbeat, Chat-Push, DM
+  antworten mit `403 {"error": "deaktiviert"}`) und fällt im Dashboard
+  auf „offline“.
+
+Persistiert in `sat_disabled.json` (Config-Volume, überlebt Rebuilds).
+```bash
+curl -s -X POST $MASTER/api/satellite/guest-tablet/disable -H "Authorization: Bearer ***"
+curl -s -X POST $MASTER/api/satellite/guest-tablet/enable  -H "Authorization: Bearer ***"
+```
+WebUI: in der Satelliten-Tabelle Button „Deaktivieren"/„Aktivieren“
+(nur Admin-Rolle).
+```java
+// openHAB-Beispiel: Gast-Tablet am Wochenende abschalten
+executeCommandLine("curl@@-sf@@-X@@POST@@http://192.168.1.24:8791/api/satellite/guest-tablet/disable@@-H@@Authorization: Bearer <TOKEN>")
+// ...und wieder aktivieren
+executeCommandLine("curl@@-sf@@-X@@POST@@http://192.168.1.24:8791/api/satellite/guest-tablet/enable@@-H@@Authorization: Bearer <TOKEN>")
+```
+
+### `POST /api/satellite/{mac}/dm` — Geräte-zu-Gerät-Direktnachricht
+`{to, text}` (Token des **sendenden** Geräts) → reine Textnachricht
+(kein LLM, kein TTS) in die Pull-Warteschlange des Ziels; das Ziel zeigt
+sie mit der Quelle („Von: …") im Chat an. `to` = MAC/IP/Hostnamen oder
+`all` (alle anderen online Geräte).
+```bash
+curl -s -X POST $MASTER/api/satellite/<mac-des-senders>/dm \
+     -H "Authorization: Bearer <TOKEN-DES-SENDERS>" \
+     -d '{"to":"wohnzimmer","text":"Abendessen in 20 Minuten"}'
+```
+
+### MCP-Endpunkt am Master (zentrale Steuerung)
+Der Master bündelt die MCP-Tools **aller Satelliten** (Display, Töne,
+Wecker — Durchreichung, `target`/Pfad bestimmt den Empfänger) **und**
+eigene Master-Tools für die zentralen Funktionen. Ein einziger
+MCP-Client (z.B. Hermes) steuert so das ganze Haus.
+
+- `GET  /mcp/tools` — alle Tools (Master-Tools: `mac: "master"`);
+- `POST /mcp` — JSON-RPC 2.0; `method` = Tool-Name.
+
+**Master-Tools:**
+
+| Tool | Parameter | Wirkung |
+|---|---|---|
+| `list_satellites` | – | Status/IP/Aktivität/Version aller Satelliten |
+| `broadcast` | `text`, `sat?`, `wait?`, `vol?` | TTS-Durchsage ohne Wake/LLM; `sat` leer = alle |
+| `chat_send` | `text`, `out?`, `speak?`, `mac?` | LLM-Chat (Intent-Bridge), Antwort in Browser/am Ziel/`all` |
+| `send_dm` | `to`, `text` | Direktnachricht (reiner Text) an ein Gerät/`all` |
+| `push_image` | `url`, `sat?`, `ttl?`, `text?` | Bild an App-Geräte (Default 60 s) |
+| `set_volume` / `get_volume` | `sat`, `volume?`, `muted?` | Lautstärke |
+| `set_output` / `get_output` | `sat`, `out?` | Audio-Ausgabe umschalten/lesen |
+| `disable_satellite` / `enable_satellite` | `sat` | Satellit an-/abschalten (persistiert) |
+| `set_satellite_name` | `sat`, `name` | Anzeigename |
+| `satellite_restart` / `satellite_pause` / `satellite_unpause` | `sat` | Container-Aktion (SSH+Docker) |
+
+**Satellite-Tools** (Durchreichung, `target` = MAC/IP/Name): `play_tone`,
+`show_text`, `show_weather`, `show_music_info`, `set_alarm`, `get_tones`.
+```bash
+# Master-Tool: Hausdurchsage
+curl -X POST http://192.168.1.24:8791/mcp \
+  -H "Authorization: Bearer ***" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"broadcast","params":{"text":"Alle ans Esszimmer, bitte!"}}'
+
+# Master-Tool: Bild an ein Tablet (1 Minute)
+curl -X POST http://192.168.1.24:8791/mcp \
+  -H "Authorization: Bearer ***" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"push_image","params":{"sat":"wohnzimmer","url":"http://192.168.1.33/kamera/snapshot.jpg","ttl":60}}'
+
+# Satellite-Tool: Text auf dem Display (target = konkretes Gerät)
+curl -X POST http://192.168.1.24:8791/mcp \
+  -H "Authorization: Bearer ***" \
+  -d '{"jsonrpc":"2.0","id":3,"method":"show_text","target":"192.168.1.32","params":{"heading":"Hallo","body":"Welt"}}'
+```
+Deaktivierte Satelliten antworten im Passthrough mit `-32003 target
+disabled` und tauchen nicht mehr in `GET /mcp/tools` auf.
 
 ### Automatische Versionsnummer
 `scripts/gen_version.py` leitet bei jedem Build aus dem letzten Git-Tag

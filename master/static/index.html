@@ -585,13 +585,16 @@ async function refresh() {
         ? `<input class="satname" data-key="${esc(s.mac)}" data-orig="${esc(dispName)}" value="${esc(s.custom_name || '')}" placeholder="${esc(s.hostname || s.ip)}" title="Anzeigename (leer = Hostname)">`
         : esc(dispName);
       return `<tr>
-        <td><span class="dot ${dotCls}"></span>${nameCell}</td>
+        <td><span class="dot ${dotCls}"></span>${nameCell}${s.disabled ? ' <span class="badge err" title="Satellit ist deaktiviert: keine Pushes, keine Meldungen an den Master" style="font-size:0.65rem">deaktiviert</span>' : ''}</td>
         <td class="num">${esc(s.ip)}</td>
         <td style="font-size:0.82rem;line-height:1.4">${activityHtml}</td>
         <td>
           <span class="admin-only">
           <button onclick="act('${esc(s.mac)}','restart')">Start</button>
           <button class="warn" onclick="act('${esc(s.mac)}','pause')">Pause</button>
+          ${s.disabled
+            ? `<button onclick="toggleDisabled('${esc(s.mac)}',false)">Aktivieren</button>`
+            : `<button class="warn" onclick="toggleDisabled('${esc(s.mac)}',true)">Deaktivieren</button>`}
           </span>
         </td>
       </tr>`;
@@ -625,6 +628,21 @@ async function act(mac, action) {
     logEvent('sat_action', {mac, action: label, result: r.ok ? 'ok' : JSON.stringify(j)});
   } catch (e) { logEvent('sat_action', {mac, action: label, result: 'Fehler: '+e}); }
   setTimeout(refresh, 2500);
+}
+
+// Satellit an-/abschalten: deaktivierter Satellit (Pi oder App) bekommt
+// keine Pushes mehr und darf keine Meldungen an den Master senden.
+async function toggleDisabled(mac, disabled) {
+  const label = disabled ? 'Deaktivieren' : 'Aktivieren';
+  if (disabled && !confirm('Satellit deaktivieren?\nDas Geraet bekommt keine Durchsagen mehr und wird offline.')) return;
+  logEvent('sat_action', {mac, action: label});
+  try {
+    const r = await fetch(`/api/satellite/${encodeURIComponent(mac)}/${disabled ? 'disable' : 'enable'}`, {method:'POST'});
+    const j = await r.json().catch(() => ({}));
+    logEvent('sat_action', {mac, action: label, result: r.ok ? 'ok' : JSON.stringify(j)});
+    if (!r.ok) alert(j.error || ('Fehler: ' + r.status));
+  } catch (e) { logEvent('sat_action', {mac, action: label, result: 'Fehler: '+e}); }
+  setTimeout(refresh, 1500);
 }
 
 const LEVELS = {DEBUG:'var(--dim)', INFO:'var(--ok)', WARNING:'var(--warn)', ERROR:'var(--err)'};
