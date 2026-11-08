@@ -91,24 +91,17 @@ URL_MODEL = {
 BACKEND_KEYS = [k.replace("_URL", "_BACKEND_URL") for k in URL_KEYS]
 
 
-# Aufteilung fuer die getrennten Exporte (WebUI: Satelliten- vs.
-# Master-Konfiguration).
-# master_only = Keys, die ausschliesslich der Master selbst benutzt
-# (eigene Musik-/Index-Pfade, Bruecke, zentrales Gedaechtnis).
-MASTER_ONLY_KEYS = frozenset({
-    "MUSIC_ROOT", "BRIDGE_HOST", "BRIDGE_PORT", "MASTER_MUSIC_AUTH",
-    "MEMORY_DB", "MEMORY_MAX_TOKENS",
-})
-# Satelliten-Export: alle Keys, die Satelliten/Apps etwas angehen
-# (EDITABLE_KEYS inkl. INTENTS = Intent-Regeln). Master-eigene Backend-Ziele
-# (*_URL/*_BACKEND_URL — Satelliten leiten ihre Proxy-Adressen selbst aus
-# MASTER_URL ab), master_only-Keys und Upstream-Secrets bleiben draussen;
-# MASTER_TOKEN wird beim Satelliten-Export separat erlaubt.
-SATELLITE_EXPORT_KEYS = ((frozenset(EDITABLE_KEYS)
-                         | frozenset(GLOBAL_ONLY_KEYS))
-                        - MASTER_ONLY_KEYS
-                        - frozenset(URL_KEYS + BACKEND_KEYS)
-                        - frozenset(SECRET_KEYS))
+# Getrennte Exporte (WebUI: „Export Master" vs. „Export Satelliten"):
+#  * Export Master   -> komplette Konfiguration (alle globalen Werte inkl.
+#                       Backend-Ziele, System-/Gedaechtnis-Keys, Secrets plus
+#                       alle Satelliten-Overrides). Genau die Datei, die der
+#                       Import-Button braucht, um einen neuen Master voll-
+#                       staendig wiederherzustellen (== export_payload).
+#  * Export Satellit -> nur das Noetigste, damit ein neues Geraet (Pi/App)
+#                       den Master erreicht: MASTER_URL (Adresse) und
+#                       MASTER_TOKEN (Zugang). Modell-/Sprach-/Intent-Konfi-
+#                       guration bleibt raus — die zieht das Geraet per
+#                       Heartbeat selbst vom Master.
 
 
 def backend_loop_reject(key: str, value) -> str | None:
@@ -338,58 +331,44 @@ class ConfigStore:
             "satellites": sats,
         }
 
-    def _export_filtered(self, keys, include_secrets: bool,
-                         include_sats: bool, kind: str) -> dict:
+    def export_master(self, include_secrets: bool = True) -> dict:
+        """Komplette Master-Konfiguration: alle globalen Werte (inkl.
+        Backend-Ziele, System-/Gedaechtnis-Keys, Secrets) plus aller
+        per-Satelliten-Overrides. Genau die Datei, die der Import-Button
+        braucht, um einen neuen Master vollstaendig aufzusetzen — also
+        identisch zu export_payload, nur mit kind="master"."""
+        payload = self.export_payload(include_secrets=include_secrets)
+        payload["kind"] = "master"
+        return payload
+
+    def export_satellites(self, include_secrets: bool = True,
+                          master_url: str = "") -> dict:
+        """Minimum fuer ein neues Geraet (Pi/App), das den Master erreichen
+        soll: nur MASTER_URL (Adresse) + MASTER_TOKEN (Zugang). Keine
+        Modell-/Sprach-/Intent-Konfiguration — die zieht das Geraet per
+        Heartbeat selbst vom Master. include_secrets=False laesst den Token
+        weg (dann nur noch die Adresse)."""
         with self._lock:
-            g: dict = {}
-            for k, v in self._global.items():
-                if v is None or v == "" or k not in keys:
-                    continue
-                if not include_secrets and k in SECRET_KEYS:
-                    continue
-                g[k] = v
-            if kind == "satellite":
-                # Intent-Regeln sind Satelliten-Konfiguration: der Key wird
-                # im Store oft gar nicht gefuehrt (Default leer) – dann als
-                # leere Zeilenliste mitgeben, damit der Import sie explizit
-                # setzen kann und sie im Export nie fehlt.
-                g.setdefault("INTENTS", "")
-            sats: dict = {}
-            if include_sats:
-                sats = {
-                    mac: {k: v for k, v in (ov or {}).items()
-                          if v is not None}
-                    for mac, ov in self._sats.items()
-                }
-                sats = {m: ov for m, ov in sats.items() if ov}
+            token = self._global.get("MASTER_TOKEN") or ""
             version = self._version
-        return {
+        g: dict = {}
+        payload = {
             "app": "voice-satellite",
-            "kind": kind,
+            "kind": "satellite",
             "format": 1,
             "source": "master",
             "exported_at": int(time.time()),
             "version": version,
+            "master_url": master_url,
             "global": g,
-            "satellites": sats,
+            "satellites": {},
         }
-
-    def export_master(self, include_secrets: bool = True) -> dict:
-        """Nur Master-Konfiguration: eigene Backend-Ziele (*_URL/Alias),
-        master-eigene System-/Gedaechtnis-Keys und (optional) alle Secrets.
-        Enthaelt keine Satelliten-Overrides."""
-        keys = (frozenset(URL_KEYS) | frozenset(BACKEND_KEYS)
-                | MASTER_ONLY_KEYS | frozenset(SECRET_KEYS))
-        return self._export_filtered(keys, include_secrets, False, "master")
-
-    def export_satellites(self, include_secrets: bool = True) -> dict:
-        """Satelliten-Konfiguration global (inkl. INTENTS = Intent-Regeln)
-        plus aller per-Satelliten-Overrides. Master-eigene Ziele/Keys fehlen.
-        MASTER_TOKEN darf mit, damit eine Satelliten-Datei Geraete am neuen
-        Master anmelden kann; Upstream-Tokens bleiben bei der Master-Datei."""
-        keys = SATELLITE_EXPORT_KEYS | (frozenset({"MASTER_TOKEN"})
-                                        if include_secrets else frozenset())
-        return self._export_filtered(keys, include_secrets, True, "satellite")
+        if include_secrets and token:
+            # Token in global spiegeln, damit der Master-Import ihn anwenden
+            # kann; master_url bleibt top-level (kein Store-Global-Key).
+            g["MASTER_TOKEN"] = token
+            payload["master_token"] = token
+        return payload
 
     def import_payload(self, data: dict) -> dict:
         """Konfig-Datei (export_payload-Format) in den Store importieren.

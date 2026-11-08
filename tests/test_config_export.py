@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Getrennte Config-Exporte: Satelliten-Config (inkl. INTENTS) vs. Master.
+"""Getrennte Config-Exporte: Master (komplett) vs. Satellit (Minimum).
 
 Laeuft mit Stdlib + Projekmodulen (Store-Schicht); der HTTP-Stack wird nicht
-benoetigt. Pruft:
-  * Satelliten-Export traegt immer die Intent-Regeln (INTENTS), auch wenn
-    der Key im Store gar nicht gesetzt ist (leere Zeilenliste).
-  * Satelliten-Export enthaelt alle Satelliten-Keys + alle Overrides,
-    aber NIEMALS Master-eigene Ziele (*_URL/*_BACKEND_URL) oder
-    master_only-Keys (MUSIC_ROOT, MEMORY_DB, ...).
-  * Master-Export enthaelt Backend-Ziele + Secrets, keine Satelliten-Keys.
-  * secrets=0 streicht Secrets (Satellit: auch MASTER_TOKEN).
-  * import_payload merget beide Datei-Typen ohne unknown_keys.
+benoetigt. Semantik:
+  * Master-Export  = KOMPLETTE Konfiguration (alle globalen Werte inkl.
+    Secrets plus alle Satelliten-Overrides) — die Datei, die der
+    Import-Button braucht, um einen neuen Master vollstaendig aufzusetzen.
+  * Satelliten-Export = nur das Noetigste fuer ein neues Geraet: MASTER_URL +
+    MASTER_TOKEN. Keine Modell-/Sprach-/Intent-Keys, keine Backend-Ziele,
+    keine Upstream-Secrets, keine Overrides.
+  * Import mergt beide Datei-Typen ohne unknown_keys (Master-Export stellt
+    alles wieder her, Satelliten-Export setzt nur den Master-Token).
 
 Aufruf:  python3 tests/test_config_export.py
 """
@@ -21,6 +21,7 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 os.environ["VS_CONFIG_DIR"] = tempfile.mkdtemp(prefix="vs-cfg-export-")
+os.environ.pop("MASTER_PORT", None)
 
 from master import satconfig as sc
 
@@ -46,58 +47,72 @@ store.set_global({
 })
 store.set_satellite("AA:BB:CC:DD:EE:FF", {"MIC_DEVICE": "plughw:2,0"})
 
-sat = store.export_satellites()
 mas = store.export_master()
+sat = store.export_satellites(master_url="http://192.168.82.24:8791")
 
-print("== Satelliten-Export traegt die Intent-Regeln ==")
-ck(sat["kind"] == "satellite", "kind=satellite")
-ck(sat["global"].get("INTENTS") == "flur an|Flurlampe|ON\nflur aus|Flurlampe|OFF",
-   "INTENTS vollstaendig enthalten")
-ck(sat["satellites"] == {"aa:bb:cc:dd:ee:ff": {"MIC_DEVICE": "plughw:2,0"}},
-   "alle Satelliten-Overrides enthalten")
-ck("LLM_MODEL" in sat["global"] and "DEFAULT_IMAGE_URL" in sat["global"],
-   "Satelliten-Keys global enthalten")
-
-print("== Satelliten-Export lasst Master-Kram weg ==")
-ck("TTS_URL" not in sat["global"], "kein Master-Backend-Ziel (TTS_URL)")
-ck(not (sat["global"].keys() & set(sc.BACKEND_KEYS)), "keine *_BACKEND_URL")
-ck("MUSIC_ROOT" not in sat["global"] and "MEMORY_DB" not in sat["global"],
-   "keine master_only-Keys")
-ck("TTS_TOKEN" not in sat["global"] and "OPENHAB_TOKEN" not in sat["global"],
-   "Upstream-Secrets nicht in der Satellitendatei")
-ck(sat["global"].get("MASTER_TOKEN") == "master-token",
-   "MASTER_TOKEN wohlbehalten dabei")
-
-print("== Master-Export = nur Master-Konfiguration ==")
+print("== Master-Export = komplette Konfiguration (was der Import braucht) ==")
 ck(mas["kind"] == "master", "kind=master")
-ck(mas["satellites"] == {}, "keine Satelliten-Overrides")
+ck(mas["satellites"] == {"aa:bb:cc:dd:ee:ff": {"MIC_DEVICE": "plughw:2,0"}},
+   "alle Satelliten-Overrides enthalten")
+ck(mas["global"].get("LLM_MODEL") == "hermes-agent"
+   and mas["global"].get("INTENTS", "").startswith("flur an"),
+   "Modell-/Intent-Keys (global) enthalten")
 ck(mas["global"].get("TTS_URL", "").startswith("http://192.168.82.31"),
-   "Backend-Ziel enthalten")
+   "Master-Backend-Ziel (TTS_URL) enthalten")
 ck("MUSIC_ROOT" in mas["global"] and "MEMORY_DB" in mas["global"],
    "master_only-Keys enthalten")
 ck(mas["global"].get("TTS_TOKEN") == "geheim"
-   and mas["global"].get("OPENHAB_TOKEN") == "oh-token", "Secrets dabei")
-ck("INTENTS" not in mas["global"] and "LLM_MODEL" not in mas["global"],
-   "keine Satelliten-Keys")
+   and mas["global"].get("OPENHAB_TOKEN") == "oh-token"
+   and mas["global"].get("MASTER_TOKEN") == "master-token", "Secrets dabei")
 
-print("== secrets=0 und Leer-Store ==")
-s2 = store.export_satellites(include_secrets=False)
-ck("MASTER_TOKEN" not in s2["global"] and s2["global"].get("INTENTS"),
-   "secrets=0: MASTER_TOKEN raus, INTENTS bleiben")
+print("== Satelliten-Export = nur Master-URL + Token (Minimum) ==")
+ck(sat["kind"] == "satellite", "kind=satellite")
+ck(sat.get("master_url") == "http://192.168.82.24:8791", "master_url enthalten")
+ck(sat.get("master_token") == "master-token", "master_token enthalten")
+ck(sat["global"].get("MASTER_TOKEN") == "master-token",
+   "global.MASTER_TOKEN (damit der Import ihn anwenden kann)")
+ck(sat["satellites"] == {}, "keine Satelliten-Overrides")
+ck(set(sat["global"].keys()) == {"MASTER_TOKEN"}, "global: NUR MASTER_TOKEN")
+ck("LLM_MODEL" not in sat["global"] and "INTENTS" not in sat["global"],
+   "keine Modell-/Intent-Keys")
+ck("TTS_URL" not in sat["global"]
+   and not (set(sat["global"].keys()) & set(sc.BACKEND_KEYS)),
+   "keine Master-Backend-Ziele (*_URL/*_BACKEND_URL)")
+ck("TTS_TOKEN" not in sat["global"] and "OPENHAB_TOKEN" not in sat["global"],
+   "keine Upstream-Secrets")
+ck("MUSIC_ROOT" not in sat["global"] and "MEMORY_DB" not in sat["global"],
+   "keine master_only-Keys")
+
+print("== secrets=0 ==")
 m2 = store.export_master(include_secrets=False)
-ck(not (m2["global"].keys() & set(sc.SECRET_KEYS)), "secrets=0: keine Secrets")
-fresh = sc.ConfigStore(os.path.join(os.environ["VS_CONFIG_DIR"], "fresh.json"))
-ck(fresh.export_satellites(include_secrets=False)["global"].get("INTENTS") == "",
-   "leerer Store: INTENTS als leerer Key dabei (fehlt nie)")
+ck(not (set(m2["global"].keys()) & set(sc.SECRET_KEYS)),
+   "Master-Export: keine Secrets")
+ck(set(m2["satellites"].keys()) == {"aa:bb:cc:dd:ee:ff"},
+   "Master-Export: Satelliten-Overrides bleiben")
+s2 = store.export_satellites(include_secrets=False,
+                             master_url="http://192.168.82.24:8791")
+ck("master_token" not in s2 and "MASTER_TOKEN" not in s2["global"],
+   "Satelliten-Export: Token raus")
+ck(s2.get("master_url") == "http://192.168.82.24:8791",
+   "Satelliten-Export: master_url bleibt")
 
-print("== Import merget beide Datei-Typen ==")
-r1 = store.import_payload(mas)
-r2 = store.import_payload(sat)
-ck(r1["unknown_keys"] == [] and r2["unknown_keys"] == [],
-   f"keine unknown_keys ({r1['unknown_keys'] + r2['unknown_keys']})")
-again = sc.ConfigStore(sc.CONFIG_PATH)
-ck(again.get_secret("MASTER_TOKEN") == "master-token", "MASTER_TOKENzurueck")
-ck(again.get_effective("AA:BB:CC:DD:EE:FF").get("MIC_DEVICE") == "plughw:2,0",
+print("== Import: Master-Export stellt neuen Master vollstaendig wieder her ==")
+fresh = sc.ConfigStore(os.path.join(os.environ["VS_CONFIG_DIR"], "fresh.json"))
+r1 = fresh.import_payload(mas)
+ck(r1["unknown_keys"] == [], f"keine unknown_keys ({r1['unknown_keys']})")
+ck(fresh.get_secret("MASTER_TOKEN") == "master-token", "MASTER_TOKEN zurueck")
+ck(fresh.get_secret("TTS_TOKEN") == "geheim", "TTS_TOKEN zurueck")
+ck(fresh.get_backend("TTS_URL") == "http://192.168.82.31:7811/v1", "TTS_URL zurueck")
+ck(fresh._global.get("LLM_MODEL") == "hermes-agent", "LLM_MODEL zurueck")
+ck(fresh._global.get("MUSIC_ROOT") == "/m", "MUSIC_ROOT zurueck")
+ck(fresh.get_effective("AA:BB:CC:DD:EE:FF").get("MIC_DEVICE") == "plughw:2,0",
    "Satelliten-Override zurueck")
+
+print("== Import: Satelliten-Export setzt nur den Master-Token ==")
+fresh2 = sc.ConfigStore(os.path.join(os.environ["VS_CONFIG_DIR"], "fresh2.json"))
+r2 = fresh2.import_payload(sat)
+ck(r2["unknown_keys"] == [], f"keine unknown_keys ({r2['unknown_keys']})")
+ck(fresh2.get_secret("MASTER_TOKEN") == "master-token", "MASTER_TOKEN gesetzt")
+ck(fresh2._global.get("LLM_MODEL") in (None, ""), "keine Modell-Keys durchgezogen")
 
 sys.exit(1 if fails else 0)

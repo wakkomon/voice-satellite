@@ -1037,16 +1037,30 @@ async def _config_export(req: Request) -> Response:
     return Response(body, media_type="application/json; charset=utf-8", headers=headers)
 
 
+def _master_url_for(req: Request) -> str:
+    """MASTER_URL = Adresse, unter der ein Geraet/das WebUI den Master
+    erreicht. ENV MASTER_URL gewinnt (Deploy); sonst die URL, mit der der
+    Request hereilangfuhr (LAN-IP:Port). Wird vom QR-Code und vom
+    Satelliten-Export (nur Master-URL + Token) verwendet."""
+    host = (req.url.netloc if req.url else "") or ""
+    scheme = (req.url.scheme if req.url else "http") or "http"
+    return (os.environ.get("MASTER_URL") or f"{scheme}://{host}").strip()
+
+
 async def _config_export_split(req: Request, kind: str) -> Response:
     """GET /api/config/export-sat | export-master → getrennte Config-Datei.
 
-    export-sat: Satelliten-Konfiguration (inkl. INTENTS/Intent-Regeln und
-    aller Satelliten-Overrides) — ohne Master-eigene Backend-Ziele.
-    export-master: nur Master-Konfiguration (Backend-Ziele, System, Secrets).
-    Query secrets=0 wie beim Gesamt-Export."""
+    export-master: KOMPLETTE Master-Konfiguration (alle globalen Werte inkl.
+    Secrets plus alle Satelliten-Overrides) — die Datei, die der
+    Import-Button braucht, um einen neuen Master aufzusetzen.
+    export-sat: nur das Noetigste fuer ein neues Geraet (Pi/App) — MASTER_URL
+    + MASTER_TOKEN; die restliche Konfig (Modelle, Sprache, Intents) zieht
+    das Geraet per Heartbeat selbst vom Master.
+    Query secrets=0 wie beim Gesamt-Export (bei export-sat: entfernt Token)."""
     include_secrets = req.query_params.get("secrets", "1") not in ("0", "false", "no")
     if kind == "satellite":
-        payload = config_store.export_satellites(include_secrets=include_secrets)
+        payload = config_store.export_satellites(include_secrets=include_secrets,
+                                                 master_url=_master_url_for(req))
         stem = "voice-satellite-satelliten-config"
     else:
         payload = config_store.export_master(include_secrets=include_secrets)
@@ -1074,9 +1088,7 @@ def _appqr_text(req: Request) -> str:
         return "" if v is None else str(v).strip()
     # MASTER_URL: Adresse, unter der der Browser das WebUI erreicht (LAN-IP:Port).
     # Das App-Gerät verbindet sich an dieselbe Adresse.
-    host = (req.url.netloc if req.url else "") or ""
-    scheme = (req.url.scheme if req.url else "http") or "http"
-    master_url = (os.environ.get("MASTER_URL") or f"{scheme}://{host}").strip()
+    master_url = _master_url_for(req)
     token = str(config_store.get_secret("MASTER_TOKEN") or
                 os.environ.get("MASTER_TOKEN", "") or "").strip()
     lines = ["# voice-satellite App-Konfiguration (aus Master-WebUI, als QR)",
