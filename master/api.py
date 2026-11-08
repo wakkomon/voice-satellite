@@ -32,6 +32,7 @@ from starlette.responses import (FileResponse, JSONResponse,
                                  StreamingResponse)
 from starlette.routing import Route
 
+from . import appupdate
 from . import chatstore
 from . import chatstream, llmmemory
 from . import config as master_cfg
@@ -316,9 +317,47 @@ async def _sat_heartbeat(req: Request) -> JSONResponse:
     msgs = manager.drain_pending(canon)
     if canon != mac:
         msgs = manager.drain_pending(mac) + msgs
-    return JSONResponse({"ok": True, "events_stored": n,
-                         "chat_stored": chat_stored, "config": cfg,
-                         "messages": msgs})
+    # App-Update-Hinweis: liegt in der apps-Ablage ein strikt hoeheres APK
+    # als die gemeldete versionName, erfaehrt die Android-App im Ack die
+    # Download-Info (version/file/url/size); sie zeigt sie an und holt die
+    # Datei selbst. Pi-Satelliten bekommen nie einen Hinweis.
+    upd = appupdate.update_hint(str(payload.get("version") or ""),
+                                str(payload.get("kind") or ""))
+    ack = {"ok": True, "events_stored": n, "chat_stored": chat_stored,
+           "config": cfg, "messages": msgs}
+    if upd:
+        ack["update"] = upd
+    return JSONResponse(ack)
+
+
+# ── App-Update-Verteilung (APKs an die Android-Apps) ──────────
+
+async def _app_version(req: Request) -> JSONResponse:
+    """GET /api/app/version → Info ueber das neueste verteilbare APK."""
+    top = appupdate.latest()
+    return JSONResponse({"ok": True, "latest": top,
+                         "count": len(appupdate.list_apks())})
+
+
+async def _app_download(req: Request) -> Response:
+    """GET /api/app/download?file=<name> → APK-Datei zum Herunterladen.
+
+    Ohne file-Parameter wird die neueste Version ausgeliefert. Die
+    Aufloesung laeuft ueber appupdate.resolve_apk (nur kanonische Namen,
+    kein Traversal)."""
+    fn = str(req.query_params.get("file") or "").strip()
+    if fn:
+        path = appupdate.resolve_apk(fn)
+    else:
+        top = appupdate.latest()
+        path = appupdate.resolve_apk(top["file"]) if top else None
+    if not path:
+        return JSONResponse({"error": "not found",
+                             "detail": "APK nicht in der apps-Ablage"},
+                            status_code=404)
+    return FileResponse(path,
+                        media_type="application/vnd.android.package-archive",
+                        filename=os.path.basename(path))
 
 
 # ── Benutzerverwaltung: Login, Session, Rollen ───────────────
@@ -1563,6 +1602,8 @@ routes = [
     Route("/api/satellite/{mac}/disable", _sat_disable, methods=["POST"]),
     Route("/api/satellite/{mac}/enable", _sat_enable, methods=["POST"]),
     Route("/api/image", _image_push, methods=["POST"]),
+    Route("/api/app/version", _app_version),
+    Route("/api/app/download", _app_download),
     Route("/api/satellite/{mac}/chat", _chat_push, methods=["POST"]),
     Route("/api/satellite/{mac}/dm", _sat_dm, methods=["POST"]),
     Route("/api/chat/messages", _chat_messages),
@@ -1645,6 +1686,8 @@ def _token_allowed(path: str) -> bool:
     if path == "/api/broadcast":
         return True
     if path == "/api/image":
+        return True
+    if path in ("/api/app/version", "/api/app/download"):
         return True
     if path in ("/api/satellites", "/api/satellites/status"):
         return True
