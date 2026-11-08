@@ -11,10 +11,12 @@ Matching- und Scoring-Logik ohne Anpassung.
 """
 from __future__ import annotations
 
+import gzip
 import json
 import logging
 import threading
 import time
+from http.client import HTTPException
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
@@ -59,20 +61,31 @@ def master_status() -> dict:
         }
 
 
-def _http_get_json(url: str, timeout: int = 30) -> dict | None:
+def _http_get_json(url: str, timeout: int = 30,
+                   use_gzip: bool = False) -> dict | None:
     """Simpler HTTP-GET, gibt JSON zurück oder None.
 
-    Der Index kann mehrere MB groß sein (Tausende Einträge) — daher
-    30 s Timeout und kein Gzip-Handshake über stdlib.
+    Der Index ist mehrere MB groß (~42 MB JSON bei 60k+ Tracks). Mit
+    use_gzip bittet der Satellit um gzip; der Master liefert dann das ~5x
+    kleinere komprimierte Payload — schneller UND unempfindlicher gegen
+    abgebrochene Downloads (IncompleteRead). gzip.decompress ist Stdlib.
     """
+    headers = {"Accept-Encoding": "gzip" if use_gzip else "identity"}
     try:
-        req = Request(url, headers={"Accept-Encoding": "identity"})
+        req = Request(url, headers=headers)
         with urlopen(req, timeout=timeout) as r:
             if r.status != 200:
                 return None
-            body = r.read().decode("utf-8")
-        return json.loads(body)
-    except (URLError, OSError, ValueError):
+            body = r.read()
+            if r.headers.get("Content-Encoding", "") == "gzip":
+                body = gzip.decompress(body)
+            return json.loads(body.decode("utf-8"))
+    except (URLError, OSError, ValueError, HTTPException):
+        # HTTPException faengt http.client.IncompleteRead ab (Download vor
+        # Transfer-Ende abgebrochen). Ohne diesen Catch warf ein einzelner
+        # abgebrochener Versuch, der Master-Index-Sync-Thread starb daran und
+        # das Web-UI-Badge blieb dauerhaft auf "getrennt" stehen, obwohl der
+        # unabhaengige Heartbeat-Thread den Satelliten weiter "online" hielt.
         return None
 
 
@@ -86,7 +99,7 @@ def get_master_index_data() -> dict | None:
     Gibt Payload zurück oder None, wenn Master nicht erreichbar.
     """
     url = config.MASTER_URL.rstrip("/") + "/api/music"
-    return _http_get_json(url)
+    return _http_get_json(url, use_gzip=True)
 
 
 def _apply_payload(payload: dict) -> None:
@@ -141,7 +154,16 @@ def start_sync(interval: int | None = None) -> None:
 
     def _worker() -> None:
         while True:
-            if not _sync_once(failures):
+            try:
+                ok = _sync_once(failures)
+            except Exception as e:
+                # Defensive: der Sync-Thread darf bei KEINEM Fehler absterben.
+                # _http_get_json fängt die erwarteten Fehler bereits ab; dieser
+                # Guard hält den Thread auch bei einer unerwarteten Exception am
+                # Leben, damit das Master-Badge nicht auf "getrennt" einfriert.
+                log.warning("Master-Index-Sync-Fehler (Thread läuft weiter): %s", e)
+                ok = False
+            if not ok:
                 # Bei Fehlschlag kürzer versuchen, bis Master zurückkommt
                 time.sleep(min(interval, 60))
             else:
