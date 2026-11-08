@@ -1638,10 +1638,15 @@ def _gate_public(path: str) -> bool:
 
 
 def _token_allowed(path: str) -> bool:
-    """Steuer-Endpunkte, fuer die Bearer MASTER_TOKEN reicht (openHAB-curl)."""
+    """Steuer-/Lese-Endpunkte, fuer die Bearer MASTER_TOKEN reicht.
+
+    OpenHAB-curl (Steuer-Endpunkte) UND die Android-App (Satellitenliste
+    fuer die Direktnachrichten-Ziele, read-only)."""
     if path == "/api/broadcast":
         return True
     if path == "/api/image":
+        return True
+    if path in ("/api/satellites", "/api/satellites/status"):
         return True
     if path.startswith("/api/satellite/"):
         return path.rsplit("/", 1)[-1] in ("volume", "output",

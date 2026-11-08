@@ -187,6 +187,12 @@ ok("MCP tools enthalten Master-Tools",
 r = client.post("/api/satellite/cc:dd:ee:00:02:02/disable")
 ok("disable ohne Auth -> 401", r.status_code == 401)
 
+# App-Zugang: Satellitenliste mit Master-Token (DM-Zieltabelle)
+r = client.get("/api/satellites", headers=H)
+ok("/api/satellites mit Master-Token -> 200", r.status_code == 200)
+r = client.get("/api/satellites")
+ok("/api/satellites ohne Auth -> 401", r.status_code == 401)
+
 print()
 if fails:
     print(f"FAILS: {len(fails)}")
