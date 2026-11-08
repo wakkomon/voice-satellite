@@ -50,6 +50,9 @@ footer { margin-top:24px; color:var(--dim); font-size:0.78rem; }
 .cfg-tabs { display:flex; gap:6px; margin-bottom:12px; flex-wrap:wrap; }
 .cfg-tabs button { background:var(--card); border:1px solid #2a2e3a; color:var(--dim); padding:4px 14px; font-size:0.78rem; }
 .cfg-tabs button.active { background:var(--acc); color:#fff; border-color:var(--acc); }
+#users-card{display:none}
+#config-page.showing-users #users-card{display:block}
+#config-page.showing-users .cfg-table,#config-page.showing-users .cfg-readonly-hint,#config-page.showing-users .cfg-save-row{display:none}
 .backbtn { padding:6px 14px;border:1px solid var(--dim);background:transparent;border-radius:6px;cursor:pointer;color:var(--acc);font-size:0.85rem; }
 .cfg-table { width:100%; border-collapse:collapse; font-size:0.85rem; }
 .cfg-table th { text-align:left; color:var(--dim); font-size:0.72rem; padding:3px 6px; border-bottom:1px solid #2a2e3a; }
@@ -145,23 +148,6 @@ body.readonly .cfg-readonly-hint{display:block}
     </table>
   </div>
 
-  <div class="card admin-only" id="users-card">
-    <h2>Benutzer</h2>
-    <table>
-      <thead><tr><th>Benutzer</th><th>Rolle</th><th></th></tr></thead>
-      <tbody id="users-body"><tr><td colspan="3" style="color:var(--dim)">lade …</td></tr></tbody>
-    </table>
-    <div class="newuser-row">
-      <input id="nu-name" placeholder="Name">
-      <input id="nu-pass" type="password" placeholder="Passwort">
-      <select id="nu-role"><option value="user">user</option><option value="admin">admin</option></select>
-      <button id="btn-user-add">Hinzufügen</button>
-    </div>
-    <div style="margin-top:8px;font-size:0.72rem;color:var(--dim)">
-      <b>admin</b>: Config lesen/ändern, Geräte steuern und umbenennen, Benutzer verwalten ·
-      <b>user</b>: nur lesen und chatten.
-    </div>
-  </div>
 </div>
 
 <!-- Live-Log: immer unter den beiden anderen Karten, volle Breite -->
@@ -187,6 +173,7 @@ body.readonly .cfg-readonly-hint{display:block}
     <button data-domain="openhab">OpenHAB</button>
     <button data-domain="secrets">🔑 Secrets</button>
     <button data-domain="system">System</button>
+    <button data-domain="users" class="admin-only">Benutzer</button>
   </div>
 
   <!-- Global config -->
@@ -206,6 +193,23 @@ body.readonly .cfg-readonly-hint{display:block}
     <button id="btn-cfg-qr" title="Aktuelle Konfiguration als QR-Code anzeigen; ein App-Gerät importiert ihn unter Einstellungen -> QR-Code scannen">⚟ QR-Code</button>
     <input type="file" id="cfg-import-file" accept="application/json,.json" hidden>
     <span style="color:var(--dim);font-size:0.82rem">Import merget nur gespeicherte Werte in global + Satellite-Overrides</span>
+  </div>
+  <div class="card admin-only" id="users-card">
+    <h2>Benutzer</h2>
+    <table>
+      <thead><tr><th>Benutzer</th><th>Rolle</th><th></th></tr></thead>
+      <tbody id="users-body"><tr><td colspan="3" style="color:var(--dim)">lade …</td></tr></tbody>
+    </table>
+    <div class="newuser-row">
+      <input id="nu-name" placeholder="Name">
+      <input id="nu-pass" type="password" placeholder="Passwort">
+      <select id="nu-role"><option value="user">user</option><option value="admin">admin</option></select>
+      <button id="btn-user-add">Hinzufügen</button>
+    </div>
+    <div style="margin-top:8px;font-size:0.72rem;color:var(--dim)">
+      <b>admin</b>: Config lesen/ändern, Geräte steuern und umbenennen, Benutzer verwalten ·
+      <b>user</b>: nur lesen und chatten.
+    </div>
   </div>
 </div>
 
@@ -297,6 +301,8 @@ document.getElementById('cfg-tabs').addEventListener('click', e => {
   document.querySelectorAll('#cfg-tabs button').forEach(b => b.classList.remove('active'));
   e.target.classList.add('active');
   currentDomain = e.target.dataset.domain;
+  if (currentDomain === 'users') { $('config-page').classList.add('showing-users'); return; }
+  $('config-page').classList.remove('showing-users');
   renderConfigTable();
 });
 
