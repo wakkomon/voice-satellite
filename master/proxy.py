@@ -124,13 +124,17 @@ def _auth_error(req: Request) -> Response | None:
     return None
 
 
-def _headers(token: str, req: Request, extra: dict | None = None) -> dict:
+def _headers(token: str, req: Request | None = None,
+             extra: dict | None = None) -> dict:
+    """Auth-/Content-Type-Header. req=None fuer Aufrufer ohne HTTP-Request
+    (z.B. _chat_send_core via MCP) — dann ohne Content-Type-Passthrough."""
     h: dict = {}
     if token:
         h["Authorization"] = f"Bearer {token}"
-    ct = req.headers.get("content-type")
-    if ct:
-        h["Content-Type"] = ct
+    if req is not None:
+        ct = req.headers.get("content-type")
+        if ct:
+            h["Content-Type"] = ct
     if extra:
         h.update(extra)
     return h

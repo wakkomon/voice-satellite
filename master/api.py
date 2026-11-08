@@ -790,8 +790,10 @@ async def _chat_send_core(text: str, mac: str, speak: bool, out: str,
         try:
             tmo = httpx.Timeout(connect=10.0, read=300.0, write=10.0, pool=10.0)
             async with httpx.AsyncClient(timeout=tmo) as client:
+                # req=None: der Kern laeuft auch ohne HTTP-Request (MCP
+                # chat_send); das req aus _chat_send war hier ein NameError.
                 async with client.stream("POST", url, json=payload,
-                                         headers=proxy._headers(tok, req)) as up:
+                                         headers=proxy._headers(tok, None)) as up:
                     if up.status_code != 200:
                         await up.aread()
                         raise RuntimeError(f"HTTP {up.status_code}")
