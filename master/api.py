@@ -1037,6 +1037,26 @@ async def _config_export(req: Request) -> Response:
     return Response(body, media_type="application/json; charset=utf-8", headers=headers)
 
 
+async def _config_export_split(req: Request, kind: str) -> Response:
+    """GET /api/config/export-sat | export-master → getrennte Config-Datei.
+
+    export-sat: Satelliten-Konfiguration (inkl. INTENTS/Intent-Regeln und
+    aller Satelliten-Overrides) — ohne Master-eigene Backend-Ziele.
+    export-master: nur Master-Konfiguration (Backend-Ziele, System, Secrets).
+    Query secrets=0 wie beim Gesamt-Export."""
+    include_secrets = req.query_params.get("secrets", "1") not in ("0", "false", "no")
+    if kind == "satellite":
+        payload = config_store.export_satellites(include_secrets=include_secrets)
+        stem = "voice-satellite-satelliten-config"
+    else:
+        payload = config_store.export_master(include_secrets=include_secrets)
+        stem = "voice-satellite-master-config"
+    body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+    fname = time.strftime(stem + "-%Y%m%d-%H%M%S.json")
+    headers = {"Content-Disposition": f'attachment; filename="{fname}"'}
+    return Response(body, media_type="application/json; charset=utf-8", headers=headers)
+
+
 def _appqr_text(req: Request) -> str:
     """Aktuelle globale Master-Config als App-KEY=WERT-Text (für den QR-Code).
 
@@ -1762,6 +1782,10 @@ routes = [
     Route("/api/config", _config_put, methods=["PUT"]),
     Route("/api/config/apply", _config_apply_get, methods=["GET"]),
     Route("/api/config/export", _config_export),
+    Route("/api/config/export-sat",
+          lambda req: _config_export_split(req, "satellite")),
+    Route("/api/config/export-master",
+          lambda req: _config_export_split(req, "master")),
     Route("/api/config/appqr", _config_appqr),
     Route("/api/config/appqr.png", _config_appqr_png),
     Route("/api/config/import", _config_import, methods=["POST"]),
@@ -1857,7 +1881,9 @@ def _needs_admin(path: str, method: str) -> bool:
     """Nur Admin-Session (oder Token): Schreibaktionen der WebUI."""
     if path.startswith("/api/users"):
         return True
-    if path in ("/api/config/export", "/api/config/import", "/index/rebuild"):
+    if path in ("/api/config/export", "/api/config/import",
+                "/api/config/export-sat", "/api/config/export-master",
+                "/index/rebuild"):
         return True
     if path.startswith("/api/config/appqr"):      # enthaelt MASTER_TOKEN
         return True

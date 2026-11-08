@@ -91,6 +91,26 @@ URL_MODEL = {
 BACKEND_KEYS = [k.replace("_URL", "_BACKEND_URL") for k in URL_KEYS]
 
 
+# Aufteilung fuer die getrennten Exporte (WebUI: Satelliten- vs.
+# Master-Konfiguration).
+# master_only = Keys, die ausschliesslich der Master selbst benutzt
+# (eigene Musik-/Index-Pfade, Bruecke, zentrales Gedaechtnis).
+MASTER_ONLY_KEYS = frozenset({
+    "MUSIC_ROOT", "BRIDGE_HOST", "BRIDGE_PORT", "MASTER_MUSIC_AUTH",
+    "MEMORY_DB", "MEMORY_MAX_TOKENS",
+})
+# Satelliten-Export: alle Keys, die Satelliten/Apps etwas angehen
+# (EDITABLE_KEYS inkl. INTENTS = Intent-Regeln). Master-eigene Backend-Ziele
+# (*_URL/*_BACKEND_URL — Satelliten leiten ihre Proxy-Adressen selbst aus
+# MASTER_URL ab), master_only-Keys und Upstream-Secrets bleiben draussen;
+# MASTER_TOKEN wird beim Satelliten-Export separat erlaubt.
+SATELLITE_EXPORT_KEYS = ((frozenset(EDITABLE_KEYS)
+                         | frozenset(GLOBAL_ONLY_KEYS))
+                        - MASTER_ONLY_KEYS
+                        - frozenset(URL_KEYS + BACKEND_KEYS)
+                        - frozenset(SECRET_KEYS))
+
+
 def backend_loop_reject(key: str, value) -> str | None:
     """Zyklus-Schutz: eine URL, die auf den Master-Proxy zurueckzeigt, ware
     eine Endlosschleife (Proxy -> Master -> Proxy ...).
@@ -318,6 +338,59 @@ class ConfigStore:
             "satellites": sats,
         }
 
+    def _export_filtered(self, keys, include_secrets: bool,
+                         include_sats: bool, kind: str) -> dict:
+        with self._lock:
+            g: dict = {}
+            for k, v in self._global.items():
+                if v is None or v == "" or k not in keys:
+                    continue
+                if not include_secrets and k in SECRET_KEYS:
+                    continue
+                g[k] = v
+            if kind == "satellite":
+                # Intent-Regeln sind Satelliten-Konfiguration: der Key wird
+                # im Store oft gar nicht gefuehrt (Default leer) – dann als
+                # leere Zeilenliste mitgeben, damit der Import sie explizit
+                # setzen kann und sie im Export nie fehlt.
+                g.setdefault("INTENTS", "")
+            sats: dict = {}
+            if include_sats:
+                sats = {
+                    mac: {k: v for k, v in (ov or {}).items()
+                          if v is not None}
+                    for mac, ov in self._sats.items()
+                }
+                sats = {m: ov for m, ov in sats.items() if ov}
+            version = self._version
+        return {
+            "app": "voice-satellite",
+            "kind": kind,
+            "format": 1,
+            "source": "master",
+            "exported_at": int(time.time()),
+            "version": version,
+            "global": g,
+            "satellites": sats,
+        }
+
+    def export_master(self, include_secrets: bool = True) -> dict:
+        """Nur Master-Konfiguration: eigene Backend-Ziele (*_URL/Alias),
+        master-eigene System-/Gedaechtnis-Keys und (optional) alle Secrets.
+        Enthaelt keine Satelliten-Overrides."""
+        keys = (frozenset(URL_KEYS) | frozenset(BACKEND_KEYS)
+                | MASTER_ONLY_KEYS | frozenset(SECRET_KEYS))
+        return self._export_filtered(keys, include_secrets, False, "master")
+
+    def export_satellites(self, include_secrets: bool = True) -> dict:
+        """Satelliten-Konfiguration global (inkl. INTENTS = Intent-Regeln)
+        plus aller per-Satelliten-Overrides. Master-eigene Ziele/Keys fehlen.
+        MASTER_TOKEN darf mit, damit eine Satelliten-Datei Geraete am neuen
+        Master anmelden kann; Upstream-Tokens bleiben bei der Master-Datei."""
+        keys = SATELLITE_EXPORT_KEYS | (frozenset({"MASTER_TOKEN"})
+                                        if include_secrets else frozenset())
+        return self._export_filtered(keys, include_secrets, True, "satellite")
+
     def import_payload(self, data: dict) -> dict:
         """Konfig-Datei (export_payload-Format) in den Store importieren.
 
@@ -330,7 +403,7 @@ class ConfigStore:
         if not isinstance(data, dict):
             raise ValueError("Import-Datei muss ein JSON-Objekt sein")
         g_allowed = (set(EDITABLE_KEYS) | set(GLOBAL_ONLY_KEYS)
-                     | set(SECRET_KEYS) | set(BACKEND_KEYS))
+                     | set(SECRET_KEYS) | set(BACKEND_KEYS) | set(URL_KEYS))
         global_in = data.get("global") if isinstance(data.get("global"), dict) else {}
         sats_in = {str(m).lower(): ov
                    for m, ov in (data.get("satellites") or {}).items()

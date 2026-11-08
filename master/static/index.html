@@ -198,11 +198,12 @@ body.readonly .cfg-readonly-hint{display:block}
     <span id="cfg-status" class="cfg-status"></span>
   </div>
   <div class="cfg-save-row admin-only">
-    <button id="btn-cfg-export" title="Konfiguration als JSON-Datei exportieren (inkl. gespeicherter Secrets)">⬇ Export</button>
-    <button id="btn-cfg-import" title="Konfig-Datei importieren (Merge; Satellite-Export →Override für diesen Satellit)">⬆ Import</button>
+    <button id="btn-cfg-export-sat" title="Satelliten-Konfiguration als JSON exportieren: alle Satelliten-Keys inkl. Intent-Regeln (INTENTS) und aller Satelliten-Overrides — ohne Master-eigene Backend-Ziele">⬇ Export Satelliten</button>
+    <button id="btn-cfg-export-master" title="Nur Master-Konfiguration als JSON exportieren: Backend-Ziele, System-/Gedächtnis-Keys und Secrets">⬇ Export Master</button>
+    <button id="btn-cfg-import" title="Konfig-Datei importieren (Merge; jeder Export-Typ wird erkannt; Satellite-Export →Override für diesen Satellit)">⬆ Import</button>
     <button id="btn-cfg-qr" title="Aktuelle Konfiguration als QR-Code anzeigen; ein App-Gerät importiert ihn unter Einstellungen -> QR-Code scannen">⚟ QR-Code</button>
     <input type="file" id="cfg-import-file" accept="application/json,.json" hidden>
-    <span style="color:var(--dim);font-size:0.82rem">Import merget nur gespeicherte Werte in global + Satellite-Overrides</span>
+    <span style="color:var(--dim);font-size:0.82rem">Export getrennt: Satelliten (inkl. Intent-Regeln) / Master · Import merget jede Export-Datei in global + Satellite-Overrides</span>
   </div>
   <div class="card admin-only" id="users-card">
     <h2>Benutzer</h2>
@@ -513,9 +514,9 @@ let _masterStart = 0;  // timestamp in seconds
 $('btn-save-global').onclick = saveGlobalConfig;
 
 // ── Config Import / Export (Master) ───────────────────────────
-$('btn-cfg-export').onclick = async () => {
+async function downloadConfigExport(path) {
   try {
-    const r = await fetch('/api/config/export');
+    const r = await fetch(path);
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const blob = await r.blob();
     let fname = 'voice-satellite-config.json';
@@ -531,7 +532,9 @@ $('btn-cfg-export').onclick = async () => {
   } catch (e) {
     showStatus('cfg-status', 'Export fehlgeschlagen: ' + e, 'err');
   }
-};
+}
+$('btn-cfg-export-sat').onclick = () => downloadConfigExport('/api/config/export-sat');
+$('btn-cfg-export-master').onclick = () => downloadConfigExport('/api/config/export-master');
 
 $('btn-cfg-import').onclick = () => $('cfg-import-file').click();
 
