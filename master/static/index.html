@@ -871,16 +871,28 @@ function enter(user) {
   $('login-overlay').hidden = true;
   $('dash').style.display = '';
   if (ROLE === 'admin') loadUsers();
+  startSession();
+}
+
+// Einmal pro (Re-)Login ausloesen: Daten laden, SSE verbinden, 30-s-Poll
+// starten. Davor lief das nur in boot() fuer bestehende Sessions — nach dem
+// Login blieb das Dashboard deshalb auf 'lade …', bis die Seite neu geladen
+// wurde. enter() wird genau einmal pro Login aufgerufen (Logout macht
+// location.reload()), daher reicht der Guard.
+let _sessionStarted = false;
+function startSession() {
+  if (_sessionStarted) return;
+  _sessionStarted = true;
+  refresh();
+  connectSSE();
+  connectLiveLog();
+  setInterval(refresh, 30000);
 }
 
 function boot() {
   fetch('/api/me').then(r => r.json().then(j => {
-    if (r.ok) { enter(j); }
-    else { showLogin(!!j.needs_setup, ''); return; }
-    refresh();
-    connectSSE();
-    connectLiveLog();
-    setInterval(refresh, 30000);
+    if (r.ok) enter(j);
+    else showLogin(!!j.needs_setup, '');
   })).catch(() => showLogin(false, 'Master nicht erreichbar.'));
 }
 
