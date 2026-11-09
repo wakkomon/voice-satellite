@@ -99,6 +99,12 @@ _STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 _index_data: dict | None = None
 _index_ts: float = 0.0
 _index_busy = False
+# Vorgserialisiertes Index-Payload: (payload-Identität, raw-bytes, gzip-bytes).
+# Der Index umfasst inzwischen >40 MB (69k+ Audiodateien); json.dumps + gzip
+# PRO Request im Event-Loop blockierten den gesamten Server (Web-UI:
+# Satellitenliste/Live-Log "dauert ewig oder lädt garnicht"). Darum einmal
+# pro Index-Version serialisieren — im Thread-Pool, nie im Event-Loop.
+_index_body: "tuple[dict, bytes, bytes] | None" = None
 _sse_clients: list[asyncio.Queue] = []
 
 
@@ -132,8 +138,38 @@ async def _heartbeat(req: Request) -> JSONResponse:
     })
 
 
+def _serialize_index(data: dict) -> tuple[bytes, bytes]:
+    """json-Bytes + gzip-Bytes des Index (läuft im Thread-Pool, nie im Loop)."""
+    raw = json.dumps(data, ensure_ascii=False).encode("utf-8")
+    buf = io.BytesIO()
+    with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
+        gz.write(raw)
+    return raw, buf.getvalue()
+
+
+async def _get_index_body() -> "tuple[dict, bytes, bytes] | None":
+    """Vorgserialisiertes Payload holen; bei neuer Index-Version neu bauen —
+    im Thread-Pool, damit die Event-Loop während Serialisierung/gzip ansprechbar
+    bleibt (Identitätsvergleich: _index_data wird bei Rebuild/Reload ausgetauscht)."""
+    global _index_body
+    data = _index_data
+    if data is None:
+        return None
+    cached = _index_body
+    if cached is not None and cached[0] is data:
+        return cached
+    raw, gz = await asyncio.get_running_loop().run_in_executor(
+        None, _serialize_index, data)
+    _index_body = (data, raw, gz)
+    return _index_body
+
+
 async def _api_music(req: Request) -> Response:
-    """Index-Payload – mit gzip auf Anfrage."""
+    """Index-Payload – mit gzip auf Anfrage.
+
+    ?stats=1 liefert nur Zähler (für die Dashboard-Karten) statt des kompletten
+    mehrzig-MB-Payloads — die UI braucht hier ausschließlich die Anzahlen.
+    """
     global _index_data
     if _index_data is None:
         _index_data = load_index_cache(master_cfg.CACHE_DIR)
@@ -142,14 +178,22 @@ async def _api_music(req: Request) -> Response:
         if _index_busy:
             return JSONResponse({"status": "indexing"}, status_code=202)
         return JSONResponse({"error": "no index"}, status_code=503)
-    body = json.dumps(_index_data, ensure_ascii=False).encode("utf-8")
+    if req.query_params.get("stats", "") in ("1", "true"):
+        data = _index_data
+        return JSONResponse({
+            "stats": True,
+            "m3u_count": len(data.get("m3u_all") or []),
+            "mp3_count": len(data.get("mp3_all") or []),
+            "index_ts": _index_ts,
+            "index_busy": _index_busy,
+        })
+    packed = await _get_index_body()
+    if packed is None:
+        return JSONResponse({"error": "no index"}, status_code=503)
+    _, raw, gz = packed
     accept = req.headers.get("accept-encoding", "")
     use_gzip = "gzip" in accept
-    if use_gzip:
-        buf = io.BytesIO()
-        with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
-            gz.write(body)
-        body = buf.getvalue()
+    body = gz if use_gzip else raw
     headers = {"Content-Encoding": "gzip"} if use_gzip else {}
     return Response(body, media_type="application/json", headers=headers)
 

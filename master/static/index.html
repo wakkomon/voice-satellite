@@ -569,7 +569,7 @@ async function refresh() {
     const [hb, sats, music, status] = await Promise.all([
       fetch('/api/heartbeat').then(r => r.ok || r.status === 202 ? r.json() : {}),
       fetch('/api/satellites').then(r => r.json()).catch(() => []),
-      fetch('/api/music', {headers:{'Accept-Encoding':'identity'}}).then(r => r.json()).catch(() => null),
+      fetch('/api/music?stats=1').then(r => r.ok ? r.json() : null).catch(() => null),
       fetch('/api/status').then(r => r.ok ? r.json() : {}),
     ]);
 
@@ -581,8 +581,10 @@ async function refresh() {
     else { idx.className='badge dim'; idx.textContent='kein Index'; }
     $('idx-ts').textContent = hb.index_ts ? fmtTs(hb.index_ts) + (hb.index_busy ? ' (läuft …)' : '') : '–';
     if (music) {
-      $('idx-m3u').textContent = (music.m3u_all||[]).length.toLocaleString('de-DE');
-      $('idx-mp3').textContent = (music.mp3_all||[]).length.toLocaleString('de-DE');
+      const m3u = (music.m3u_count != null) ? music.m3u_count : (music.m3u_all||[]).length;
+      const mp3 = (music.mp3_count != null) ? music.mp3_count : (music.mp3_all||[]).length;
+      $('idx-m3u').textContent = m3u.toLocaleString('de-DE');
+      $('idx-mp3').textContent = mp3.toLocaleString('de-DE');
     }
 
     // Uptime
