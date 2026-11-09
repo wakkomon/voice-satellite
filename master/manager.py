@@ -81,6 +81,18 @@ class SatManager:
         # an (Heartbeat/Chat/DM = 403) und bekommen keine Pushes mehr.
         self._disabled_path = os.path.join(cfg_dir, "sat_disabled.json")
         self._disabled: set[str] = self._load_disabled()
+        # Persistente Identitaets-Historie (identity.json im Config-Volume):
+        # Registry-Key -> letzte gemeldete IP plus Key-Aliasse (alt -> neu).
+        # Der Android-App-Key (android+6hex) lebt in SharedPreferences und
+        # wird bei Deinstall + Reinstall neu zufaellig erzeugt. Die Host-IP
+        # bleibt dagegen stabil und ist so das Band zur alten Identitaet:
+        # Name und Deaktivierung wandern automatisch auf den neuen Key, und
+        # der alte Key bleibt per Alias loesbar (openHAB-Regeln, DM-Ziele,
+        # MCP broadcast). Pi-Docker-MACs funktionieren ueber denselben Pfad.
+        self._identity_path = os.path.join(cfg_dir, "identity.json")
+        self._idhist: dict[str, str] = {}
+        self._aliases: dict[str, str] = {}
+        self._load_identity()
         self._ensure_ssh_key()
 
     # ── Pull-Warteschlange für Geräte ohne Web-Dienst (Android-App) ──
@@ -202,10 +214,84 @@ class SatManager:
         except OSError as e:
             log.warning("Namen-Store nicht schreibbar: %s", e)
 
+    # ── Identitaets-Historie + Key-Aliasse (persistent) ──────────────
+
+    def _load_identity(self) -> None:
+        try:
+            with open(self._identity_path, encoding="utf-8") as f:
+                data = json.load(f)
+            hist = data.get("history") or {}
+            self._idhist = {str(k): str(v) for k, v in hist.items()
+                            if str(v).strip()}
+            al = data.get("aliases") or {}
+            self._aliases = {str(k).lower(): str(v) for k, v in al.items()
+                             if str(v).strip()}
+        except (OSError, ValueError):
+            self._idhist, self._aliases = {}, {}
+
+    def _save_identity(self) -> None:
+        try:
+            os.makedirs(os.path.dirname(self._identity_path), exist_ok=True)
+            tmp = self._identity_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"history": self._idhist, "aliases": self._aliases},
+                          f, ensure_ascii=False, indent=1)
+            os.replace(tmp, self._identity_path)
+        except OSError as e:
+            log.warning("Identity-Store nicht schreibbar: %s", e)
+
+    def resolve_key(self, key: str) -> str:
+        """Key durch die Alias-Kette aufloesen (alt -> aktuell, max. 5 Hops).
+
+        NUR ohne Lock aufrufen (aufrufen SEITENHALT der Lock-Blöcke,
+        die der Caller bereits haelt)."""
+        k = (key or "").strip().lower()
+        seen = set()
+        for _ in range(5):
+            nxt = self._aliases.get(k)
+            if not nxt or k in seen:
+                break
+            seen.add(k)
+            k = nxt
+        return k
+
+    def _migrate_identity(self, key: str, ip: str) -> str | None:
+        """Neuer Registry-Key an bekannter IP = dasselbe Geraet wurde neu
+        registriert (Android-App nach Deinstall/Reinstall, Pi nach Rebuild
+        mit neuer MAC). Uebernommen wird: Anzeigename, Deaktivierungs-Flag
+        und ein Alias alt -> neu, damit Ziele auf dem alten Key (z. B.
+        openHAB-Regeln) unveraendert weiter auflösen. (unter Lock)"""
+        if not ip:
+            return None
+        old = None
+        for k, v in self._idhist.items():
+            if v == ip and k != key:
+                old = k
+                break
+        if old is None:
+            return None
+        self._aliases[old.lower()] = key
+        self._idhist[key] = ip
+        changed = False
+        name = self._names.get(old)
+        if name and not self._names.get(key):
+            self._names[key] = name
+            changed = True
+        if old.lower() in self._disabled and key.lower() not in self._disabled:
+            self._disabled.add(key.lower())
+            self._save_disabled()
+        if changed:
+            self._save_names()
+        self._save_identity()
+        log.info("Satellit %s: neue Device-ID %s (alt %s) – Name/Alias uebernommen",
+                 ip, key, old)
+        return old
+
     def display_name(self, key: str) -> str:
         """Anzeigename eines Registry-Keys: custom_name > Hostname > Key.
 
         Loest auch IP/Hostnamen/custom-Name selbst auf (wie sat_target)."""
+        key = self.resolve_key(key)
         want = (key or "").strip().lower()
         with self._lock:
             sat = self.satellites.get(key) or (
@@ -228,6 +314,7 @@ class SatManager:
         Gibt None bei Erfolg, sonst Fehlerstring. Der Name wird auch als
         Ziel-Bezeichner gelöst (sat_target) und als DM-Quellname verwendet."""
         name = (name or "").strip()[:48]
+        key = self.resolve_key(key)
         want = (key or "").strip().lower()
         with self._lock:
             target = None
@@ -307,7 +394,7 @@ class SatManager:
     def is_disabled(self, key: str) -> bool:
         """True, wenn der Registry-Key deaktiviert ist."""
         with self._lock:
-            return (key or "").lower() in self._disabled
+            return self.resolve_key((key or "").lower()).lower() in self._disabled
 
     def is_disabled_for(self, mac: str, ip: str = "") -> bool:
         """Gatter fuer Uploads eines Satelliten (Heartbeat/Chat/DM).
@@ -315,7 +402,7 @@ class SatManager:
         Prueft den MAC-/Device-ID-Key UND den IP-key, weil der Registry-Key
         bei Docker-Satelliten die Host-IP ist (Bridge-MAC ≠ Key)."""
         with self._lock:
-            m = (mac or "").lower().strip()
+            m = self.resolve_key((mac or "").lower().strip()).lower()
             if m and m in self._disabled:
                 return True
             if ip:
@@ -490,8 +577,17 @@ class SatManager:
                         self._names[existing] = self._names[key]
                     self._names.pop(key, None)
                     self._save_names()
+                self._aliases[key.lower()] = existing
+                self._save_identity()
                 key = existing
             elif key not in self.satellites:
+                # Dasselbe Geraet mit neuem Key? (App-Key-Neugeburt nach
+                # Reinstall, Pi-MAC nach Container-Rebuild) – bevor der
+                # Eintrag angelegt wird, Name/Alias aus der Historie holen.
+                self._migrate_identity(key, ip)
+                if ip:
+                    self._idhist[key] = ip
+                    self._save_identity()
                 self.satellites[key] = Satellite(
                     mac=mac,
                     ip=ip,
@@ -504,6 +600,9 @@ class SatManager:
             sat = self.satellites[key]
             if ip and sat.ip != ip:
                 sat.ip = ip
+                if self._idhist.get(key) != ip:
+                    self._idhist[key] = ip
+                    self._save_identity()
                 log.debug("Satellit %s: IP aktualisiert auf %s (NAT-Quelle)", key, ip)
             mac_known = key
             if data.get("hostname") and data["hostname"] != sat.hostname:
@@ -643,6 +742,7 @@ class SatManager:
         Lautstaerke und Audio-Ausgabe steuern. None, wenn der Satellit
         unbekannt ist oder keine IP hat.
         """
+        key = self.resolve_key(key)
         want = (key or "").strip().lower()
         if not want:
             return None
@@ -670,6 +770,7 @@ class SatManager:
         mac = (mac or "").lower().strip()
         ip = (ip or "").strip()
         with self._lock:
+            mac = self.resolve_key(mac)
             if mac and mac in self.satellites:
                 return mac
             if ip:
