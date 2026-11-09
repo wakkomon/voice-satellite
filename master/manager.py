@@ -139,6 +139,13 @@ class SatManager:
         with self._lock:
             sat = self.satellites.get((key or "").strip().lower()) \
                 or self.satellites.get(key)
+            key = self.resolve_key(key)
+            sat = self.satellites.get((key or "").strip().lower()) \
+                or self.satellites.get(key)
+            if sat is None:
+                found = self._find_sat(key)
+                if found is not None:
+                    key, sat = found
             return self._kind_for(key, sat)
 
     @staticmethod
@@ -488,6 +495,22 @@ class SatManager:
         for key, s in self.satellites.items():
             if s.ip == ip:
                 return key
+        return None
+
+    def _find_sat(self, key: str) -> "tuple[str, Satellite] | None":
+        """Satellit per Key/IP/Hostnamen/custom-Name (CALLER HAELT DEN LOCK).
+        Liefert (Registry-Key, Satellite) oder None."""
+        key = (key or "").strip()
+        if not key:
+            return None
+        sat = self.satellites.get(key) or self.satellites.get(key.lower())
+        if sat is not None:
+            return key, sat
+        want = key.lower()
+        for k, s in self.satellites.items():
+            if (s.ip or "").lower() == want or (s.hostname or "").lower() == want \
+                    or (s.custom_name or "").lower() == want:
+                return k, s
         return None
 
     def record_events(self, mac: str, events: list, reset: bool = False,

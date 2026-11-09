@@ -79,7 +79,14 @@ ok("Pi-Merge: neue MAC-Eintrag aliasiert auf bestehenden", m3.resolve_key("02:42
 ok("Pi-Merge: Name ueber alten MAC (Regel-Pfad)", m3.display_name("02:42:ac:13:00:02")
    == "display01")
 
-# 7) unbekanntes Geraet am selben IP mit leerem Namen: kein Spuk
+# 7) Ziel-Aufloesung PER NAMEN (openHAB-Regeln duerfen den Namen nutzen)
+ok("sat_target per custom_name", m3.sat_target("display01") is not None
+   and m3.sat_target("display01")[0] == "02:42:ac:11:00:03")
+m3.record_heartbeat(NEW, {"hostname": "h-new", "ip": IP, "kind": "android"})
+ok("sat_kind per custom_name (App-Queue-Pfad)",
+   m3.sat_kind("Tablet-Flur") == "android")
+
+# 8) unbekanntes Geraet am selben IP mit leerem Namen: kein Spuk
 m4 = SatManager()
 hb(m4, "androiddeadbeef000", "192.168.82.244")
 ok("Unbekanntes Geraet: kein Alias ohne Namen", m4.resolve_key("androiddeadbeef000") == "androiddeadbeef000")
