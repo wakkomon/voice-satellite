@@ -12,6 +12,13 @@ h1 { font-size:1.3rem; font-weight:600; margin:0 0 4px; }
 h1 .v { color:var(--dim); font-size:0.85rem; font-weight:400; margin-left:8px; }
 .sub { color:var(--dim); font-size:0.85rem; margin-bottom:20px; }
 .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:16px; }
+/* Dashboard: System-Karte schmal halten, damit die breitere Satelliten-Tabelle
+   (Name + IP + Status + Aktionen) ohne Abschneiden Platz hat. */
+.grid.dash { grid-template-columns:170px minmax(0,1fr); }
+@media (max-width:720px) { .grid.dash { grid-template-columns:1fr; } }
+.sys-card .row { font-size:0.85rem; padding:4px 0; }
+.sys-card #btn-rebuild { width:100%; margin-right:0; }
+.sat-card { overflow-x:auto; }
 .card { background:var(--card); border-radius:10px; padding:16px 18px; }
 .card h2 { font-size:0.8rem; text-transform:uppercase; letter-spacing:0.06em; color:var(--dim); margin:0 0 12px; }
 .row { display:flex; justify-content:space-between; align-items:center; padding:5px 0; font-size:0.92rem; }
@@ -142,8 +149,8 @@ td{padding:6px 8px}
   <a id="btn-logout" href="#" style="display:none;margin-left:8px">Abmelden</a>
 </div>
 
-<div class="grid">
-  <div class="card">
+<div class="grid dash">
+  <div class="card sys-card">
     <h2>System</h2>
     <div class="row"><span class="k">Index-Status</span><span id="idx-status" class="badge dim">…</span></div>
     <div class="row"><span class="k">Letzter Re-Scan</span><span class="k num" id="idx-ts">–</span></div>
@@ -156,7 +163,7 @@ td{padding:6px 8px}
     </div>
   </div>
 
-  <div class="card">
+  <div class="card sat-card">
     <h2>Satelliten <span class="num" id="sat-count" style="color:var(--dim)"></span></h2>
     <table>
       <thead><tr><th>Satellit</th><th>IP</th><th>Aktivität</th><th>Aktion</th></tr></thead>
@@ -653,7 +660,7 @@ async function refresh() {
         : `<a href="#" class="mini-link" onclick="toggleDisabled('${esc(s.mac)}',true);return false">Deaktivieren</a>`;
       return `<tr class="${s.status === 'offline' ? 'sat-off' : ''}">
         <td><span class="dot ${dotCls}"></span>${nameCell}${s.disabled ? ' <span class="badge err" title="Satellit ist deaktiviert: keine Pushes, keine Meldungen an den Master" style="font-size:0.65rem">deaktiviert</span>' : ''}</td>
-        <td class="num">${esc(s.ip)}</td>
+        <td class="num" style="color:var(--dim)">${esc(s.ip)}</td>
         <td>${activityHtml}</td>
         <td>
           <span class="admin-only sat-actions">${acts}${tog}</span>
