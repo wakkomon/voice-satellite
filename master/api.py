@@ -1918,6 +1918,9 @@ def _token_allowed(path: str) -> bool:
 
     OpenHAB-curl (Steuer-Endpunkte) UND die Android-App (Satellitenliste
     fuer die Direktnachrichten-Ziele, read-only)."""
+    if path == "/logs":
+        # Live-Log-Lesen per Bearer: Log-Tab der Android-App (read-only SSE).
+        return True
     if path == "/api/broadcast":
         return True
     if path == "/api/image":
