@@ -539,6 +539,21 @@ class SatManager:
             ident = key or mac
             name = (sat.hostname if sat and sat.hostname else ident)[:24]
             last_seq = 0 if reset else self._event_seqs.get(ident, 0)
+            if not reset:
+                try:
+                    hi_in_batch = max(int(ev.get("seq") or 0) for ev in fresh)
+                except (TypeError, ValueError):
+                    hi_in_batch = 0
+                if hi_in_batch and hi_in_batch < last_seq:
+                    # v2.0.62: Geraet neu installiert/neu gestartet (Android
+                    # zaehlt die seq bei 1 an, sendet kein events_reset) —
+                    # ohne Neuaufnahme wuerde die gesamte Trace-Spuere als
+                    # Dupes verworfen (Trace-Loch nach jedem OTA-Update).
+                    log.info(
+                        "Satellit %s: seq-Regression %s < %s — Zaehlung "
+                        "neu angenommen", name, hi_in_batch, last_seq,
+                    )
+                    last_seq = 0
             out = []
             for ev in fresh:
                 try:
