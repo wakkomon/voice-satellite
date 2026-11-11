@@ -228,6 +228,71 @@ async def proxy_tts(req: Request) -> Response:
     return StreamingResponse(gen(), media_type="audio/wav")
 
 
+def _build_stt_multipart(wav: bytes, filename: str, content_type: str,
+                         model: str, language: str) -> tuple[bytes, str]:
+    """OpenAI-kompatiblen Multipart fuer /v1/audio/transcriptions bauen.
+
+    Bewusst identisch zu app/stt.py (Satellit): Feld 'file' = audio.wav
+    (audio/wav), dazu 'model' und 'language'. Der whisper.cpp-Server versteht
+    nur WAV und haelt sich sonst an die Sprache aus dem 'language'-Feld — die
+    Web-Chat-Aufnahme bekommt exakt dieselbe Anfrage wie der Pi.
+    """
+    boundary = "----vsWebStt" + os.urandom(8).hex()
+    parts = [
+        f'--{boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\n{model}\r\n'.encode(),
+        f'--{boundary}\r\nContent-Disposition: form-data; name="language"\r\n\r\n{language}\r\n'.encode(),
+        (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; '
+         f'filename="{filename}"\r\nContent-Type: {content_type}\r\n\r\n').encode(),
+        wav,
+        f'\r\n--{boundary}--\r\n'.encode(),
+    ]
+    return b"".join(parts), boundary
+
+
+async def stt_transcribe(wav: bytes, *, filename: str = "audio.wav",
+                         content_type: str = "audio/wav",
+                         model: str | None = None,
+                         language: str | None = None) -> tuple[int, dict]:
+    """STT-Transkription fuer die eingeloggte Web-Chat-UI (kein Bearer-Gate).
+
+    Der /api/chat/transcribe-Handler hat den Web-Login bereits geprueft; das
+    Bearer-Token von /proxy/stt waere fuer den Browser nicht verfuegbar
+    (Session-Cookie statt MASTER_TOKEN). Modell/Sprache werden wie beim
+    TTS-Proxy aus der zentralen Config gefuellt (get_effective(None)), damit
+    Web-Chat und Satellit identische STT-Einstellungen nutzen.
+
+    Liefert (status_code, payload_dict) — der payload traegt 'text'.
+    """
+    url = _upstream_url("STT_URL", ENV_STT_URL)
+    token = _upstream_token("STT_TOKEN", ENV_STT_TOKEN)
+    if not url:
+        return 502, {"error": "STT_URL nicht konfiguriert"}
+    eff = config_store.get_effective(None)
+    if model is None:
+        model = str(eff.get("STT_MODEL") or "").strip()
+    if language is None:
+        language = str(eff.get("STT_LANGUAGE") or "").strip() or "de"
+    body, boundary = _build_stt_multipart(wav, filename, content_type,
+                                          model, language)
+    headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        async with httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=10.0, read=120.0, write=10.0,
+                                      pool=10.0)) as client:
+            r = await client.post(url, content=body, headers=headers)
+    except httpx.HTTPError as e:
+        log.warning("STT-Chat: Upstream nicht erreichbar: %s", e)
+        return 502, {"error": f"stt upstream: {e}"}
+    try:
+        return r.status_code, r.json()
+    except Exception:
+        log.warning("STT-Chat: Upstream-Antwort kein JSON (RC %d)", r.status_code)
+        return 502, {"error": "stt upstream: keine JSON-Antwort",
+                     "detail": r.text[:200]}
+
+
 async def proxy_stt(req: Request) -> Response:
     """STT-Proxy: multipart/form-data rein, JSON-Transkript raus."""
     if req.method in ("GET", "HEAD"):

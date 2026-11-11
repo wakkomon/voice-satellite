@@ -655,6 +655,31 @@ async def _chat_recq(req: Request) -> Response:
     return FileResponse(fn, media_type="audio/wav")
 
 
+async def _chat_transcribe(req: Request) -> JSONResponse:
+    """POST /api/chat/transcribe (Roh-WAV-Body) → {text: …} für die
+    Web-Chat-Spracheingabe.
+
+    Der Web-Login (Session-Cookie) ist bereits im WebGate-Middleware geprüft;
+    hier braucht es KEIN Bearer-Token wie bei /proxy/stt — der Browser hat nur
+    den Session-Cookie, kein MASTER_TOKEN. Der Master füllt Modell/Sprache
+    selbst aus der zentralen Config und reicht das identische Whisper-Multipart
+    weiter wie der Satellit (proxy.stt_transcribe).
+    """
+    if not _req_user(req):
+        return JSONResponse({"error": "unauthorized",
+                             "detail": "Login erforderlich"}, status_code=401)
+    body = await req.body()
+    if not body:
+        return JSONResponse({"error": "leere Aufnahme"}, status_code=400)
+    if len(body) < 16_000:  # ~0,5 s bei 16 kHz/16 bit mono (wie app/stt.py)
+        return JSONResponse({"error": "aufnahme zu kurz"}, status_code=400)
+    if len(body) > 10 * 1024 * 1024:  # ~5 min bei 16 kHz/16 bit mono
+        return JSONResponse({"error": "aufnahme zu lang"}, status_code=400)
+    ct = (req.headers.get("content-type") or "audio/wav").split(";")[0].strip()
+    status, data = await proxy.stt_transcribe(body, content_type=ct or "audio/wav")
+    return JSONResponse(data, status_code=status)
+
+
 async def _dm_core(from_key: str, from_name: str, to: str,
                    text: str) -> tuple[int, dict]:
     """Kern der Geräte-zu-Gerät-Direktnachricht (auch MCP-Tool 'send_dm').
@@ -1833,6 +1858,7 @@ routes = [
     Route("/api/chat/recs", _chat_recs),
     Route("/api/chat/rec/{key}", _chat_rec),
     Route("/api/chat/recq", _chat_recq),
+    Route("/api/chat/transcribe", _chat_transcribe, methods=["POST"]),
     Route("/api/chat/send", _chat_send, methods=["POST"]),
     Route("/api/satellites", _satellite_list),
     Route("/api/satellites/status", _satellites_status),

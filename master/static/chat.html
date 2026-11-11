@@ -57,6 +57,9 @@ h1 .v { color:var(--dim); font-size:0.8rem; font-weight:400; margin-left:auto; }
 .inputbar input:focus { outline:none; border-color:var(--acc); }
 .inputbar button { background:var(--acc); color:#fff; border:none; border-radius:8px; padding:8px 20px; font-size:0.9rem; cursor:pointer; }
 .inputbar button:disabled { opacity:0.4; cursor:default; }
+#btn-mic { padding:8px 12px; background:#0d0f14; border:1px solid var(--acc); color:var(--acc); font-size:1rem; }
+#btn-mic.recording { background:var(--err); border-color:var(--err); color:#fff; animation:recpulse 1.2s ease-in-out infinite; }
+@keyframes recpulse { 0%,100% { box-shadow:0 0 0 0 rgba(240,96,90,.5); } 50% { box-shadow:0 0 0 7px rgba(240,96,90,0); } }
 .empty { color:var(--dim); text-align:center; margin-top:40px; font-size:0.9rem; }
 </style>
 </head>
@@ -88,6 +91,7 @@ h1 .v { color:var(--dim); font-size:0.8rem; font-weight:400; margin-left:auto; }
 <div class="chat" id="chat"></div>
 <div class="inputbar">
   <input id="chat-input" placeholder="Nachricht an den Assistenten …" autocomplete="off">
+  <button id="btn-mic" type="button" title="Sprache aufnehmen (Mikrofon)" onclick="toggleRec()">🎤</button>
   <button id="btn-send" onclick="sendMsg()">Senden</button>
 </div>
 
@@ -299,6 +303,97 @@ async function loadEntries() {
     chat.scrollTop = chat.scrollHeight;
   }
   $("status").textContent = "";
+}
+
+// ── Spracheingabe: Mikrofon-Aufnahme → Whisper-Transkript → Chat ──
+// Browser-Aufnahme: Web Audio (Float32) → 16 kHz / 16 bit mono WAV. WebM/Opus
+// geht NICHT — der Whisper.cpp-Server am Master versteht nur WAV (wie der
+// Satellit, s. app/stt.py). Danach POST an /api/chat/transcribe (Session-
+// Cookie, kein Bearer-Token nötig); der Master füllt Modell/Sprache aus der
+// zentralen Config, sodass Web-Chat und Pi identische STT-Einstellungen nutzen.
+let rec = null; // { ctx, stream, proc, sink, chunks, rate }
+function micAvailable() {
+  return !!(window.isSecureContext && navigator.mediaDevices
+           && navigator.mediaDevices.getUserMedia);
+}
+function setMicStatus(txt) { $("status").textContent = txt || ""; }
+async function toggleRec() {
+  if (rec) { stopRec(); return; }
+  if (!micAvailable()) { setMicStatus("Mikro nicht verfügbar (HTTPS erforderlich)"); return; }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true } });
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    const ctx = new Ctx();
+    if (ctx.state === "suspended") await ctx.resume().catch(() => {});
+    const src = ctx.createMediaStreamSource(stream);
+    const proc = ctx.createScriptProcessor(4096, 1, 1);
+    const sink = ctx.createGain(); sink.gain.value = 0; // Feedback unterbinden
+    const chunks = [];
+    proc.onaudioprocess = e => {
+      const d = e.inputBuffer.getChannelData(0);
+      chunks.push(new Float32Array(d)); // Kopie — Buffer wird wiederverwendet
+    };
+    src.connect(proc); proc.connect(sink); sink.connect(ctx.destination);
+    rec = { ctx, stream, proc, sink, chunks, rate: ctx.sampleRate };
+    $("btn-mic").classList.add("recording");
+    $("btn-mic").textContent = "⏹";
+    setMicStatus("🎙 Aufnahme läuft — zum Stoppen erneut tippen …");
+  } catch (e) {
+    rec = null;
+    setMicStatus("Mikro-Zugriff verweigert");
+  }
+}
+function stopRec() {
+  if (!rec) return;
+  const { stream, proc, sink, chunks, ctx, rate } = rec;
+  rec = null;
+  $("btn-mic").classList.remove("recording");
+  $("btn-mic").textContent = "🎤";
+  try { stream.getTracks().forEach(t => t.stop()); } catch {}
+  try { proc.disconnect(); sink.disconnect(); ctx.close(); } catch {}
+  const n = chunks.reduce((a, c) => a + c.length, 0);
+  if (n === 0 || n / rate < 0.4) { setMicStatus("Aufnahme zu kurz"); return; }
+  const pcm = new Float32Array(n);
+  let off = 0; for (const c of chunks) { pcm.set(c, off); off += c.length; }
+  setMicStatus("🔤 Sprache wird erkannt …");
+  transcribeWav(wav16(resample(pcm, rate, 16000), 16000));
+}
+function resample(buf, inRate, outRate) {
+  if (outRate === inRate) return buf;
+  const ratio = inRate / outRate;
+  const out = new Float32Array(Math.floor(buf.length / ratio));
+  for (let i = 0; i < out.length; i++) {
+    const idx = i * ratio, i0 = Math.floor(idx), i1 = Math.min(i0 + 1, buf.length - 1);
+    out[i] = buf[i0] * (1 - (idx - i0)) + buf[i1] * (idx - i0);
+  }
+  return out;
+}
+function wav16(float, rate) {
+  const n = float.length, buf = new ArrayBuffer(44 + n * 2), dv = new DataView(buf);
+  const W = (o, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i)); };
+  W(0, "RIFF"); dv.setUint32(4, 36 + n * 2, true); W(8, "WAVE"); W(12, "fmt ");
+  dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+  dv.setUint32(24, rate, true); dv.setUint32(28, rate * 2, true);
+  dv.setUint16(32, 2, true); dv.setUint16(34, 16, true); W(36, "data");
+  dv.setUint32(40, n * 2, true);
+  let o = 44;
+  for (let i = 0; i < n; i++) { const s = Math.max(-1, Math.min(1, float[i])); dv.setInt16(o, s < 0 ? s * 0x8000 : s * 0x7fff, true); o += 2; }
+  return new Uint8Array(buf);
+}
+async function transcribeWav(wav) {
+  try {
+    const r = await fetch("/api/chat/transcribe", {
+      method: "POST", headers: { "Content-Type": "audio/wav" }, body: wav });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || d.error) { setMicStatus("Erkennen fehlgeschlagen: " + (d.error || r.status)); return; }
+    const text = (d.text || "").trim();
+    if (!text) { setMicStatus("Nichts verstanden"); return; }
+    $("chat-input").value = text;   // erkannten Text in die Zeile, dann senden
+    sendMsg();
+  } catch (e) {
+    setMicStatus("Erkennungs-Fehler");
+  }
 }
 
 // ── Web-Chat senden ───────────────────────────────────────────
