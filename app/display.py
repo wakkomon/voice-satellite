@@ -291,34 +291,43 @@ class Display:
             self._playing = False
             self._music_info_at = None
 
-    def show_camera(self, camera_name: str) -> None:
-        """Kamera-Snapshot vom Pi holen und direkt in Framebuffer blitten.
-        
-        Bridge liefert 307200 Bytes (480×320 RGB565 raw) über /frame/<name>.
-        """
+    def show_camera(self, camera_source: str,
+                    camera_name: str = "") -> str | None:
+        """Live-Frame ueber den Master-RTSP-Proxy holen und direkt in den
+        Framebuffer blitten. GET /proxy/rtsp/frame/<m3u-relativpfad> liefert
+        exakt FB_W*FB_H*2 Bytes rohes RGB565 (480×320) — wie ehemals die
+        Pi-Bridge /frame/<name>. Gibt Fehlerstring zurueck, None bei Erfolg."""
+        import urllib.parse
         import urllib.request as _urllib
-        
+
         if self._mm is None or self._stop.is_set() or self._buf is None:
-            return
-        
-        # Frame von Bridge holen (rohe RGB565-Daten)
+            return None  # kein Display aktiv: wie bisher still ignoriert
+
+        base = (getattr(config, "MASTER_URL", "") or "").rstrip("/")
+        if not base:
+            return "MASTER_URL nicht konfiguriert"
+        url = (f"{base}/proxy/rtsp/frame/"
+               + urllib.parse.quote((camera_source or "").strip("/")))
         try:
-            url = f"{config.BRIDGE_URL}/frame/{camera_name}"
             req = _urllib.Request(url)
-            with _urllib.urlopen(req, timeout=15) as resp:
+            token = (getattr(config, "MASTER_TOKEN", "") or "").strip()
+            if token:
+                req.add_header("Authorization", f"Bearer {token}")
+            with _urllib.urlopen(req, timeout=20) as resp:
                 raw = resp.read()
         except Exception as e:
-            log.warning("show_camera: Bridge-Fehler für %s: %s", camera_name, e)
-            self.show("Kamera", f"Verbindung fehlgeschlagen")
-            return
-        
+            log.warning("show_camera: Master-Frame-Fehler für %s: %s",
+                        camera_name or camera_source, e)
+            self.show("Kamera", "Verbindung fehlgeschlagen")
+            return "Verbindung fehlgeschlagen"
+
         expected = config.FB_WIDTH * config.FB_HEIGHT * 2  # 307200
         if len(raw) != expected:
             log.warning("show_camera: Frame %s: %d Bytes erwartet, %d erhalten",
-                        camera_name, expected, len(raw))
+                        camera_name or camera_source, expected, len(raw))
             self.show("Kamera", f"Frame-Fehler: {len(raw)} Bytes")
-            return
-        
+            return f"Frame-Fehler: {len(raw)} Bytes"
+
         # Direkt in Buffer + mmap blitten (keine Konvertierung nötig!)
         try:
             buf = bytearray(raw)
@@ -330,12 +339,14 @@ class Display:
                 except (ValueError, OSError):
                     pass
         except Exception as e:
-            log.error("show_camera: Blit-Fehler für %s: %s", camera_name, e)
-            self.show("Kamera", f"Blit-Fehler")
-            return
-        
+            log.error("show_camera: Blit-Fehler für %s: %s",
+                      camera_name or camera_source, e)
+            self.show("Kamera", "Blit-Fehler")
+            return "Blit-Fehler"
+
         # Kurze Bestätigung als Text-Overlay
-        self.show("Kamera", f"{camera_name}: Live")
+        self.show("Kamera", f"{camera_name or camera_source}: Live")
+        return None
 
     def show_image(self, name: str, img_bytes: bytes) -> bool:
         """Arbiträres JPEG/PNG-Bild (z. B. Kamera-Snapshot) in den
@@ -774,10 +785,12 @@ def snapshot_png() -> bytes | None:
     return None
 
 
-def show_camera(camera_name: str) -> None:
-    """Modul-Fassade: Kamera-Snapshot vom Pi holen und auf Display blitten."""
-    if _instance is not None:
-        _instance.show_camera(camera_name)
+def show_camera(camera_source: str, camera_name: str = "") -> str | None:
+    """Modul-Fassade: Live-Frame ueber den Master-RTSP-Proxy holen und
+    aufs Display blitten. Gibt Fehlerstring zurueck (None bei Erfolg)."""
+    if _instance is None:
+        return None
+    return _instance.show_camera(camera_source, camera_name)
 
 
 def show_image(name: str, img_bytes: bytes) -> bool:

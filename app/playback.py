@@ -338,7 +338,7 @@ class MusicPlayer:
                                        # ewig auf ein nie kommendes resume
         self._web_hold = 0
         self._kill_procs()
-        self.stop_bridge_relay()        # Pi-Relay ebenfalls beenden
+        self.stop_rtsp_relay()          # Master-RTSP-Relay ebenfalls beenden
         if was:
             self._ev("Musik gestoppt")
         return was
@@ -806,74 +806,72 @@ class MusicPlayer:
                 self._title, self._source = None, None
 
 
-    # ── Pi-Bridge ──────────────────────────────────────────────
-    def play_bridge_url(self, rtsp_url: str, title: str = "") -> str | None:
-        """RTSP-Stream über Pi-Bridge abspielen.
-        
-        Startet Relay auf Pi (RTSP→HTTP), spielt über HTTP-Stream ab.
-        Fehlerstring oder None.
-        """
+    # ── Master-RTSP-Proxy (Radio/TV: Strom→MP3 ueber den Master) ──
+    def play_proxy_rtsp(self, source: str, title: str = "") -> str | None:
+        """Stream-Quelle zentral am Master relayen lassen (ffmpeg, RTSP→MP3)
+        und ueber den Master-Strom abspielen. 'source' ist der
+        M3U-Relativpfad (z.B. 'TV/radio.m3u') — die eigentliche Strom-URL
+        (mit Credentials) loest der Master selbst auf; sie laeuft nie durch
+        einen Satelliten-Request. Fehlerstring oder None."""
         import json as _json
         import urllib.request as _urllib
-        
-        if not config.BRIDGE_URL:
-            return "Pi-Bridge nicht erreichbar"
-        
+
+        base = self._proxy_base()
+        if not base:
+            return "MASTER_URL nicht konfiguriert (RTSP-Proxy nicht verfuegbar)"
         try:
-            # Relay starten
-            payload = _json.dumps({"url": rtsp_url, "title": title}).encode()
-            req = _urllib.Request(
-                f"{config.BRIDGE_URL}/relay",
-                data=payload,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
+            payload = _json.dumps({"source": source, "title": title}).encode()
+            req = _urllib.Request(f"{base}/proxy/rtsp/relay", data=payload,
+                                  headers={"Content-Type": "application/json"},
+                                  method="POST")
+            auth = (getattr(config, "MASTER_MUSIC_AUTH", "") or "").strip()
+            if auth:
+                if not auth.lower().startswith("bearer "):
+                    auth = "Bearer " + auth
+                req.add_header("Authorization", auth)
             with _urllib.urlopen(req, timeout=10) as resp:
                 data = _json.loads(resp.read())
         except Exception as e:
-            log.error("Bridge-Relay-Start fehlgeschlagen: %s", e)
-            return f"Pi-Bridge: Relay start fehlgeschlagen"
-        
+            log.error("RTSP-Relay-Start fehlgeschlagen (%s): %s", source, e)
+            return "RTSP-Relay am Master: Start fehlgeschlagen"
         relay_id = data.get("relay_id", "")
-        playback_url = data.get("playback_url", "")
-        
-        if not playback_url:
-            return "Bridge-Relay: Keine playback_url zurück"
-        
-        log.info("Bridge-Relay gestartet: %s", relay_id)
-        
-        # Relay-ID speichern für Stop
-        self._bridge_relay_id = relay_id
-        self._bridge_url = playback_url
-        
-        # Über normale play_url abspielen
-        return self.play_url(playback_url, title=title)
-    
-    def stop_bridge_relay(self):
-        """Bridge-Relay auf Pi beenden."""
+        if not relay_id:
+            err = str(data.get("error") or "")[:120]
+            log.error("RTSP-Relay ohne relay_id (%s): %s", source, err)
+            return "RTSP-Relay: " + (err or "keine relay_id erhalten")
+        log.info("RTSP-Relay am Master gestartet: %s (%s)", relay_id,
+                 title or source)
+        self._rtsp_relay_id = relay_id
+        return self.play_url(f"{base}/proxy/rtsp/{relay_id}/stream",
+                             title=title or source)
+
+    def stop_rtsp_relay(self):
+        """Master-RTSP-Relay beenden (stop() ruft das auf)."""
         import json as _json
         import urllib.request as _urllib
-        
-        relay_id = getattr(self, "_bridge_relay_id", "")
-        if not relay_id:
+
+        relay_id = getattr(self, "_rtsp_relay_id", "") or ""
+        base = self._proxy_base()
+        if not relay_id or not base:
+            self._rtsp_relay_id = None
             return
-        
         try:
             payload = _json.dumps({"relay_id": relay_id}).encode()
-            req = _urllib.Request(
-                f"{config.BRIDGE_URL}/stop_relay",
-                data=payload,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
+            req = _urllib.Request(f"{base}/proxy/rtsp/stop", data=payload,
+                                  headers={"Content-Type": "application/json"},
+                                  method="POST")
+            auth = (getattr(config, "MASTER_MUSIC_AUTH", "") or "").strip()
+            if auth:
+                if not auth.lower().startswith("bearer "):
+                    auth = "Bearer " + auth
+                req.add_header("Authorization", auth)
             with _urllib.urlopen(req, timeout=5) as resp:
                 resp.read()
-            log.info("Bridge-Relay beendet: %s", relay_id)
+            log.info("RTSP-Relay beendet: %s", relay_id)
         except Exception as e:
-            log.error("Bridge-Relay-Stop fehlgeschlagen: %s", e)
+            log.error("RTSP-Relay-Stop fehlgeschlagen: %s", e)
         finally:
-            self._bridge_relay_id = None
-            self._bridge_url = None
+            self._rtsp_relay_id = None
 
 
 # Modul-Einzelinstanz (Web-Endpoints + Router greifen darauf zu)

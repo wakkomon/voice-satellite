@@ -170,9 +170,9 @@ def try_play_playlist(text: str) -> tuple[bool, str | None]:
 _radio_cache = {}
 _radio_lock = threading.Lock()
 
-# M3U-Dateien mit Radio-/TV-Streams. Der Player spielt über die Pi-Bridge
-# (RTSP→HTTP), alle drei Listen kommen in den Index. radio.m3u zuerst, da es
-# die Fritzbox-Standardsender (192.168.81.1, RTSP) enthält.
+# M3U-Dateien mit Radio-/TV-Streams. Der Master relaed sie ueber seinen
+# RTSP-Proxy (/proxy/rtsp), alle drei Listen kommen in den Index. radio.m3u
+# zuerst, da es die Fritzbox-Standardsender (192.168.81.1, RTSP) enthält.
 _M3U_MOUNTS = ("radio.m3u", "world.m3u", "tv.m3u")
 
 
@@ -268,9 +268,11 @@ def try_play_radio(text: str) -> tuple[bool, str | None]:
     matched = _fuzzy_match(name, display_names)
     if matched:
         station = next(s for s in stations if s["name"] == matched)
-        # NOTE: RTSP-URL enthält eingebettete Credentials → nie loggen
+        # NOTE: Die Strom-URL (mit Credentials) loest der Master aus der
+        # M3U-Datei auf — der Satellit schickt nur Liste + Sendertitel.
         log.info("intent: radio match -> %s", matched)
-        err = playback.player.play_bridge_url(station["url"], title=matched)
+        err = playback.player.play_proxy_rtsp(
+            f"TV/{station['file']}", title=matched)
         if err:
             return True, err
         return True, f"Radio {matched} wird abgespielt"
@@ -621,6 +623,38 @@ def try_set_volume(text: str) -> tuple[bool, str | None]:
 # 5. Camera
 # ---------------------------------------------------------------------------
 
+def _camera_list() -> list[dict]:
+    """Kameraliste zunaechst vom Master (/proxy/rtsp/cameras — liefert nur
+    Namen + M3U-Relativpfade, nie die rtsp-URL); Fallback: lokaler
+    Kamera-Ordner (Namen aus den Dateinamen)."""
+    import json as _json
+
+    base = playback.player._proxy_base()
+    if base:
+        st, body = playback.player._http_get(f"{base}/proxy/rtsp/cameras",
+                                             timeout=15)
+        if st == 200 and body:
+            try:
+                data = _json.loads(body)
+                cams = [c for c in data.get("cameras", []) if c.get("source")]
+                if cams:
+                    return cams
+            except ValueError:
+                pass
+    out: list[dict] = []
+    kamera_dir = os.path.join(config.MUSIC_ROOT, "Kamera")
+    if os.path.isdir(kamera_dir):
+        for f in sorted(os.listdir(kamera_dir)):
+            if not f.lower().endswith(".m3u"):
+                continue
+            stem = f[:-4]
+            if stem.upper().startswith("CAM_"):
+                stem = stem[4:]
+            out.append({"name": stem.replace("_", " "),
+                        "source": f"Kamera/{f}"})
+    return out
+
+
 def try_show_camera(text: str) -> tuple[bool, str | None]:
     """Match Kamera-Befehle: „zeige Kamera X", "show camera X",
     „Was ist in Kamera X los?", „Kamera X zeigen", „Zeig mir Kamera X" etc.
@@ -645,59 +679,19 @@ def try_show_camera(text: str) -> tuple[bool, str | None]:
     if not name:
         return True, "Welche Kamera?"
 
-    kamera_dir = os.path.join(config.MUSIC_ROOT, "Kamera")
-    if not os.path.isdir(kamera_dir):
-        return True, f"Kamera-Ordner nicht erreichbar: {kamera_dir}"
+    # Namen+Pfade holt der Satellit zentral vom Master (die rtsp-URLs mit
+    # Credentials bleiben dort); ohne Master Fallback auf lokalen Ordner.
+    cams = _camera_list()
+    if not cams:
+        return True, "Keine Kameras gefunden"
 
-    # Build camera name list from M3U filenames (strip CAM_ prefix and .m3u)
-    camera_files = sorted(f for f in os.listdir(kamera_dir)
-                          if f.endswith(".m3u"))
-    # Create display names: CAM_Garten_Hinten.m3u -> "Garten Hinten"
-    display_names = []
-    for f in camera_files:
-        base = f[:-4]  # strip .m3u
-        # Remove "CAM_" prefix
-        if base.upper().startswith("CAM_"):
-            base = base[4:]
-        # Replace underscores with spaces
-        display_names.append(base.replace("_", " "))
-
+    display_names = [c["name"] for c in cams]
     matched_display = _fuzzy_match(name, display_names)
     if matched_display:
-        # Find the actual file
-        for f in camera_files:
-            base = f[:-4]
-            if base.upper().startswith("CAM_"):
-                base = base[4:]
-            display = base.replace("_", " ")
-            if display == matched_display:
-                # Read the RTSP URL from the M3U file
-                fp = os.path.join(kamera_dir, f)
-                try:
-                    with open(fp, "rb") as fh:
-                        raw = fh.read()
-                    # Try different encodings
-                    rtsp_url = None
-                    for enc in ("utf-8", "utf-16", "utf-8-sig", "latin-1"):
-                        try:
-                            text_content = raw.decode(enc)
-                            for line in text_content.splitlines():
-                                line = line.strip()
-                                if line.startswith("rtsp://"):
-                                    rtsp_url = line
-                                    break
-                        except (UnicodeDecodeError, ValueError):
-                            continue
-                    if rtsp_url:
-                        # NOTE: RTSP-URL enthält eingebettete Credentials → nie loggen
-                        log.info("intent: camera match '%s' -> %s", matched_display, f)
-                        # Grab a snapshot via Pi-Bridge and show on display
-                        return True, _camera_snapshot_and_show(
-                            matched_display, rtsp_url)
-                    else:
-                        return True, f"Kamera '{matched_display}': keine RTSP-URL gefunden"
-                except OSError as e:
-                    return True, f"Kamera-Datei lesefehler: {e}"
+        cam = next(c for c in cams if c["name"] == matched_display)
+        log.info("intent: camera match '%s' -> %s", matched_display,
+                 cam["source"])
+        return True, _camera_snapshot_and_show(matched_display, cam["source"])
 
     return True, f"Kamera '{name}' nicht gefunden"
 
@@ -730,23 +724,14 @@ def try_show_camera_config(name: str) -> tuple[bool, str | None]:
                   f"(Snapshot geladen, {len(raw)} B)")
 
 
-def _camera_snapshot_and_show(camera_name: str, rtsp_url: str) -> str:
-    """Kamera-Snapshot via Pi-Bridge holen und auf Display anzeigen."""
-    import json as _json
-    import urllib.request as _urllib
-    from . import config, display
-    
-    # Frame auf Pi-Server anfragen
-    try:
-        req = _urllib.Request(f"{config.BRIDGE_URL}/frame/{camera_name}")
-        with _urllib.urlopen(req, timeout=15) as resp:
-            raw = resp.read()
-        if not raw or len(raw) < 100:
-            raise ValueError("zu kurzer Frame")
-        # Frame auf Pi ablegen (über Bridge oder direkt per ssh — hier: Bridge-Relay)
-        display.show_camera(camera_name)
-        return f"Kamera {camera_name} wird angezeigt"
-    except Exception as e:
-        log.error("intent: camera snapshot error: %s", e)
-        display.show("Kamera", f"{camera_name}: {e}")
+def _camera_snapshot_and_show(camera_name: str, camera_source: str) -> str:
+    """Live-Frame ueber den Master-RTSP-Proxy (/proxy/rtsp/frame/<m3u>)
+    holen und auf dem Display anzeigen — die friechere Pi-Bridge ist
+    entfallen, alles laeuft ueber MASTER_URL."""
+    from . import display
+
+    err = display.show_camera(camera_source, camera_name)
+    if err:
+        log.error("intent: camera frame error (%s): %s", camera_name, err)
         return f"Kamera {camera_name} konnte nicht angezeigt werden"
+    return f"Kamera {camera_name} wird angezeigt"

@@ -243,8 +243,8 @@ DATA_DIR        = _env("DATA_DIR", "/data")   # persistente Daten (Index-Cache, 
 # ── Kameras (regelbasiert: "zeige Kamera <name>") ─────────────
 # Name=Snapshot-URL-Paare, semikolon-getrennt:
 #   CAMERAS="Garten=http://192.168.1.50:8080/snap.jpg,Halle=http://cam:81"
-# Ohne Treffer in CAMERAS greift der altbewaehrte M3U-/Bridge-Pfad
-# (Kamera/*.m3u + BRIDGE /frame/<name>).
+# Ohne Treffer in CAMERAS greift der M3U-Pfad ueber den Master
+# (/proxy/rtsp/cameras + /proxy/rtsp/frame/<m3u-relativpfad>).
 CAMERAS         = _env("CAMERAS", "", fallback_empty=True)
 
 def parse_cameras() -> dict:
@@ -261,13 +261,12 @@ def parse_cameras() -> dict:
     return out
 
 
-# ── Pi-Bridge (RTSP-Relay + Kamera-Snapshot) ──────────────────
-# Bridge-Daemon auf Pi: RTSP→MP3-Relay + Kamera-Snapshot-HTTP
-BRIDGE_HOST     = _env("BRIDGE_HOST", "192.168.1.32")
-BRIDGE_PORT     = int(_env("BRIDGE_PORT", "8790"))
-BRIDGE_URL      = f"http://{BRIDGE_HOST}:{BRIDGE_PORT}"
-RTSP_USER       = _env("RTSP_USER", "", fallback_empty=True)
-RTSP_PASS       = _env("RTSP_PASS", "", fallback_empty=True)
+# ── RTSP (Radio/TV/Kamera) — alles ueber den Master-Proxy ─────
+# Die ehemalige Pi-Bridge (BRIDGE_HOST/BRIDGE_PORT/BRIDGE_URL) ist
+# entfallen: der Master relaed Streams und holt Kamerabilder ueber
+# /proxy/rtsp/* (ffmpeg). Die Strom-URLs (mit Credentials) loest der
+# Master aus seinen M3U-Dateien unter MUSIC_ROOT auf; RTSP_USER/
+# RTSP_PASS sind nur noch Master-seitige ENV-Werte (optional).
 
 # ── Web ────────────────────────────────────────────────────────
 WEB_PORT        = int(_env("WEB_PORT", "8770"))
@@ -448,7 +447,7 @@ _OVERWRITABLE = {
     "TTS_MODEL", "TTS_VOICE", "TTS_LANGUAGE",
     "STT_MODEL", "STT_LANGUAGE",
     "LLM_MODEL", "LLM_HAS_TOOLS", "LLM_ENABLE_THINKING",
-    "MUSIC_ROOT", "BRIDGE_HOST", "BRIDGE_PORT",
+    "MUSIC_ROOT",
     "DEFAULT_IMAGE_URL",
     # Globale Settings (Timeouts, Limits, Defaults):
     "STT_TIMEOUT", "TTS_TIMEOUT", "LLM_TIMEOUT",
@@ -482,6 +481,8 @@ _LEGACY_API_KEYS = frozenset({
     "TTS_TOKEN", "STT_TOKEN", "LLM_TOKEN", "OPENHAB_TOKEN",
     "FORCE_MASTER_PROXY", "PROXY_PATHS",
     "MASTER_MUSIC_PROXY_URL", "MASTER_MUSIC_AUTH",
+    # Pi-Bridge entfallen — Radio/Kamera laufen ueber /proxy/rtsp am Master.
+    "BRIDGE_HOST", "BRIDGE_PORT", "BRIDGE_URL", "RTSP_USER", "RTSP_PASS",
 })
 
 

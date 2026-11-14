@@ -39,6 +39,7 @@ from . import chatstream, llmmemory
 from . import config as master_cfg
 from . import __version__ as MASTER_VERSION
 from . import proxy
+from . import rtsp
 from . import mcp_gateway
 from . import webauth
 from .indexer import _build_media_index, load_index_cache, save_index
@@ -2278,6 +2279,14 @@ routes = [
     Route("/proxy/music", proxy.proxy_music, methods=["GET", "HEAD"]),
     Route("/proxy/music/{subpath:path}", proxy.proxy_music,
           methods=["GET", "HEAD"]),
+    # (c2) RTSP→HTTP (Radio/TV-Relay + Kamera-Frames) — Ersatz fuer die
+    # entfallene Pi-Bridge; Satelliten brauchen nur MASTER_URL + Token.
+    Route("/proxy/rtsp/relay", rtsp.relay_start, methods=["POST"]),
+    Route("/proxy/rtsp/stop", rtsp.relay_stop, methods=["POST"]),
+    Route("/proxy/rtsp/status", rtsp.relay_status),
+    Route("/proxy/rtsp/cameras", rtsp.camera_list),
+    Route("/proxy/rtsp/frame/{relpath:path}", rtsp.camera_frame),
+    Route("/proxy/rtsp/{relay_id}/stream", rtsp.relay_stream),
     # (d) Zentrales MCP-Gateway (Tools aller Satelliten)
     # openHAB / curl-Steuerung: Broadcast, Lautstärke, Audio-Ausgabe.
     # 'sat' ist MAC/IP/Hostnamen; leer = alle online Satelliten (Broadcast).
