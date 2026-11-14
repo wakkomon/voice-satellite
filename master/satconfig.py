@@ -77,7 +77,12 @@ SECRET_KEYS = frozenset({
 # Marker-Normalisierung). Clients (Pi/Android) verwerfen den Marker
 # [[HALBER_SATZ]] immer – der Key schaltet, ob der Master die Regel ueberhaupt
 # injiziert. Default aus, bis alle Clients den Marker-Client tragen.
-GLOBAL_ONLY_KEYS = ("MASTER_MUSIC_AUTH", "LLM_DROP_FRAGMENTS")
+# MASTER_URL: optionale feste Master-Adresse fuer WebUI-QR-Code und
+# Satelliten-Export. Sinnvoll, wenn Geraete den Master unter einer anderen
+# Adresse erreichen sollen als der URL, mit der die WebUI gerade aufgerufen
+# wird (Browser-URL). Kein Backend-Ziel, kein Secret: leer = ENV MASTER_URL,
+# sonst die aktuelle Request-URL.
+GLOBAL_ONLY_KEYS = ("MASTER_MUSIC_AUTH", "LLM_DROP_FRAGMENTS", "MASTER_URL")
 
 UI_KEYS = EDITABLE_KEYS + GLOBAL_ONLY_KEYS
 
@@ -211,6 +216,12 @@ class ConfigStore:
         with self._lock:
             return str(self._global.get(key) or "")
 
+    def get_global_value(self, key: str) -> str:
+        """Gespeicherter globaler Wert eines Nicht-Secret-/Nicht-Backend-Keys
+        (z. B. MASTER_URL aus der UI-Domain 'System'), sonst ''."""
+        with self._lock:
+            return str(self._global.get(key) or "")
+
     def snapshot(self) -> dict:
         """Vollständiger Stand für die UI (inkl. Version).
 
@@ -270,10 +281,13 @@ class ConfigStore:
             for k, v in (overrides or {}).items():
                 if k not in allowed:
                     continue
-                why = backend_loop_reject(k, v)
-                if why:
-                    log.warning("Zentrale Konfig abgelehnt: %s", why)
-                    continue
+                if k != "MASTER_URL":
+                    # MASTER_URL ist die eigene Adresse (QR/Export), kein
+                    # Backend-Ziel — der Backend-Loop-Guard gilt hier nicht.
+                    why = backend_loop_reject(k, v)
+                    if why:
+                        log.warning("Zentrale Konfig abgelehnt: %s", why)
+                        continue
                 self._global[k] = v
                 if k in URL_KEYS:
                     # Alias bereinigen: *_URL und *_BACKEND_URL duerfen

@@ -326,6 +326,11 @@ async def _sat_heartbeat(req: Request) -> JSONResponse:
     # dem Heartbeat, damit sein Satellitenname schon bekannt ist.
     events = payload.pop("events", None)
     events_reset = bool(payload.pop("events_reset", False))
+    # Positionsuebermittlung ueber den Heartbeat (Android-App, optional):
+    # lat/lon/accuracy im Payload -> Standort-Store (Karten-Seite).
+    _h_lat = payload.pop("lat", None)
+    _h_lon = payload.pop("lon", None)
+    _h_acc = payload.pop("accuracy", None)
     # Chat-Eintraege (Sprech-Turne + Musik) des Satelliten – Chat-WebUI.
     # record_heartbeat ZUERST (legt den Satelliten im Registry an), dann den
     # kanonischen Registry-Key (stabile IP statt Docker-Bridge-MAC) aufloesen
@@ -334,6 +339,12 @@ async def _sat_heartbeat(req: Request) -> JSONResponse:
     # Textinhalt auf.
     chat = payload.pop("chat", None)
     manager.record_heartbeat(mac, payload)
+    if _h_lat is not None and _h_lon is not None:
+        try:
+            manager.record_location(mac, float(_h_lat), float(_h_lon),
+                                    float(_h_acc or 0.0))
+        except (TypeError, ValueError):
+            pass
     canon = manager.canonical_key(mac, str(payload.get("ip") or "")) or mac
     chat_stored = 0
     if isinstance(chat, list):
@@ -968,6 +979,114 @@ async def _map_ui(req: Request) -> Response:
     return _chat_ui_file("map.html")
 
 
+async def _photo_llm_vision(data_url: str, mac: str) -> str:
+    """Foto per Vision-LLM analysieren (OpenAI-Format image_url). Antwort als Text."""
+    import httpx
+    url = proxy._upstream_url("LLM_URL", master_cfg.LLM_BACKEND_URL)
+    if not url:
+        return "LLM ist nicht konfiguriert."
+    tok = proxy._upstream_token("LLM_TOKEN", proxy.ENV_LLM_TOKEN)
+    model = ""
+    try:
+        model = str((config_store.get_effective(mac) or {}).get("LLM_MODEL") or "").strip()
+    except Exception:
+        model = ""
+    payload = {
+        "model": model,
+        "max_tokens": 300,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text",
+                 "text": "Beschreibe das Foto kurz und konkret (Personen, Objekte, Text, "
+                         "Geschehen). Antworte auf Deutsch, max. 3-4 Saetze."},
+                {"type": "image_url", "image_url": {"url": data_url}},
+            ],
+        }],
+    }
+    tmo = httpx.Timeout(connect=15.0, read=180.0, write=30.0, pool=10.0)
+    async with httpx.AsyncClient(timeout=tmo) as client:
+        r = await client.post(url, json=payload,
+                              headers={"Authorization": "Bearer " + tok})
+        r.raise_for_status()
+        j = r.json()
+    try:
+        return str(j["choices"][0]["message"]["content"]).strip() or "Keine Antwort."
+    except (KeyError, IndexError, TypeError):
+        return "Analyse fehlgeschlagen."
+
+
+async def _sat_photo(req: Request) -> JSONResponse:
+    """POST /api/satellite/{mac}/photo {to, image} — Foto der App.
+
+    to="ai": Vision-Analyse per LLM (Antwort wird zurueckgeliefert).
+    to=<Ziel>: Foto wird gespeichert und als Bild-Push an das Zielgeraet
+    angezeigt (data/files/<id>.jpg wird ueber /files/ ausgeliefert)."""
+    mac = req.path_params["mac"].lower()
+    if not _sat_auth_ok(req, mac):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        body = await req.json()
+    except (json.JSONDecodeError, ValueError):
+        return JSONResponse({"ok": False, "error": "ungueltiges JSON"}, status_code=400)
+    img = str(body.get("image") or "").strip()
+    to = str(body.get("to") or "").strip().lower()
+    if not img or not to:
+        return JSONResponse({"ok": False, "error": "image/to fehlen"}, status_code=400)
+    if img.startswith("data:"):
+        _, _, b64 = img.partition(",")
+    else:
+        b64 = img
+    try:
+        rawb = base64.b64decode(b64)
+    except Exception:
+        return JSONResponse({"ok": False, "error": "Bild konnte nicht dekodiert werden"},
+                            status_code=400)
+    if not (200 <= len(rawb) <= 15 * 1024 * 1024):
+        return JSONResponse({"ok": False, "error": "Bild zu klein/gross"}, status_code=400)
+    if to == "ai":
+        data_url = ("data:image/jpeg;base64," + b64) if img.startswith("data:") else img
+        try:
+            answer = await _photo_llm_vision(data_url, mac)
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": "Analyse-Fehler: %s" % e},
+                                status_code=500)
+        return JSONResponse({"ok": True, "answer": answer})
+    fid = "%d-%s" % (int(time.time() * 1000), os.urandom(4).hex())
+    fname = "%s.jpg" % fid
+    fdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "files")
+    try:
+        os.makedirs(fdir, exist_ok=True)
+        with open(os.path.join(fdir, fname), "wb") as f:
+            f.write(rawb)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": "Speichern fehlgeschlagen: %s" % e},
+                            status_code=500)
+    host = req.headers.get("x-forwarded-host") or req.headers.get("host") or ""
+    if not host:
+        host = "192.168.82.24:8791"
+    url = "https://" + host + "/files/" + fname
+    src = manager.display_name(mac) or mac
+    try:
+        code, data = await image_push_core(to, url, ttl=120, text="", src=src)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": "Bild-Push fehlgeschlagen: %s" % e},
+                            status_code=500)
+    data["file"] = "/files/" + fname
+    return JSONResponse(data, status_code=code)
+
+
+def _files_serve(name: str) -> Response:
+    """GET /files/<name> — gespeicherte Fotos (Bild-Push der App)."""
+    safe = os.path.basename(name)
+    fdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "files")
+    p = os.path.join(fdir, safe)
+    if not os.path.isfile(p):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    with open(p, "rb") as f:
+        return Response(f.read(), media_type="image/jpeg")
+
+
 async def _sat_call(req: Request) -> JSONResponse:
     """POST /api/satellite/{mac}/call {to} → 10 s Signalton am Zielgerät.
 
@@ -1436,12 +1555,18 @@ async def _config_export(req: Request) -> Response:
 
 def _master_url_for(req: Request) -> str:
     """MASTER_URL = Adresse, unter der ein Geraet/das WebUI den Master
-    erreicht. ENV MASTER_URL gewinnt (Deploy); sonst die URL, mit der der
+    erreicht. Store-Wert (WebUI Domain System, MASTER_URL) gewinnt, dann ENV
+    MASTER_URL (Deploy), sonst die URL, mit der der
     Request hereilangfuhr (LAN-IP:Port). Wird vom QR-Code und vom
     Satelliten-Export (nur Master-URL + Token) verwendet."""
     host = (req.url.netloc if req.url else "") or ""
     scheme = (req.url.scheme if req.url else "http") or "http"
-    return (os.environ.get("MASTER_URL") or f"{scheme}://{host}").strip()
+    # Store-Wert (WebUI -> Konfiguration -> System -> MASTER_URL) gewinnt:
+    # feste Adresse, falls sie von der Browser-URL abweicht; dann ENV; dann
+    # die URL, mit der der Request hereinkam.
+    url = (config_store.get_global_value("MASTER_URL")
+           or os.environ.get("MASTER_URL") or f"{scheme}://{host}")
+    return url.strip().rstrip("/")
 
 
 async def _config_export_split(req: Request, kind: str) -> Response:
@@ -1490,13 +1615,15 @@ def _appqr_text(req: Request) -> str:
     /api/config/appqr (Text) und /api/config/appqr.png (QR-Bild)."""
     import os
     host = (req.url.netloc if req.url else "") or ""
-    env_url = os.environ.get("MASTER_URL", "").strip()
-    if env_url:
-        master_url = env_url
-    else:
-        # Master laeuft HTTPS-only (SSL-Zert am API-Server): plain http://
-        # ist nicht erreichbar, daher immer https://{host}.
-        master_url = "https://" + host
+    # Store-Wert (WebUI -> Konfiguration -> System -> MASTER_URL) gewinnt,
+    # damit der QR dieselbe Adresse traegt, die der Betreiber fest gesetzt
+    # hat — auch wenn er diese Seite gerade unter einer anderen URL
+    # aufruft. Dann ENV MASTER_URL; zuletzt https://{host} (Master laeuft
+    # HTTPS-only, plain http:// ist nicht erreichbar).
+    master_url = (config_store.get_global_value("MASTER_URL")
+                  or os.environ.get("MASTER_URL", "").strip()
+                  or "https://" + host)
+    master_url = master_url.strip().rstrip("/")
     token = str(config_store.get_secret("MASTER_TOKEN") or
                 os.environ.get("MASTER_TOKEN", "") or "").strip()
     return "MASTER_URL=" + master_url + "\n" + "MASTER_TOKEN=" + token + "\n"
@@ -2241,6 +2368,8 @@ routes = [
     Route("/api/satellite/{mac}/schedule/delete", _sat_schedule_delete,
           methods=["POST"]),
     Route("/api/satellite/{mac}/location", _sat_location, methods=["POST"]),
+    Route("/api/satellite/{mac}/photo", _sat_photo, methods=["POST"]),
+    Route("/files/{name}", _files_serve),
     Route("/api/locations", _api_locations),
     Route("/map.html", _map_ui),
     Route("/api/chat/messages", _chat_messages),
@@ -2339,7 +2468,7 @@ def _gate_public(path: str) -> bool:
     if path.startswith("/api/satellite/") and \
             path.endswith(("/heartbeat", "/chat", "/dm", "/dm-voice",
                            "/call", "/schedule", "/schedule/delete",
-                           "/location")):
+                           "/location", "/photo")):
         return True
     if path == "/api/config/apply":
         return True
@@ -2367,8 +2496,10 @@ def _token_allowed(path: str) -> bool:
     if path.startswith("/api/satellite/"):
         tail = path.split("?", 1)[0].rsplit("/", 1)[-1]
         return tail in ("volume", "output", "disable", "enable",
-                        "schedule", "location", "delete")
+                        "schedule", "location", "delete", "photo")
     if path == "/api/locations":
+        return True
+    if path.startswith("/files"):
         return True
     if path.startswith("/api/memory"):
         return True
