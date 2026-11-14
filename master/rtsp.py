@@ -141,14 +141,13 @@ def resolve_source(source: str, title: str = "") -> tuple[str | None, str | None
 
 def _build_ffmpeg_cmd(url: str, transport: str | None) -> list[str]:
     """ffmpeg-Grundbefehl zum MP3-Relay. rtsp-Transport-Optionen NUR bei
-    rtsp://-Quellen (http/https/HLS lehnt die Option ab — 'Option not found')."""
+    rtsp://-Quellen (http/https/HLS lehnt die Option ab — 'Option not found').
+    Wichtig: -vn (kein Video), aber KEIN -an (das wuerde das Audio killen)."""
     cmd = [FFMPEG, "-loglevel", "error"]
     if url.startswith("rtsp://") and transport:
         cmd += ["-rtsp_transport", transport]
-        if transport == "udp":
-            cmd += ["-stimeout", "10000000"]   # 10 s Connect-Timeout
     cmd += ["-i", url,
-            "-vn", "-an",
+            "-vn",
             "-c:a", "libmp3lame", "-b:a", "128k", "-ar", "44100",
             "-f", "mp3", "pipe:1"]
     return cmd
@@ -157,7 +156,9 @@ def _build_ffmpeg_cmd(url: str, transport: str | None) -> list[str]:
 def _rtsp_transports() -> list[str]:
     """Transport-Probereihenfolge. Default: TCP zuerst (stabil, NAT),
     dann UDP-Fallback — die Fritz!box-AVM-RTSP lehnt TCP mit '461 Unknown'
-    ab; RTSP_TRANSPORT erzwingt einen einzelnen Transport."""
+    ab; RTSP_TRANSPORT erzwingt einen einzelnen Transport.
+    (Ohne -stimeout: von Debian-ffmpeg 5.1 und dem alten Pi-ffmpeg nicht
+    unterstuetzt, wie es schon in der Bridge-Doku stand.)"""
     forced = os.environ.get("RTSP_TRANSPORT", "").strip().lower()
     if forced in ("tcp", "udp"):
         return [forced]
@@ -467,8 +468,6 @@ def camera_frame(req):
         cmd = [FFMPEG, "-loglevel", "error"]
         if url.startswith("rtsp://"):
             cmd += ["-rtsp_transport", tr]
-            if tr == "udp":
-                cmd += ["-stimeout", "10000000"]
         cmd += ["-i", url]
         cmd += frame_suffix
         try:
