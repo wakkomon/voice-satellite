@@ -284,6 +284,17 @@ class RuleAlarm:
 
 
 @dataclass
+class RuleTask:
+    action: str                       # set | delete | delete_all
+    recur: str = "daily"              # daily | weekly
+    hh: int | None = None
+    mm: int | None = None
+    dow: int | None = None            # 0=Montag .. 6=Sonntag (weekly)
+    prompt: str = ""
+    raw: str = ""
+
+
+@dataclass
 class RuleTimer:
     action: str                 # "set" | "stop" | "stop_all"
     seconds: int | None = None
@@ -431,6 +442,62 @@ def parse_reminder(text: str, now: time.struct_time | None = None) -> RuleRemind
         # nur Datum, keine Uhrzeit -> Rueckfrage im Executor
         pass
     return RuleReminder(text=text_part, clock=clock, day=day, raw=t)
+
+
+_TASK_RECUR_DAILY = r"\b(?:taeglich|taglich|alle tage|jeden tag|every day|daily)\b"
+_TASK_RECUR_WEEKLY = r"\b(?:woechentlich(?:e[nr]?)?|jede[nr]? woche|weekly)\b"
+_TASK_EVERY_DOW = (r"\bjeden?\s+(montag|dienstag|mittwoch|donnerstag|"
+                   r"freitag|samstag|sonntag)\b")
+_TASK_START = r"^(?:mach(?:e)?|fuehre|tu)\b|\baufgabe[n]?\b"
+_TASK_WDAY_NAMES = ("Montag", "Dienstag", "Mittwoch", "Donnerstag",
+                    "Freitag", "Samstag", "Sonntag")
+_TASK_DELETE = r"\b(?:loesch\w*|entfern\w*|streich\w*|beend\w*|stoppe?n?)\b"
+
+
+def parse_task(text: str,
+               now: time.struct_time | None = None) -> RuleTask | None:
+    """Wiederkehrende Aufgabe: "Mache taeglich um 8 Uhr X" /
+    "Fuehre woechentlich jeden Freitag um 16 Uhr X aus" /
+    "loesche die Aufgabe" / "alle Aufgaben loeschen".
+    Uhrzeit fehlt -> RuleTask mit hh=None (Executor fragt nach)."""
+    t = norm(text)
+    if not t:
+        return None
+    if re.search(r"\baufgabe[n]?\b", t) and re.search(_TASK_DELETE, t):
+        return RuleTask(action="delete_all" if re.search(r"\ballen?\b", t)
+                        else "delete", recur="", raw=t)
+    daily = re.search(_TASK_RECUR_DAILY, t)
+    weekly = re.search(_TASK_RECUR_WEEKLY, t)
+    mdow = re.search(_TASK_EVERY_DOW, t)
+    recur = "weekly" if (mdow or weekly) else None
+    if daily:
+        recur = "daily"
+    if recur is None or not re.search(_TASK_START, t):
+        return None
+    now = now or time.localtime()
+    dow = _WEEKDAYS[mdow.group(1)] if (recur == "weekly" and mdow) else \
+        (now.tm_wday if recur == "weekly" else None)
+    clock = parse_clock(t)
+    if clock is None:
+        # task-lokal: "um 12" ohne "Uhr" (im Kontext eindeutig)
+        m_um = re.search(r"\bum\s+([01]?\d|2[0-3])(?![.:]\d)\b", t)
+        if m_um:
+            clock = (int(m_um.group(1)), 0)
+            t = (t[:m_um.start()] + " " + t[m_um.end():])
+    prompt = re.sub(_TASK_RECUR_DAILY + r"|" + _TASK_RECUR_WEEKLY + r"|" +
+                    _TASK_EVERY_DOW, " ", t)
+    prompt = re.sub(r"^(?:(?:mach(?:e)?|fuehre|tu)\b[: ,]*)?"
+                    r"(?:(?:die|der|das|eine|neue|meine)[ ]+)*"
+                    r"(?:feste[ ]+)?(?:aufgabe[: ,]*)?", " ", prompt)
+    prompt = re.sub(r"\b(?:[01]?\d|2[0-3])(?:[:.]\d{1,2})?\s*uhr\b",
+                    " ", prompt)
+    prompt = _strip_when(prompt)
+    prompt = re.sub(r"\baus\b\s*$", "", prompt)
+    prompt = re.sub(r"\s+", " ", prompt).strip(" .,;:")
+    return RuleTask(action="set", recur=recur,
+                    hh=clock[0] if clock else None,
+                    mm=clock[1] if clock else None,
+                    dow=dow, prompt=prompt, raw=t)
 
 
 def _split_target_text(rest: str) -> tuple[str, str]:
@@ -581,6 +648,9 @@ class RuleCtx:
     def delete_alarm(self, clock=None, all_: bool = False) -> tuple[bool, str]: ...
     def add_timer(self, seconds: int) -> tuple[bool, str]: ...
     def stop_timer(self, all_: bool = False) -> tuple[bool, str]: ...
+    def add_task(self, prompt: str, recur: str, hh: int, mm: int,
+                 dow: int | None = None) -> tuple[bool, str]: ...
+    def delete_task(self, all_: bool = False) -> tuple[bool, str]: ...
     def add_reminder(self, text: str, clock, day) -> tuple[bool, str]: ...
 
     # Zwischengeraete-Kommunikation (NUR master-Modus)
@@ -721,6 +791,42 @@ class SatCtx(RuleCtx):
             return (True, "Timer gestoppt." if n == 1 else f"{n} Timer gestoppt.")
         return (False, "Kein laufender Timer.")
 
+    # ── Aufgabe (wiederkehrender Prompt) ─────────────────────────
+    def add_task(self, prompt: str, recur: str, hh: int, mm: int,
+                 dow: int | None = None) -> tuple[bool, str]:
+        if self.mode == "master":
+            try:
+                data = self._post(self._sched_url(), {
+                    "mac": self._cfg.SATELLITE_MAC, "kind": "task",
+                    "text": prompt, "recur": recur, "hh": hh, "mm": mm,
+                    "dow": dow})
+            except Exception as e:
+                return _master_down(str(e))
+            return self._answer(data)
+        item = self._sched.get_store().add("task", 0.0, prompt,
+                                           recur=recur, hh=hh, mm=mm, dow=dow)
+        wann = "taeglich" if item["recur"] == "daily" else \
+            "wöchentlich " + _TASK_WDAY_NAMES[
+                int(item.get("dow", 0)) % 7]
+        return (True, f"Aufgabe {wann} um {item['hh']:02d}:{item['mm']:02d} "
+                      f"angelegt.")
+
+    def delete_task(self, all_: bool = False) -> tuple[bool, str]:
+        if self.mode == "master":
+            try:
+                data = self._post(self._sched_url("/delete"), {
+                    "mac": self._cfg.SATELLITE_MAC, "kind": "task",
+                    "all": bool(all_)})
+            except Exception as e:
+                return _master_down(str(e))
+            ok, ans = self._answer(data)
+            return (ok, ans or "Aufgabe(n) geloescht.")
+        n = self._sched.get_store().remove("task", all_=all_)
+        if n:
+            return (True, "Aufgabe geloescht." if n == 1
+                    else f"{n} Aufgaben geloescht.")
+        return (False, "Keine Aufgabe gefunden.")
+
     # ── Erinnerung ───────────────────────────────────────────────
     def add_reminder(self, text: str, clock, day) -> tuple[bool, str]:
         now = time.localtime()
@@ -853,6 +959,20 @@ def try_rule_intents(text: str, ctx: RuleCtx) -> tuple[bool, str] | None:
     t = norm(text)
     if not t:
         return None
+
+    # 0. Aufgabe (vor Wecker: "Mache taeglich um 8 Uhr X" enthaelt
+    #    sonst ggf. Wecker-/Erinnerungstroem)
+    tk = parse_task(text, ctx.now())
+    if tk is not None:
+        if tk.action in ("delete", "delete_all"):
+            ok, ans = ctx.delete_task(all_=(tk.action == "delete_all"))
+            return (True, ans)
+        if tk.hh is None:
+            return (True, "Um welche Uhrzeit soll die Aufgabe laufen?")
+        if not tk.prompt:
+            return (True, "Was soll die Aufgabe tun?")
+        ok, ans = ctx.add_task(tk.prompt, tk.recur, tk.hh, tk.mm, tk.dow)
+        return (True, ans) if ok else (True, "Aufgabe ging nicht: " + ans)
 
     # 1. Wecker
     a = parse_alarm(text, ctx.now())

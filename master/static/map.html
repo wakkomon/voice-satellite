@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JayAI – Positionen</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  :root { --bg:#101418; --card:#1a2129; --dim:#5a6b7a; --acc:#4fc3f7; --txt:#dce6ee; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt);
+         font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  header { display:flex; align-items:center; gap:10px; padding:10px 16px;
+           border-bottom:1px solid #22303c; }
+  header h1 { font-size:1rem; margin:0; font-weight:600; }
+  header a { color:var(--acc); text-decoration:none; font-size:0.85rem; }
+  #map { width:100%; height:calc(100vh - 120px); min-height:320px; }
+  #list { display:flex; gap:8px; flex-wrap:wrap; padding:10px 16px; }
+  .chip { background:var(--card); border:1px solid #2a3947; border-radius:8px;
+          padding:6px 10px; font-size:0.8rem; }
+  .chip .dot { display:inline-block; width:8px; height:8px; border-radius:50%;
+               margin-right:6px; }
+  .on  { background:#2e7d32; } .off { background:#777; }
+  .muted { color:var(--dim); }
+</style>
+</head>
+<body>
+<header>
+  <a href="/">← Dashboard</a>
+  <h1>📍 Positionen</h1>
+  <span class="muted" id="hint" style="font-size:0.8rem;margin-left:auto"></span>
+</header>
+<div id="map"></div>
+<div id="list"></div>
+<script>
+const map = L.map('map', { zoomControl: true });
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+  { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(map);
+const markers = {};
+function hms(s) { s = Math.max(0, Math.floor(s));
+  const h = Math.floor(s/3600), m = Math.floor(s%3600/60);
+  return h ? h + ' h ' + m + ' min' : (m ? m + ' min' : s + ' s'); }
+function load() {
+  fetch('/api/locations', { credentials: 'same-origin' })
+    .then(r => r.ok ? r.json() : Promise.reject(r.status))
+    .then(d => render(d.items || []))
+    .catch(() => { document.getElementById('hint').textContent =
+      'nicht erreichbar (Login?)'; });
+}
+function render(items) {
+  const list = document.getElementById('list');
+  list.innerHTML = '';
+  document.getElementById('hint').textContent =
+    items.length ? 'aktualisiert ' + new Date().toLocaleTimeString('de-DE')
+                 : 'noch keine Positionen gemeldet';
+  if (!items.length) return;
+  let last = null;
+  items.forEach(it => {
+    const c = markers[it.key] || L.marker([it.lat, it.lon], { title: it.name });
+    const online = !!it.online;
+    c.setIcon(L.divIcon({ className: '',
+      html: '<div style="width:14px;height:14px;border-radius:50%;' +
+        'background:' + (online ? '#66bb6a' : '#888') + ';' +
+        'border:2px solid #fff;box-shadow:0 0 6px #000"></div>',
+      iconSize: [14, 14], iconAnchor: [7, 7] }));
+    c.bindPopup('<b>' + it.name + '</b><br>' +
+      (online ? 'online' : 'offline') + ' · ' + it.kind + '<br>' +
+      'vor ' + hms(Date.now()/1000 - it.ts) +
+      (it.accuracy ? '<br>±' + Math.round(it.accuracy) + ' m' : ''));
+    if (!c._vsAdded) { c.addTo(map); c._vsAdded = true; }
+    c.setLatLng([it.lat, it.lon]);
+    last = c;
+    const chip = document.createElement('div');
+    chip.className = 'chip';
+    chip.innerHTML = '<span class="dot ' + (online ? 'on' : 'off') +
+      '"></span><b>' + it.name + '</b> <span class="muted">' +
+      it.kind + ' · vor ' + hms(Date.now()/1000 - it.ts) + '</span>';
+    list.appendChild(chip);
+  });
+  if (items.length === 1) map.setView([items[0].lat, items[0].lon], 14);
+  else {
+    const pts = items.map(i => [i.lat, i.lon]);
+    try { map.fitBounds(pts, { padding: [40, 40], maxZoom: 15 }); }
+    catch (e) { if (last) map.setView(last.getLatLng(), 10); }
+  }
+}
+load();
+setInterval(load, 30000);
+</script>
+</body>
+</html>

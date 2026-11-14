@@ -202,6 +202,15 @@ class FakeCtx(R.RuleCtx):
         self.calls.append(("camera", name))
         return (True, f"Kamera {name} wird angezeigt.")
 
+    def add_task(self, prompt, recur, hh, mm, dow=None):
+        self.calls.append(("add_task", prompt, recur, hh, mm, dow))
+        wann = "taeglich" if recur == "daily" else "wöchentlich"
+        return (True, f"Aufgabe {wann} um {hh:02d}:{mm:02d} angelegt.")
+
+    def delete_task(self, all_=False):
+        self.calls.append(("delete_task", all_))
+        return (True, "Aufgaben geloescht." if all_ else "Aufgabe geloescht.")
+
 
 def disp(text):
     ctx = FakeCtx()
@@ -236,6 +245,37 @@ class FailOpenHab(FakeCtx):
 ctx2 = FailOpenHab()
 out2 = R.try_rule_intents("Setze Heizung auf 21 Grad", ctx2)
 ok("disp openhab Fallback (None)", out2 is None, repr(out2))
+
+# ── Aufgaben (wiederkehrende Prompts) ─────────────────────────
+tk = R.parse_task("mache täglich um 8 uhr jalousien hoch")
+ok("task daily", tk is not None and tk.action == "set" and tk.recur == "daily"
+   and tk.hh == 8 and tk.mm == 0 and tk.prompt == "jalousien hoch", repr(tk))
+tk = R.parse_task("Führe wöchentlich jeden Freitag um 16 Uhr den Müll raus aus")
+ok("task weekly+dow", tk is not None and tk.recur == "weekly" and tk.dow == 4
+   and tk.hh == 16 and tk.prompt == "muell raus", repr(tk))
+tk = R.parse_task("mach jeden montag um 12 pasta kochen")
+ok("task dow+um12", tk is not None and tk.recur == "weekly" and tk.dow == 0
+   and tk.hh == 12 and tk.mm == 0 and tk.prompt == "pasta kochen", repr(tk))
+tk = R.parse_task("neue Aufgabe täglich um 6 uhr fenster lüften")
+ok("task neue", tk is not None and tk.recur == "daily" and tk.hh == 6
+   and tk.prompt == "fenster lueften", repr(tk))
+ok("task delete", R.parse_task("lösch die Aufgabe") is not None
+   and R.parse_task("lösch die Aufgabe").action == "delete")
+ok("task delete_all", R.parse_task("alle Aufgaben löschen").action == "delete_all")
+tk = R.parse_task("mache täglich das essen vorbereiten")
+ok("task ohne Uhrzeit (Rückfrage)", tk is not None and tk.hh is None, repr(tk))
+ok("task negativ (Licht)", R.parse_task("mache das Licht an") is None)
+ok("task negativ (Wecker)", R.parse_task("stelle Wecker auf 7:15") is None)
+ok("task negativ (Erinnerung)",
+   R.parse_task("erinnere mich morgen um 7 ans Telefon") is None)
+out, ctx = disp("Mache täglich um 8 Uhr Jalousien hoch")
+ok("disp aufgabe", out is not None and ctx.calls[0][0] == "add_task"
+   and ctx.calls[0][1] == "jalousien hoch" and ctx.calls[0][2] == "daily",
+   repr((out, ctx.calls)))
+out, ctx = disp("alle Aufgaben löschen")
+ok("disp aufgabe delete_all", out is not None
+   and ctx.calls[0][0] == "delete_task" and ctx.calls[0][1] is True,
+   repr((out, ctx.calls)))
 
 # Regression: bestehende Befehle bleiben unangetastet
 for text in ["licht an", "Flur Lampe aus", "spiele Radio", "lauter",

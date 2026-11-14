@@ -603,9 +603,39 @@ def _start_mcp_server():
 
 
 def _on_scheduled_fire(item: dict) -> None:
-    """Standalone-Trigger: Wecker/Timer/Erinnerung klingeln + sprechen."""
+    """Standalone-Trigger: Wecker/Timer/Erinnerung klingeln + sprechen;
+    wiederkehrende Aufgaben laufen durch Intent-/LLM-Pipeline (router)."""
     kind = item.get("kind") or ""
     text = (item.get("text") or "").strip()
+
+    if kind == "task":
+        def _run_task():
+            p = _pipeline
+            try:
+                answer, _route, llm_ok = router.handle(text)
+                answer = (answer or "").strip()
+                log.info("Standalone-Aufgabe: %s -> %s", text[:50],
+                         answer[:80])
+                if p and answer:
+                    if display:
+                        display.show("Aufgabe", answer[:60])
+                    p.broadcast(answer, wait=False, src="Aufgabe")
+            except Exception as e:
+                log.error("Standalone-Aufgabe fehlgeschlagen: %s", e)
+            finally:
+                if p:
+                    try:
+                        p.web_audio_busy = False
+                    except Exception:
+                        pass
+        try:
+            if _pipeline:
+                _pipeline.web_audio_busy = True
+        except Exception:
+            pass
+        threading.Thread(target=_run_task, daemon=True,
+                         name="task-fire").start()
+        return
 
     def _run():
         p = _pipeline

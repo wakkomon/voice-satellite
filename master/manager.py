@@ -79,6 +79,11 @@ class SatManager:
         # sat_disabled.json im Config-Volume, ueberlebt Rebuilds/Recreates.
         # Deaktivierte Satelliten (Pi UND App) senden den Master NICHT mehr
         # an (Heartbeat/Chat/DM = 403) und bekommen keine Pushes mehr.
+        # Positionsuebermittlung (Android-App, optional — nur wenn in der
+        # App eingestellt): locations.json im Config-Volume, letzte
+        # gemeldete Position pro Registry-Key (Karten-Seite der WebUI).
+        self._locations_path = os.path.join(cfg_dir, "locations.json")
+        self._locations: dict[str, dict] = self._load_locations()
         self._disabled_path = os.path.join(cfg_dir, "sat_disabled.json")
         self._disabled: set[str] = self._load_disabled()
         # Persistente Identitaets-Historie (identity.json im Config-Volume):
@@ -229,6 +234,62 @@ class SatManager:
             os.replace(tmp, self._names_path)
         except OSError as e:
             log.warning("Namen-Store nicht schreibbar: %s", e)
+
+    # ── Positionen (persistent, optional) ────────────────────────────
+
+    def _load_locations(self) -> dict[str, dict]:
+        try:
+            with open(self._locations_path, encoding="utf-8") as f:
+                data = json.load(f)
+            out = {}
+            for k, v in (data.items() if isinstance(data, dict) else []):
+                if (isinstance(v, dict)
+                        and isinstance(v.get("lat"), (int, float))
+                        and isinstance(v.get("lon"), (int, float))):
+                    out[str(k).lower()] = v
+            return out
+        except (OSError, ValueError):
+            return {}
+
+    def _save_locations(self) -> None:
+        try:
+            os.makedirs(os.path.dirname(self._locations_path), exist_ok=True)
+            tmp = self._locations_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self._locations, f, ensure_ascii=False, indent=1)
+            os.replace(tmp, self._locations_path)
+        except OSError as e:
+            log.warning("Positionsspeicher nicht schreibbar: %s", e)
+
+    def record_location(self, key: str, lat: float, lon: float,
+                        accuracy: float = 0.0, ts: float | None = None) -> None:
+        key = (key or "").lower()
+        if not key:
+            return
+        with self._lock:
+            self._locations[key] = {
+                "lat": float(lat), "lon": float(lon),
+                "accuracy": max(0.0, float(accuracy or 0.0)),
+                "ts": float(ts) if ts else time.time(),
+                "updated": time.time()}
+            self._save_locations()
+
+    def locations(self) -> list[dict]:
+        """Letzte Position aller Geraete, neueste zuerst (fur map.html)."""
+        with self._lock:
+            snap = dict(self._locations)
+        out = []
+        for k, v in snap.items():
+            sat = self.satellites.get(k)
+            out.append({"key": k,
+                        "name": self.display_name(k) or k,
+                        "kind": self.sat_kind(k),
+                        "online": bool(sat and sat.status == "online"),
+                        "lat": v["lat"], "lon": v["lon"],
+                        "accuracy": v.get("accuracy", 0.0),
+                        "ts": v.get("ts", 0),
+                        "updated": v.get("updated", 0)})
+        return sorted(out, key=lambda i: -i["ts"])
 
     # ── Identitaets-Historie + Key-Aliasse (persistent) ──────────────
 

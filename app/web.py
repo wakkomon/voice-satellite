@@ -476,7 +476,8 @@ class Handler(BaseHTTPRequestHandler):
             # Zeitgesteuerte Ereignisse vom Master (master-Modus):
             # Wecker/Timer/Erinnerung/Signalton -> Ton + Display + (TTS).
             kind = (data.get("kind") or "").strip().lower()
-            if kind not in ("alarm", "timer", "reminder", "signal"):
+            if kind not in ("alarm", "timer", "reminder", "signal",
+                           "task"):
                 return self._send(400, {"error": f"unknown kind {kind!r}"})
             text = str(data.get("text") or "").strip()
             src = str(data.get("src") or "").strip()[:64]
@@ -517,7 +518,7 @@ class Handler(BaseHTTPRequestHandler):
             if p:
                 p.drain_mic()
             heading = {"alarm": "Wecker", "timer": "Timer",
-                       "reminder": "Erinnerung"}[kind]
+                       "reminder": "Erinnerung", "task": "Aufgabe"}[kind]
             display.show(heading, (text or "")[:60])
             if p is not None and text:
                 p.broadcast(text, wait=False, src=src or "Zeitplan")

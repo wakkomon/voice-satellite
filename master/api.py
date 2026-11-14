@@ -15,6 +15,7 @@ Der Satellite zieht von GET /api/music den fertigen Index.
 from __future__ import annotations
 
 import asyncio
+import base64
 import gzip
 import io
 import json
@@ -745,7 +746,11 @@ async def _sat_dm(req: Request) -> JSONResponse:
 
 # ── Regelfunktionen: Scheduling + Geräte-Steuerung (Master-Modus) ──
 
-_SCHEDULE_KINDS = ("alarm", "timer", "reminder")
+_SCHEDULE_KINDS = ("alarm", "timer", "reminder", "task")
+_SCHEDULE_LABEL = {"alarm": "Wecker", "timer": "Timer",
+                   "reminder": "Erinnerung", "task": "Aufgabe"}
+_WEEKDAYS = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag",
+             "Samstag", "Sonntag"]
 
 
 async def _sat_schedule(req: Request) -> JSONResponse:
@@ -766,15 +771,43 @@ async def _sat_schedule(req: Request) -> JSONResponse:
     kind = str((body.get("kind") or "")).strip().lower()
     if kind not in _SCHEDULE_KINDS:
         return JSONResponse(
-            {"ok": False, "error": "kind muss alarm|timer|reminder sein"},
+            {"ok": False, "error": "kind muss alarm|timer|reminder|task sein"},
             status_code=400)
+    text = str((body.get("text") or "")).strip()[:500 if kind == "task" else 200]
+    if kind == "task":
+        recur = str((body.get("recur") or "daily")).strip().lower()
+        if recur not in ("daily", "weekly"):
+            recur = "daily"
+        try:
+            hh = max(0, min(23, int(body.get("hh") or 0)))
+            mm = max(0, min(59, int(body.get("mm") or 0)))
+        except (TypeError, ValueError):
+            return JSONResponse({"ok": False,
+                                 "error": "hh/mm fehlen (Stunden/Minuten)"},
+                                status_code=400)
+        dow = body.get("dow")
+        try:
+            dow = int(dow) if dow is not None else None
+        except (TypeError, ValueError):
+            dow = None
+        if not text:
+            return JSONResponse({"ok": False,
+                                 "error": "Aufgabe braucht einen Prompt"},
+                                status_code=400)
+        item = schedule_store.add(mac, "task", 0.0, text,
+                                  recur=recur, hh=hh, mm=mm, dow=dow)
+        wann = "taeglich" if recur == "daily" else \
+            "woechentlich " + _WEEKDAYS[item.get("dow", 0)]
+        return JSONResponse(
+            {"ok": True, "id": item["id"], "fire_at": item["fire_at"],
+             "answer": f"Aufgabe {wann} um "
+                       f"{item['hh']:02d}:{item['mm']:02d} angelegt."})
     try:
         fire_at = float(body.get("fire_at"))
     except (TypeError, ValueError):
         return JSONResponse(
             {"ok": False, "error": "fire_at fehlt (Epoch-Seconds)"},
             status_code=400)
-    text = str((body.get("text") or "")).strip()[:200]
     item = schedule_store.add(mac, kind, fire_at, text)
     answer = {"alarm": f"Wecker {text} gestellt." if text else "Wecker gestellt.",
               "timer": f"Timer läuft: {text}." if text else "Timer läuft.",
@@ -793,6 +826,60 @@ async def _sat_schedule_get(req: Request) -> JSONResponse:
                          "items": schedule_store.list(mac, kind or None)})
 
 
+async def _sat_schedule_update(req: Request) -> JSONResponse:
+    """PUT /api/satellite/{mac}/schedule {id, text?, recur?, hh?, mm?,
+    dow?, fire_at?} — Bearbeiten ueber die Einstellungsseite der App."""
+    mac = req.path_params["mac"].lower()
+    if not _sat_auth_ok(req, mac):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if manager.is_disabled_for(mac):
+        return JSONResponse({"error": "deaktiviert"}, status_code=403)
+    try:
+        body = await req.json()
+    except (json.JSONDecodeError, ValueError):
+        return JSONResponse({"ok": False, "error": "ungueltiges JSON"},
+                            status_code=400)
+    item_id = str(body.get("id") or "").strip()
+    if not re.fullmatch(r"[a-f0-9]{12}", item_id):
+        return JSONResponse({"ok": False, "error": "id fehlt/ungueltig"},
+                            status_code=400)
+
+    def _opt_int(key):
+        v = body.get(key)
+        if v is None or v == "":
+            return None
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return -1
+    hh, mm, dow = _opt_int("hh"), _opt_int("mm"), _opt_int("dow")
+    if hh is not None and not 0 <= hh <= 23:
+        return JSONResponse({"ok": False, "error": "hh ausser Bereich"},
+                            status_code=400)
+    if mm is not None and not 0 <= mm <= 59:
+        return JSONResponse({"ok": False, "error": "mm ausser Bereich"},
+                            status_code=400)
+    if dow is not None and not 0 <= dow <= 6:
+        return JSONResponse({"ok": False, "error": "dow ausser Bereich"},
+                            status_code=400)
+    try:
+        fire_at = float(body["fire_at"]) if body.get("fire_at") is not None \
+            else None
+    except (TypeError, ValueError):
+        return JSONResponse({"ok": False, "error": "fire_at ungueltig"},
+                            status_code=400)
+    item = schedule_store.update(
+        mac, item_id, text=body.get("text"),
+        recur=str(body.get("recur") or "").strip().lower() or None,
+        hh=hh, mm=mm, dow=dow, fire_at=fire_at)
+    if item is None:
+        return JSONResponse({"ok": False, "error": "Eintrag nicht gefunden",
+                             "answer": "Eintrag nicht gefunden."},
+                            status_code=404)
+    return JSONResponse({"ok": True, "item": item,
+                         "answer": f"{_SCHEDULE_LABEL[item['kind']]} aktualisiert."})
+
+
 async def _sat_schedule_delete(req: Request) -> JSONResponse:
     """POST /api/satellite/{mac}/schedule/delete {kind, all?, by_time?}"""
     mac = req.path_params["mac"].lower()
@@ -807,8 +894,18 @@ async def _sat_schedule_delete(req: Request) -> JSONResponse:
     kind = str((body.get("kind") or "")).strip().lower()
     if kind not in _SCHEDULE_KINDS:
         return JSONResponse(
-            {"ok": False, "error": "kind muss alarm|timer|reminder sein"},
+            {"ok": False, "error": "kind muss alarm|timer|reminder|task sein"},
             status_code=400)
+    by_id = str(body.get("id") or "").strip() or None
+    if by_id:
+        n = schedule_store.delete(mac, kind, by_id=by_id)
+        if n:
+            return JSONResponse({"ok": True, "removed": 1,
+                                 "answer": f"{_SCHEDULE_LABEL[kind]} geloescht."})
+        return JSONResponse({"ok": False, "removed": 0,
+                             "error": "Eintrag nicht gefunden",
+                             "answer": f"Kein {_SCHEDULE_LABEL[kind]} gefunden."},
+                            status_code=404)
     by_time = body.get("by_time")
     try:
         by_time = float(by_time) if by_time is not None else None
@@ -816,7 +913,7 @@ async def _sat_schedule_delete(req: Request) -> JSONResponse:
         by_time = None
     n = schedule_store.delete(mac, kind, by_time=by_time,
                               all_=bool(body.get("all")))
-    name = {"alarm": "Wecker", "timer": "Timer", "reminder": "Erinnerung"}[kind]
+    name = _SCHEDULE_LABEL[kind]
     if n:
         return JSONResponse({"ok": True, "removed": n,
                              "answer": f"{n} {name} gelöscht."})
@@ -824,6 +921,50 @@ async def _sat_schedule_delete(req: Request) -> JSONResponse:
                          "error": f"keine {name} gefunden",
                          "answer": f"Keine {name} gefunden."},
                         status_code=404)
+
+
+async def _sat_location(req: Request) -> JSONResponse:
+    """POST /api/satellite/{mac}/location {lat, lon, accuracy?, ts?}.
+
+    Positionsuebermittlung der Android-App (nur wenn in der App
+    eingestellt). Letzte Position je Geraet bleibt persistent."""
+    mac = req.path_params["mac"].lower()
+    if not _sat_auth_ok(req, mac):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        body = await req.json()
+    except (json.JSONDecodeError, ValueError):
+        return JSONResponse({"ok": False, "error": "ungueltiges JSON"},
+                            status_code=400)
+    try:
+        lat, lon = float(body.get("lat")), float(body.get("lon"))
+    except (TypeError, ValueError):
+        return JSONResponse({"ok": False, "error": "lat/lon fehlen"},
+                            status_code=400)
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        return JSONResponse({"ok": False, "error": "lat/lon ausser Bereich"},
+                            status_code=400)
+    try:
+        acc = float(body.get("accuracy") or 0)
+    except (TypeError, ValueError):
+        acc = 0.0
+    ts = body.get("ts")
+    try:
+        ts = float(ts) if ts is not None else time.time()
+    except (TypeError, ValueError):
+        ts = time.time()
+    manager.record_location(mac, lat, lon, acc, ts)
+    return JSONResponse({"ok": True})
+
+
+async def _api_locations(req: Request) -> JSONResponse:
+    """GET /api/locations — letzte Positionen aller Geraete (Karte)."""
+    return JSONResponse({"ok": True, "items": manager.locations()})
+
+
+async def _map_ui(req: Request) -> Response:
+    """Positionskarte (map.html) – eigenes Tab in der Master-WebUI."""
+    return _chat_ui_file("map.html")
 
 
 async def _sat_call(req: Request) -> JSONResponse:
@@ -1571,6 +1712,48 @@ schedule_store = schedule_mod.MasterSchedule(
     manager,
     os.path.join(_satcfg_mod.CONFIG_DIR, "schedule.json"))
 schedule_mod.set_store(schedule_store)
+
+# ── Aufgaben (kind=task): Prompt zur Zeit am LLM ausfuehren ──────
+# Der Scheduler-Thread ruft task_runner(); der wirft den Chat-Kern in den
+# Event-Loop zurueck (LLM+Gedaechtnis+Intent-Bridge wie im Web-Chat) und
+# liefert Antwort + Master-TTS zurueck. _app_loop wird per lifespan gesetzt.
+_app_loop: "asyncio.AbstractEventLoop | None" = None
+
+
+async def _task_execute(item: dict) -> dict:
+    prompt = str(item.get("text") or "").strip()
+    mac = (item.get("mac") or "").lower()
+    if not prompt:
+        return {}
+    log.info("Aufgabe %s: Prompt '%s'", item.get("id", "?"), prompt[:80])
+    core = await _chat_send_core(prompt, mac, False, "browser", "Aufgabe")
+    answer = str(core.get("answer") or "").strip()
+    audio = None
+    if answer and not answer.startswith("LLM") \
+            and answer != "(leere Antwort)":
+        try:
+            cfg = config_store.get_effective(mac or None)
+            twav = await _synth_tts(cfg, answer[:500])
+            if twav:
+                audio = base64.b64encode(twav).decode()
+        except Exception as e:
+            log.warning("Task-TTS: %s", type(e).__name__)
+    return {"answer": answer, "audio_b64": audio}
+
+
+def _task_runner(item: dict) -> dict:
+    if _app_loop is None:
+        log.warning("Aufgabe %s: Event-Loop nicht bereit", item.get("id"))
+        return {}
+    fut = asyncio.run_coroutine_threadsafe(_task_execute(item), _app_loop)
+    try:
+        return fut.result(timeout=300)
+    except Exception as e:
+        log.warning("Aufgabe %s fehlgeschlagen: %s", item.get("id"), e)
+        return {}
+
+
+schedule_store.task_runner = _task_runner
 # Erster Start: leeren User-Store aus ENV bevoelkern (WEB_ADMIN_USER/PASSWORD)
 try:
     webauth.seed_admin_from_env()
@@ -2052,8 +2235,13 @@ routes = [
     Route("/api/satellite/{mac}/call", _sat_call, methods=["POST"]),
     Route("/api/satellite/{mac}/schedule", _sat_schedule, methods=["POST"]),
     Route("/api/satellite/{mac}/schedule", _sat_schedule_get),
+    Route("/api/satellite/{mac}/schedule", _sat_schedule_update,
+          methods=["PUT"]),
     Route("/api/satellite/{mac}/schedule/delete", _sat_schedule_delete,
           methods=["POST"]),
+    Route("/api/satellite/{mac}/location", _sat_location, methods=["POST"]),
+    Route("/api/locations", _api_locations),
+    Route("/map.html", _map_ui),
     Route("/api/chat/messages", _chat_messages),
     Route("/api/chat/recs", _chat_recs),
     Route("/api/chat/rec/{key}", _chat_rec),
@@ -2104,7 +2292,17 @@ routes = [
     Route("/mcp/{mac}", mcp_gateway.mcp_call, methods=["POST"]),
 ]
 
-app = Starlette(routes=routes)
+from contextlib import asynccontextmanager as _asyncctx
+
+
+@_asyncctx
+async def _capture_loop(_app):
+    global _app_loop
+    _app_loop = asyncio.get_running_loop()
+    yield
+
+
+app = Starlette(routes=routes, lifespan=_capture_loop)
 
 
 # ── WebUI-Zugriff: Benutzerverwaltung (Login/Session/Rollen) ───
@@ -2130,7 +2328,9 @@ def _gate_public(path: str) -> bool:
     if path in ("/api/music", "/api/music/search"):
         return True
     if path.startswith("/api/satellite/") and \
-            path.endswith(("/heartbeat", "/chat", "/dm")):
+            path.endswith(("/heartbeat", "/chat", "/dm", "/dm-voice",
+                           "/call", "/schedule", "/schedule/delete",
+                           "/location")):
         return True
     if path == "/api/config/apply":
         return True

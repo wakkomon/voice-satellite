@@ -71,10 +71,22 @@ class Store:
             log.error("Schedule-Store nicht schreibbar: %s", e)
 
     # ── Zugriff ─────────────────────────────────────────────────
-    def add(self, kind: str, fire_at: float, text: str = "") -> dict:
+    def add(self, kind: str, fire_at: float, text: str = "",
+            recur: str | None = None, hh: int | None = None,
+            mm: int | None = None, dow: int | None = None) -> dict:
         item = {"id": uuid.uuid4().hex[:12], "kind": kind,
-                "fire_at": float(fire_at), "text": str(text or "")[:200],
+                "fire_at": float(fire_at),
+                "text": str(text or "")[:500 if kind == "task" else 200],
                 "created": time.time()}
+        if kind == "task":
+            item["recur"] = recur if recur in ("daily", "weekly") else "daily"
+            item["hh"] = max(0, min(23, int(hh or 0)))
+            item["mm"] = max(0, min(59, int(mm or 0)))
+            if item["recur"] == "weekly":
+                item["dow"] = (int(dow) if isinstance(dow, int)
+                               and 0 <= dow <= 6 else time.localtime().tm_wday)
+            item["fire_at"] = next_occurrence(item["recur"], item["hh"],
+                                              item["mm"], item.get("dow"))
         with _store_lock:
             self.items.append(item)
             self.save()
@@ -133,6 +145,27 @@ def get_store() -> Store:
     return _store
 
 
+def next_occurrence(recur: str, hh: int, mm: int, dow: int | None = None,
+                    now: float | None = None) -> float:
+    """Naechster Termin einer wiederkehrenden Aufgabe (Paritaet Master).
+    dow: 0=Montag .. 6=Sonntag (identisch tm_wday)."""
+    now = time.time() if now is None else float(now)
+    hh = max(0, min(23, int(hh or 0)))
+    mm = max(0, min(59, int(mm or 0)))
+    lt = time.localtime(now)
+    delta = 0
+    if recur == "weekly":
+        d = lt.tm_wday if dow is None else int(dow) % 7
+        delta = (d - lt.tm_wday) % 7
+    cand = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday + delta,
+                        hh, mm, 0, -1, -1, -1))
+    if cand <= now + 1:
+        step = 7 if recur == "weekly" else 1
+        cand = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday + delta + step,
+                            hh, mm, 0, -1, -1, -1))
+    return cand
+
+
 class Scheduler:
     """1-sec-Ticker: faellige Eintraege feuern via on_fire(item)."""
 
@@ -165,6 +198,15 @@ class Scheduler:
         except Exception as e:
             log.error("Schedule-Fire %s fehlgeschlagen: %s",
                       item.get("kind"), e)
+        if item.get("recur"):
+            # Wiederkehrende Aufgabe: naechsten Termin einplanen.
+            try:
+                get_store().add(item.get("kind") or "task", 0.0,
+                                item.get("text") or "",
+                                recur=item.get("recur"), hh=item.get("hh"),
+                                mm=item.get("mm"), dow=item.get("dow"))
+            except Exception as e:
+                log.error("Task-Reschedule fehlgeschlagen: %s", e)
 
     def stop(self) -> None:
         self._stop.set()

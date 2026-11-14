@@ -164,6 +164,59 @@ ok("master delete by kind+mac",
 ok("master list after delete",
    all(i["kind"] != "reminder" for i in ms.list("aa:bb:cc:00:00:02")))
 
+# ── Aufgaben (task, wiederkehrend) ─────────────────────────────
+# standalone: next_occurrence + Reschedule nach Fire
+_n = time.time()
+_cand = sched.next_occurrence("daily", 3, 0, now=_n)
+ok("task next_occurrence daily", _cand > _n and
+   time.localtime(_cand).tm_hour == 3 and
+   0 < _cand - _n <= 86400 + 7200, str(_cand))
+_wd = time.localtime(_cand).tm_wday
+_cw = sched.next_occurrence("weekly", 9, 0, dow=(_wd + 3) % 7, now=_n)
+ok("task next_occurrence weekly",
+   time.localtime(_cw).tm_wday == (_wd + 3) % 7 and _cw > _n and
+   _cw - _cand < 7 * 86400 + 7200, str(_cw))
+ti = st.add("task", 0.0, "boote", recur="weekly", hh=4, mm=30, dow=1)
+ok("task standalone add", ti["fire_at"] > _n and ti["recur"] == "weekly"
+   and time.localtime(ti["fire_at"]).tm_min == 30)
+st.remove("task", all_=True)
+# Scheduler-Reschedule: faellige Aufgabe wird neu eingeplant, nicht geloescht
+ti2 = st.add("task", 0.0, "resched", recur="daily", hh=0, mm=1)
+st.items = [i for i in st.items if i["id"] != ti2["id"]]
+st.add("task", time.time() - 1, "resched", recur="daily", hh=0, mm=1)
+time.sleep(1.6)
+_res = [i for i in st.list() if i["kind"] == "task"]
+ok("task standalone reschedule",
+   len(_res) == 1 and _res[0]["fire_at"] > time.time(), repr(_res))
+st.remove("task", all_=True)
+
+# master: task-Ablauf mit task_runner (Fake-LLM) -> Queue + Reschedule
+mgr.queued.clear()
+ms.task_runner = lambda it: {"answer": "Fertig: Boiler an", "audio_b64": None}
+mi = ms.add("aa:bb:cc:00:00:02", "task", 0.0, "Boiler an",
+            recur="daily", hh=0, mm=5)
+ok("task master add", mi["fire_at"] > time.time() and mi["recur"] == "daily")
+mi["fire_at"] = time.time() - 1
+ms._deliver(mi)
+_q = [q for q in mgr.queued if q[2] == "task"]
+ok("task master deliver answer", len(_q) == 1 and _q[0][1] == "Fertig: Boiler an",
+   repr(mgr.queued))
+_ok_items = [i for i in ms.list() if i["kind"] == "task"]
+ok("task master reschedule", len(_ok_items) == 1
+   and _ok_items[0]["fire_at"] > time.time(), repr(_ok_items))
+
+# update (Einstellungen-Seite): Text+Zeit ändern, naechster Termin neu
+_up = _ok_items[0]
+r_up = ms.update("aa:bb:cc:00:00:02", _up["id"], text="Neuer Prompt",
+                 recur="weekly", hh=6, mm=45, dow=2)
+ok("task update", r_up is not None and r_up["text"] == "Neuer Prompt"
+   and r_up["recur"] == "weekly"
+   and time.localtime(r_up["fire_at"]).tm_min == 45, repr(r_up))
+# delete by id
+ok("task delete by id", ms.delete("aa:bb:cc:00:00:02", "task",
+                                  by_id=_up["id"]) == 1
+   and not [i for i in ms.list() if i["kind"] == "task"])
+
 print()
 if fails:
     print(f"{len(fails)} FEHLGESCHLAGEN:")
