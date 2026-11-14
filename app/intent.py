@@ -702,6 +702,34 @@ def try_show_camera(text: str) -> tuple[bool, str | None]:
     return True, f"Kamera '{name}' nicht gefunden"
 
 
+def try_show_camera_config(name: str) -> tuple[bool, str | None]:
+    """Kamera aus der CAMERAS-Config (Name=Snapshot-URL): Einzelbild holen
+    und auf dem Display anzeigen. (False, None) wenn der Name nicht in
+    CAMERAS steht (aufrufender Fallthrough: M3U-/Bridge-Pfad)."""
+    import urllib.request as _urllib
+    from . import config as _cfg
+    cams = _cfg.parse_cameras()
+    key = next((k for k in cams if k.lower() == (name or "").lower()), None)
+    if key is None:
+        return False, None
+    url = cams[key]
+    log.info("intent: Kamera aus Config '%s' -> %s", key, url)
+    try:
+        req = _urllib.Request(url, headers={"User-Agent": "voice-satellite/1.0"})
+        with _urllib.urlopen(req, timeout=15) as resp:
+            raw = resp.read()
+    except Exception as e:
+        return True, f"Kamera '{key}' nicht erreichbar: {e}"
+    if not raw or len(raw) < 200:
+        return True, f"Kamera '{key}': Antwort zu kurz ({len(raw)} B)"
+    shown = display.show_image(key, raw)
+    if shown:
+        return True, f"Kamera {key} wird angezeigt"
+    # Verhalten ohne Display: saubere Bestätigung statt Stille.
+    return True, (f"Kamera {key}: kein Display aktiv "
+                  f"(Snapshot geladen, {len(raw)} B)")
+
+
 def _camera_snapshot_and_show(camera_name: str, rtsp_url: str) -> str:
     """Kamera-Snapshot via Pi-Bridge holen und auf Display anzeigen."""
     import json as _json

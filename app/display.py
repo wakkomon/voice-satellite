@@ -337,6 +337,60 @@ class Display:
         # Kurze Bestätigung als Text-Overlay
         self.show("Kamera", f"{camera_name}: Live")
 
+    def show_image(self, name: str, img_bytes: bytes) -> bool:
+        """Arbiträres JPEG/PNG-Bild (z. B. Kamera-Snapshot) in den
+        Framebuffer bringen. True, wenn geblittet, sonst False
+        (kein Display aktiv). Nie blockierend, nie werfend."""
+        if self._mm is None or self._stop.is_set() or self._buf is None:
+            return False
+        import PIL.Image as _Image
+        from io import BytesIO
+        try:
+            img = _Image.open(BytesIO(img_bytes)).convert("RGB")
+            target_ratio = self._w / self._h
+            sw, sh = img.size
+            if sw / sh > target_ratio:
+                nw = int(sh * target_ratio)
+                x0 = (sw - nw) // 2
+                img = img.crop((x0, 0, x0 + nw, sh))
+            else:
+                nh = int(sw / target_ratio)
+                y0 = (sh - nh) // 2
+                img = img.crop((0, y0, sw, y0 + nh))
+            img = img.resize((self._w, self._h), _Image.Resampling.LANCZOS)
+        except Exception as e:
+            log.warning("show_image: Decode-Fehler für %s: %s", name, e)
+            self.show("Kamera", "Bild konnte nicht geladen werden")
+            return False
+        # RGB565 (Little-Endian, wie _load_weather)
+        expected = self._w * self._h * 2
+        try:
+            raw = img.convert("RGB565").tobytes()
+        except (ValueError, AttributeError):
+            px = list(img.getdata())
+            out = bytearray(expected)
+            i = 0
+            for (r, g, b) in px:
+                hi = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
+                out[i] = hi & 0xFF
+                out[i + 1] = hi >> 8
+                i += 2
+            raw = bytes(out)
+        if len(raw) != expected:
+            log.warning("show_image: %s liefert %d B (erwartet %d)",
+                        name, len(raw), expected)
+            return False
+        with self._lock:
+            try:
+                self._buf[:] = raw
+                self._mm.seek(0)
+                self._mm.write(raw)
+            except (ValueError, OSError) as e:
+                log.error("show_image: Blit-Fehler: %s", e)
+                return False
+        self._live = True
+        return True
+
     # ── Snapshot für die Web-UI ───────────────────────────────
     def snapshot_png(self) -> bytes | None:
         """Aktueller Framebuffer (was grade auf dem Display steht) als PNG.
@@ -724,6 +778,13 @@ def show_camera(camera_name: str) -> None:
     """Modul-Fassade: Kamera-Snapshot vom Pi holen und auf Display blitten."""
     if _instance is not None:
         _instance.show_camera(camera_name)
+
+
+def show_image(name: str, img_bytes: bytes) -> bool:
+    """Modul-Fassade: beliebiges Bild (Snapshot) auf dem Display zeigen."""
+    if _instance is not None:
+        return _instance.show_image(name, img_bytes)
+    return False
 
 
 def show_thinking(heading: str = "Denke", body: str = "noch nach …") -> None:

@@ -100,8 +100,14 @@ def _match_device(text):
     return best  # (label, item) oder None
 
 
+_UNITS = (r"prozent|%|grad|°|°c|celsius|watt|volt|ampere|kelvin|lux|bar|"
+          r"psi|kmh|mph|hertz|ph|ppm|kilowatt|wattstunde|kilowattstunde|drehzahl")
+
+
 def _value_for(text):
-    """ON/OFF/Prozent/Grad aus dem Satz ziehen (wie legacy openhab_switch)."""
+    """ON/OFF/Prozent/Grad/Watt/... aus dem Satz ziehen (wie legacy
+    openhab_switch). Anhängige Einheiten (Grad, °C, Prozent, Watt, ...)
+    werden IGNORIERT — der offene Wert geht an openHAB."""
     t = _normalize(text)
     for w in DEFAULT_SYNONYMS["off"]:
         if re.search(rf"\b{w}\b", t):
@@ -112,9 +118,9 @@ def _value_for(text):
     m = re.search(r"(\d+)\s*(?:prozent|%)", t)
     if m:
         return m.group(1)
-    m = re.search(r"(\d+)\s*(?:grad|°)", t)
+    m = re.search(r"(\d+(?:[.,]\d+)?)\s*(?:" + _UNITS + r")", t)
     if m:
-        return m.group(1)
+        return m.group(1).replace(",", ".")
     return None
 
 
@@ -399,6 +405,19 @@ def try_intents(text):
     vol = try_volume(text)
     if vol is not None:
         return vol
+
+    # Regelbasierte Funktionen (ohne LLM): Wecker, Timer, Erinnerung,
+    # Nachricht/Sprachnachricht/Signalton (master), openHAB-Wert mit
+    # Einheit, Kamera. Deterministischer Parser (app/ruleintents.py) —
+    # liefert None, wenn der Satz zu keinem Regel-Intent passt.
+    try:
+        from . import ruleintents
+        r = ruleintents.try_rule_intents(text, ruleintents.SatCtx())
+        if r is not None:
+            _handled, resp = r
+            return resp
+    except Exception as e:
+        log.error("ruleintents-Fehler: %s", e)
 
     oh = try_openhab(text)
     if oh is not None:

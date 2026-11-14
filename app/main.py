@@ -27,6 +27,10 @@ from . import (audio, chatlog, config, display, duck, memory, playback, router, 
 
 log = logging.getLogger("satellite")
 
+# Referenz auf die aktive Pipeline (ausserhalb der Sprachschleife, z. B.
+# fuer Schedule-Trigger oder Web-Aktionen, die p.needigen).
+_pipeline = None
+
 # Kurze Abschluesse: danach ist das Gespräech zu – kein Follow-up-
 # Listening, direkt zurück zum Wake-Word.
 _ACK_WORDS = {"danke", "danke dir", "danke schön", "danke schoen",
@@ -598,6 +602,43 @@ def _start_mcp_server():
         log.warning("MCP-Server-Start fehlgeschlagen: %s", e)
 
 
+def _on_scheduled_fire(item: dict) -> None:
+    """Standalone-Trigger: Wecker/Timer/Erinnerung klingeln + sprechen."""
+    kind = item.get("kind") or ""
+    text = (item.get("text") or "").strip()
+
+    def _run():
+        p = _pipeline
+        try:
+            tone = "alarm" if kind in ("alarm", "timer") else "wake"
+            heading = {"alarm": "Wecker", "timer": "Timer",
+                       "reminder": "Erinnerung"}.get(kind, "Zeitplan")
+            # Klingelton (Gerät halten wie Web-Ton)
+            if p:
+                p.web_audio_busy = True
+            playback.player.pause()
+            try:
+                tones.play(tone, blocking=True)
+            finally:
+                playback.player.resume()
+            if p:
+                p.drain_mic()
+            if display and text:
+                display.show(heading, text[:60])
+            if p is not None and text:
+                p.broadcast(text, wait=False, src="Zeitplan")
+        except Exception as e:
+            log.error("schedule fire (%s) fehlgeschlagen: %s", kind, e)
+            if p:
+                try:
+                    p.web_audio_busy = False
+                except Exception:
+                    pass
+
+    threading.Thread(target=_run, daemon=True,
+                     name="schedule-fire").start()
+
+
 def main():
     _setup_logging()
     os.makedirs(os.path.dirname(config.MEMORY_DB) or ".", exist_ok=True)
@@ -607,6 +648,8 @@ def main():
     # (Proxy-URLs, Token …) statt mit leeren Defaults.
     config.load_local_config()
     p = Pipeline()
+    global _pipeline
+    _pipeline = p
     web.start(p)                    # Debug-/Health-HTTP im Hintergrundthread
     _start_mcp_server()              # MCP-Remote-Steuerung
     # Config-Pull vom Master (einmalig beim Startup)
@@ -628,6 +671,11 @@ def main():
         from . import heartbeat as _hb
         p.on_event = _hb.notify_events   # jeder Live-Log-Eintrag weckt den Heartbeat
         _hb.start_heartbeat_thread(p)
+    else:
+        # Standalone-Modus: Zeit-Instanzen (Wecker/Timer/Erinnerung) leben
+        # LOKAL und feuern auf diesem Geraet (Ton + Display + TTS).
+        from . import schedule as _sched
+        _sched.start_scheduler(_on_scheduled_fire)
     router.warm_async()             # LLM-Modell im Hintergrund vorwärmen
     # Medien-Index (2.0alpha): Der Master-Container (dev) ist die einzige
     # Index-Quelle. Der Satellite zieht den fertigen Index per HTTP und

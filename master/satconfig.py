@@ -59,6 +59,8 @@ EDITABLE_KEYS = (
     "WAKE_WORD", "WAKE_SENS", "VAD_MODE", "VAD_THRESHOLD", "SILENCE_SEC",
     "LOG_LEVEL", "MASTER_POLL_SEC", "LLM_SYSTEM_PROMPT",
     "INTENTS",
+    # Kamerakonfig "Name=Snapshot-URL[;...]" (Pi: ENV, App: Config-Pull).
+    "CAMERAS",
 )
 
 # Secrets: nur global, nie pro Satellite; Proxy injiziert sie in Requests.

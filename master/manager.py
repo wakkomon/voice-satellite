@@ -99,13 +99,18 @@ class SatManager:
 
     def queue_for(self, key: str, text: str, speak: bool = True,
                   src: str = "", audio_b64: str = "",
-                  image: str = "", ttl: int = 0) -> None:
+                  image: str = "", ttl: int = 0, kind: str = "",
+                  tone_seconds: int = 0) -> None:
         """Nachricht für ein Pull-Gerät vormerken (wird per Heartbeat abgeholt).
 
         src (optional): Name des Absenders. Bei Geräte-zu-Gerät-Direktnachrichten
         zeigt das Zielgerät die Quelle damit im Chat an.
         image (optional): Bild-URL, die das Gerät für ttl Sekunden (Default 60)
-        anzeigen soll (Bild-Push); text darf leer sein (reines Bild)."""
+        anzeigen soll (Bild-Push); text darf leer sein (reines Bild).
+        kind (optional): strukturiertes Ereignis (alarm|timer|reminder|signal|
+        voice) — alte Apps ignorieren das Feld (Rueckwaertskompatibilitaet).
+        tone_seconds (optional): z. B. 10 = Signalton; die App spielt den
+        Klingelton ab, der Master pusht ihn an Pi-Satelliten als /tone."""
         with self._lock:
             q = self._pending.setdefault(key, [])
             item = {"text": text, "speak": bool(speak)}
@@ -118,6 +123,10 @@ class SatManager:
             if image:
                 item["image"] = str(image)[:2000]
                 item["ttl"] = int(ttl or 0)
+            if kind:
+                item["kind"] = str(kind)[:16]
+            if tone_seconds:
+                item["tone_seconds"] = int(tone_seconds)
             q.append(item)
             del q[:-50]  # nicht unbegrenzt anwachsen lassen
 

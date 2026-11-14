@@ -330,12 +330,13 @@ class Handler(BaseHTTPRequestHandler):
             self._ev(f"Web-Intent {dt:.1f}s ({kind}): {answer}")
             return self._send(200, {"answer": answer, "route": kind})
         if self.path == "/tone":
-            # Alarm-/Klingelton: {"tone": "alarm|wake|end|boot|error",
+            # Alarm-/Klingelton: {"tone": "alarm|wake|end|boot|error|signal",
             #                     "repeat": 3?}  – repeat nur bei alarm.
+            # "signal" = 10-s-Klingelton ("Rufe <geraet>").
             tone = (data.get("tone") or data.get("kind") or "alarm").strip().lower()
-            if tone not in ("alarm", "wake", "end", "boot", "error"):
+            if tone not in ("alarm", "wake", "end", "boot", "error", "signal"):
                 return self._send(400, {"error": f"unknown tone {tone!r} "
-                                                 "(alarm|wake|end|boot|error)"})
+                                                 "(alarm|wake|end|boot|error|signal)"})
             try:
                 repeat = max(1, min(20, int(data.get("repeat", 1))))
             except (TypeError, ValueError):
@@ -471,7 +472,62 @@ class Handler(BaseHTTPRequestHandler):
                 self._ev("Web: Zufallswiedergabe aus")
             return self._send(200, {"ok": True, "shuffle": enable,
                                     **playback.player.status()})
+        if self.path == "/notify":
+            # Zeitgesteuerte Ereignisse vom Master (master-Modus):
+            # Wecker/Timer/Erinnerung/Signalton -> Ton + Display + (TTS).
+            kind = (data.get("kind") or "").strip().lower()
+            if kind not in ("alarm", "timer", "reminder", "signal"):
+                return self._send(400, {"error": f"unknown kind {kind!r}"})
+            text = str(data.get("text") or "").strip()
+            src = str(data.get("src") or "").strip()[:64]
+            self._ev(f"Notify ({kind}): {text[:60] or kind}")
+            threading.Thread(target=self._handle_notify,
+                             args=(kind, text, src), daemon=True).start()
+            return self._send(200, {"ok": True, "kind": kind})
         self._send(404, {"error": "unknown path"})
+
+    @staticmethod
+    def _handle_notify(kind, text, src):
+        """Master-Trigger abarbeiten: Klingelton + Display + Ansage (TTS).
+
+        Signalton (10 s) laeuft ohne Ansage; Wecker/Timer klingeln und
+        sprechen den Text; Erinnerungen klingeln kurz (wake) + TTS."""
+        p = _pipeline
+        try:
+            if kind == "signal":
+                if p:
+                    p.web_audio_busy = True
+                playback.player.pause()
+                try:
+                    tones.play("signal", blocking=True)
+                finally:
+                    playback.player.resume()
+                    if p:
+                        p.drain_mic()
+                        p.web_audio_busy = False
+                return
+            tone = "alarm" if kind in ("alarm", "timer") else "wake"
+            if p:
+                p.web_audio_busy = True
+            playback.player.pause()
+            try:
+                tones.play(tone, blocking=True)
+            finally:
+                playback.player.resume()
+            if p:
+                p.drain_mic()
+            heading = {"alarm": "Wecker", "timer": "Timer",
+                       "reminder": "Erinnerung"}[kind]
+            display.show(heading, (text or "")[:60])
+            if p is not None and text:
+                p.broadcast(text, wait=False, src=src or "Zeitplan")
+        except Exception as e:
+            log.error("notify-Fehler (%s): %s", kind, e)
+            if p:
+                try:
+                    p.web_audio_busy = False
+                except Exception:
+                    pass
 
     def _ev(self, msg):
         """Aktivitaeten aus dem Webthread in den Live-Feed melden."""

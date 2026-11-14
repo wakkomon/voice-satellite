@@ -240,6 +240,27 @@ DEFAULT_IMAGE_URL = _env("DEFAULT_IMAGE_URL", "http://192.168.1.33/weather/snap.
 MUSIC_ROOT      = _env("MUSIC_ROOT", "/m")
 DATA_DIR        = _env("DATA_DIR", "/data")   # persistente Daten (Index-Cache, …)
 
+# ── Kameras (regelbasiert: "zeige Kamera <name>") ─────────────
+# Name=Snapshot-URL-Paare, semikolon-getrennt:
+#   CAMERAS="Garten=http://192.168.1.50:8080/snap.jpg,Halle=http://cam:81"
+# Ohne Treffer in CAMERAS greift der altbewaehrte M3U-/Bridge-Pfad
+# (Kamera/*.m3u + BRIDGE /frame/<name>).
+CAMERAS         = _env("CAMERAS", "", fallback_empty=True)
+
+def parse_cameras() -> dict:
+    """CAMERAS-Konfig -> {Name: Snapshot-URL} (Name case-insensitive)."""
+    out: dict = {}
+    for part in (CAMERAS or "").split(";"):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        k, _, v = part.partition("=")
+        k, v = k.strip(), v.strip()
+        if k and v:
+            out[k] = v
+    return out
+
+
 # ── Pi-Bridge (RTSP-Relay + Kamera-Snapshot) ──────────────────
 # Bridge-Daemon auf Pi: RTSP→MP3-Relay + Kamera-Snapshot-HTTP
 BRIDGE_HOST     = _env("BRIDGE_HOST", "192.168.1.32")

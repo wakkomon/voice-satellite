@@ -352,7 +352,10 @@ async def _sat_heartbeat(req: Request) -> JSONResponse:
         cfg = {"default_image_url": str(eff.get("DEFAULT_IMAGE_URL") or ""),
                # Zentrale Intent-Liste (Ausloeser|Item|Wert, eine Zeile pro
                # Intent): die Android-App schaltet damit lokal ohne LLM.
-               "intents": str(eff.get("INTENTS") or "")}
+               "intents": str(eff.get("INTENTS") or ""),
+               # Kamerakonfig (Name=Snapshot-URL;...): regelbasierte
+               # Kamera-Befehle der Android-App ("Zeige Kamera X").
+               "cameras": str(eff.get("CAMERAS") or "")}
     except Exception as e:
         log.warning("Heartbeat-Config-Pull (%s): %s", mac, e)
         cfg = {}
@@ -739,6 +742,187 @@ async def _sat_dm(req: Request) -> JSONResponse:
     from_name = (manager.display_name(mac) or mac)[:48]
     code, data = await _dm_core(mac, from_name, to, text)
     return JSONResponse(data, status_code=code)
+
+# ── Regelfunktionen: Scheduling + Geräte-Steuerung (Master-Modus) ──
+
+_SCHEDULE_KINDS = ("alarm", "timer", "reminder")
+
+
+async def _sat_schedule(req: Request) -> JSONResponse:
+    """POST /api/satellite/{mac}/schedule {kind, fire_at, text}
+
+    Wecker/Timer/Erinnerung im MASTER-Modus: die Instanz wird beim Master
+    gespeichert und von dort zur Zeit ausgeliefert (Pi: /notify, App:
+    Pull-Queue). Antwort enthält 'answer' als Bestätigungstext."""
+    mac = req.path_params["mac"].lower()
+    if not _sat_auth_ok(req, mac):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if manager.is_disabled_for(mac):
+        return JSONResponse({"error": "deaktiviert"}, status_code=403)
+    try:
+        body = await req.json()
+    except (json.JSONDecodeError, ValueError):
+        body = {}
+    kind = str((body.get("kind") or "")).strip().lower()
+    if kind not in _SCHEDULE_KINDS:
+        return JSONResponse(
+            {"ok": False, "error": "kind muss alarm|timer|reminder sein"},
+            status_code=400)
+    try:
+        fire_at = float(body.get("fire_at"))
+    except (TypeError, ValueError):
+        return JSONResponse(
+            {"ok": False, "error": "fire_at fehlt (Epoch-Seconds)"},
+            status_code=400)
+    text = str((body.get("text") or "")).strip()[:200]
+    item = schedule_store.add(mac, kind, fire_at, text)
+    answer = {"alarm": f"Wecker {text} gestellt." if text else "Wecker gestellt.",
+              "timer": f"Timer läuft: {text}." if text else "Timer läuft.",
+              "reminder": f"Erinnerung: {text}." if text else "Erinnerung gesetzt."}[kind]
+    return JSONResponse({"ok": True, "id": item["id"],
+                         "fire_at": item["fire_at"], "answer": answer})
+
+
+async def _sat_schedule_get(req: Request) -> JSONResponse:
+    """GET /api/satellite/{mac}/schedule → offene Instanzen des Geräts."""
+    mac = req.path_params["mac"].lower()
+    if not _sat_auth_ok(req, mac):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    kind = req.query_params.get("kind")
+    return JSONResponse({"ok": True,
+                         "items": schedule_store.list(mac, kind or None)})
+
+
+async def _sat_schedule_delete(req: Request) -> JSONResponse:
+    """POST /api/satellite/{mac}/schedule/delete {kind, all?, by_time?}"""
+    mac = req.path_params["mac"].lower()
+    if not _sat_auth_ok(req, mac):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if manager.is_disabled_for(mac):
+        return JSONResponse({"error": "deaktiviert"}, status_code=403)
+    try:
+        body = await req.json()
+    except (json.JSONDecodeError, ValueError):
+        body = {}
+    kind = str((body.get("kind") or "")).strip().lower()
+    if kind not in _SCHEDULE_KINDS:
+        return JSONResponse(
+            {"ok": False, "error": "kind muss alarm|timer|reminder sein"},
+            status_code=400)
+    by_time = body.get("by_time")
+    try:
+        by_time = float(by_time) if by_time is not None else None
+    except (TypeError, ValueError):
+        by_time = None
+    n = schedule_store.delete(mac, kind, by_time=by_time,
+                              all_=bool(body.get("all")))
+    name = {"alarm": "Wecker", "timer": "Timer", "reminder": "Erinnerung"}[kind]
+    if n:
+        return JSONResponse({"ok": True, "removed": n,
+                             "answer": f"{n} {name} gelöscht."})
+    return JSONResponse({"ok": False, "removed": 0,
+                         "error": f"keine {name} gefunden",
+                         "answer": f"Keine {name} gefunden."},
+                        status_code=404)
+
+
+async def _sat_call(req: Request) -> JSONResponse:
+    """POST /api/satellite/{mac}/call {to} → 10 s Signalton am Zielgerät.
+
+    'to' = Ziel per MAC/IP/Hostname/Anzeigename (Benutzername)."""
+    mac = req.path_params["mac"].lower()
+    if not _sat_auth_ok(req, mac):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if manager.is_disabled_for(mac):
+        return JSONResponse({"error": "deaktiviert"}, status_code=403)
+    try:
+        body = await req.json()
+    except (json.JSONDecodeError, ValueError):
+        body = {}
+    to = str((body.get("to") or "")).strip().lower()
+    if not to:
+        return JSONResponse({"ok": False, "error": "to fehlt"}, status_code=400)
+    hit = manager.sat_target(to)
+    if not hit:
+        return JSONResponse(
+            {"ok": False, "error": f"Zielgerät '{to}' nicht gefunden", "to": to},
+            status_code=404)
+    tkey = hit[0]
+    if manager.is_disabled(tkey):
+        return JSONResponse(
+            {"ok": False, "error": "Zielgerät ist deaktiviert"}, status_code=403)
+    from_name = (manager.display_name(mac) or mac)[:48]
+    tname = manager.display_name(tkey) or tkey
+    if manager.sat_kind(tkey) == "android":
+        # App ohne Web-Dienst: 10-s-Ton als Queue-Item (Heartbeat-Pull).
+        manager.queue_for(tkey, "", speak=False, src=from_name,
+                          kind="signal", tone_seconds=10)
+        return JSONResponse({"ok": True, "target": tname, "queued": True})
+    resp = await _sat_control(tkey, "/tone", {"tone": "signal"})
+    if resp.status_code != 200:
+        return JSONResponse(
+            {"ok": False, "error": "Signalton am Ziel fehlgeschlagen"},
+            status_code=502)
+    return JSONResponse({"ok": True, "target": tname})
+
+
+async def _sat_dm_voice(req: Request) -> JSONResponse:
+    """POST /api/satellite/{mac}/dm-voice {to, text}
+
+    Sprachnachricht: der Master synthetisiert den Text 1x (TTS), das Ziel
+    spielt das identische Audio ab (Pi: /speak mit audio_b64, App: Pull-
+    Queue mit audio_b64). Fällt die Master-TTS aus, liest das Ziel den
+    Text selbst (text_only=True)."""
+    mac = req.path_params["mac"].lower()
+    if not _sat_auth_ok(req, mac):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if manager.is_disabled_for(mac):
+        return JSONResponse({"error": "deaktiviert"}, status_code=403)
+    try:
+        body = await req.json()
+    except (json.JSONDecodeError, ValueError):
+        body = {}
+    text = str((body.get("text") or "")).strip()[:1000]
+    to = str((body.get("to") or "")).strip().lower()
+    if not text or not to:
+        return JSONResponse(
+            {"ok": False, "error": "to und text erforderlich"}, status_code=400)
+    hit = manager.sat_target(to)
+    if not hit:
+        return JSONResponse(
+            {"ok": False, "error": f"Zielgerät '{to}' nicht gefunden", "to": to},
+            status_code=404)
+    tkey = hit[0]
+    if tkey == mac:
+        return JSONResponse({"ok": True, "queued": 0, "note": "eigenes Gerät"})
+    if manager.is_disabled(tkey):
+        return JSONResponse(
+            {"ok": False, "error": "Zielgerät ist deaktiviert"}, status_code=403)
+    from_name = (manager.display_name(mac) or mac)[:48]
+    tname = manager.display_name(tkey) or tkey
+    # 1x TTS am Master (Broadcast-Paritaet), Fallback: Ziel liest selbst.
+    import base64
+    wav = None
+    try:
+        eff = config_store.get_effective(mac)
+        wav = await _synth_tts(eff, text)
+    except Exception as e:
+        log.warning("dm-voice TTS: %s", e)
+    audio_b64 = base64.b64encode(wav).decode("ascii") if wav else ""
+    if manager.sat_kind(tkey) == "android":
+        manager.queue_for(tkey, text, speak=True, src=from_name,
+                          audio_b64=audio_b64, kind="voice")
+        return JSONResponse({"ok": True, "target": tname, "queued": True,
+                             "text_only": not bool(audio_b64)})
+    payload = {"text": text, "wait": False, "src": from_name}
+    if audio_b64:
+        payload["audio_b64"] = audio_b64
+    resp = await _sat_control(tkey, "/speak", payload)
+    if resp.status_code != 200:
+        return JSONResponse(
+            {"ok": False, "error": "Zustellung fehlgeschlagen"}, status_code=502)
+    return JSONResponse({"ok": True, "target": tname,
+                         "text_only": not bool(audio_b64)})
 
 
 async def _chat_intent(text: str, mac: str, out: str) -> str | None:
@@ -1377,6 +1561,16 @@ async def _live_log(req: Request) -> StreamingResponse:
 # ── App Setup ───────────────────────────────────────────────────
 
 manager = SatManager()
+
+# ── Zentrales Scheduling (Master-Modus: Wecker/Timer/Erinnerung) ──
+# Im Master-Modus leben die Zeit-Instanzen beim Master und werden von
+# hier ausgeliefert (Pi: /notify-Push, App: Pull-Warteschlange).
+from . import schedule as schedule_mod
+from . import satconfig as _satcfg_mod
+schedule_store = schedule_mod.MasterSchedule(
+    manager,
+    os.path.join(_satcfg_mod.CONFIG_DIR, "schedule.json"))
+schedule_mod.set_store(schedule_store)
 # Erster Start: leeren User-Store aus ENV bevoelkern (WEB_ADMIN_USER/PASSWORD)
 try:
     webauth.seed_admin_from_env()
@@ -1854,6 +2048,12 @@ routes = [
     Route("/api/app/download", _app_download),
     Route("/api/satellite/{mac}/chat", _chat_push, methods=["POST"]),
     Route("/api/satellite/{mac}/dm", _sat_dm, methods=["POST"]),
+    Route("/api/satellite/{mac}/dm-voice", _sat_dm_voice, methods=["POST"]),
+    Route("/api/satellite/{mac}/call", _sat_call, methods=["POST"]),
+    Route("/api/satellite/{mac}/schedule", _sat_schedule, methods=["POST"]),
+    Route("/api/satellite/{mac}/schedule", _sat_schedule_get),
+    Route("/api/satellite/{mac}/schedule/delete", _sat_schedule_delete,
+          methods=["POST"]),
     Route("/api/chat/messages", _chat_messages),
     Route("/api/chat/recs", _chat_recs),
     Route("/api/chat/rec/{key}", _chat_rec),

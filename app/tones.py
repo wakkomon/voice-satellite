@@ -68,6 +68,15 @@ def get(kind):
             for _ in range(config.TONE_ALARM_REPEATS):
                 pcm += _sine(config.TONE_ALARM_HZ, step, config.SAMPLE_RATE, config.TONE_GAIN)
                 pcm += _sine(config.TONE_ALARM_HZ2, step, config.SAMPLE_RATE, config.TONE_GAIN)
+        elif kind == "signal":
+            # 10-s-Klingelton fuer "Rufe <geraet>": Wechselsignal
+            # (880/660 Hz), lange genug ueber die gesamte Dauer.
+            pcm = b""
+            step = 0.5
+            n = int(10 / step)
+            for i in range(n):
+                f = config.TONE_ALARM_HZ if i % 2 == 0 else 660.0
+                pcm += _sine(f, step, config.SAMPLE_RATE, config.TONE_GAIN)
         elif kind == "blip":
             # Kurz-Blip: Lautstärke-Feedback in der Web-UI. Kürzer und
             # etwas leiser als die übrigen Töne – Feedback, kein Alarm.

@@ -52,6 +52,12 @@ def main() -> None:
     # Raspi-Manager starten (Satelliten-Anmeldung + Heartbeat) — Singleton aus api.py
     manager.start()
 
+    # Zentrales Scheduling (Master-Modus-Wecker/Timer/Erinnerungen):
+    # faellige Instanzen aus api.schedule_store an die Geraete liefern.
+    from . import schedule as sched_mod
+    from .api import schedule_store
+    schedule_store.start()
+
     # Logging-Handler: alle Logs der 'master' Kategorie auch in den Live-Log-Puffer schreiben
     log.addHandler(_MasterLogSink())
 
