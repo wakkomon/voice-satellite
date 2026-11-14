@@ -432,6 +432,10 @@ _OVERWRITABLE = {
     # Globale Settings (Timeouts, Limits, Defaults):
     "STT_TIMEOUT", "TTS_TIMEOUT", "LLM_TIMEOUT",
     "LLM_MAX_TOKENS", "OPENHAB_CACHE_TTL",
+    # Halbe-Satz-Filter (Master-Verwaltung; der Satellit verwirft den Marker
+    # [[HALBER_SATZ]] in jeder Konstellation – der Key steuert die Injektion
+    # am Master-Proxy und ist hier nur sichtbar).
+    "LLM_DROP_FRAGMENTS",
 }
 
 # API-Config-Keys werden am Master gepflegt. Die Satellite-Info zeigt sie

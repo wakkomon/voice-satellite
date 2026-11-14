@@ -313,6 +313,14 @@ class Pipeline:
         t0 = time.time()
         answer, kind, llm_ok = router.handle(text)
         display.end_thinking()
+        if kind == "fragment":
+            # LLM meldet einen halben/abgebrochenen Satz: komplett verwerfen –
+            # keine TTS-Ausgabe, kein Fehler-Ton, kein Chat-/Gedaechtnis-
+            # Eintrag. Die Session bleibt offen ( Rueckgabe True), damit der
+            # Nutzer den Satz ohne neues Codewort weitersprechen kann.
+            log.info("Halber Satz verworfen: %r", text[:80])
+            self.ev("Halber Satz erkannt – verworfen, nicht gesprochen")
+            return True
         self.stats["commands" if kind == "smarthome" else "llm"] += 1
         dt = time.time() - t0
         log.info("Antwort (%s, %.1fs): %s", kind, dt, answer[:160])

@@ -28,6 +28,7 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 
 from . import chatstore
 from . import config as master_cfg
+from . import fragment
 from .satconfig import store as config_store
 
 log = logging.getLogger("master.proxy")
@@ -340,6 +341,15 @@ async def proxy_llm(req: Request) -> Response:
         want_stream = bool(json.loads(body).get("stream"))
     except Exception:
         want_stream = False
+    # Halbe-Satz-Filter (Config-Key LLM_DROP_FRAGMENTS, global): Regel ins
+    # Chat-Completion injizieren; der Satellit/die App erkennt den Marker
+    # und verwirft die Antwort (kein TTS). Bei Streams wird nicht
+    # nachgeprueft – der Marker ist kurz und der Client prueft den
+    # akkumulierten Endtext.
+    drop_frags = fragment.enabled(
+        config_store.get_effective(None).get("LLM_DROP_FRAGMENTS"))
+    if drop_frags:
+        body = fragment.inject_rule(body)
     try:
         if want_stream:
             client = httpx.AsyncClient(timeout=httpx.Timeout(300.0))
@@ -365,7 +375,14 @@ async def proxy_llm(req: Request) -> Response:
                 url, content=body,
                 headers=_headers(token, req,
                                  {"Content-Type": "application/json"}))
-        return Response(r.content, status_code=r.status_code,
+        content = r.content
+        if drop_frags and r.status_code == 200:
+            # Variabel formulierte Fragment-Meldungen auf den exakten Marker
+            # normieren – die Clients erkennen ihn einheitlich und verwerfen.
+            content, changed = fragment.normalize_response(content)
+            if changed:
+                log.info("LLM-Proxy: Satzfragment gemeldet – normalisiert auf Marker")
+        return Response(content, status_code=r.status_code,
                         media_type=r.headers.get("content-type",
                                                  "application/json"))
     except httpx.HTTPError as e:

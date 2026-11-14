@@ -300,6 +300,7 @@ const DOMAINS = {
     { key: "LLM_ENABLE_THINKING", type: "bool" },
     { key: "LLM_TIMEOUT", type: "text" },
     { key: "LLM_MAX_TOKENS", type: "text" },
+    { key: "LLM_DROP_FRAGMENTS", type: "bool", note: "Halbe/abgebrochene Saetze: das LLM meldet sie dann nur noch als [[HALBER_SATZ]] – Satelliten und Apps verwerfen die Antwort, statt sie zu sprechen." },
     { key: "INTENTS", type: "textarea" },
   ],
   openhab: [

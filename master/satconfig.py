@@ -71,7 +71,11 @@ SECRET_KEYS = frozenset({
 })
 
 # Nur global verwaltbar (Satelliten erben sie, können sie nicht überschreiben).
-GLOBAL_ONLY_KEYS = ("MASTER_MUSIC_AUTH",)
+# LLM_DROP_FRAGMENTS: Halbe-Satz-Filter am /proxy/llm (Regel-Injektion +
+# Marker-Normalisierung). Clients (Pi/Android) verwerfen den Marker
+# [[HALBER_SATZ]] immer – der Key schaltet, ob der Master die Regel ueberhaupt
+# injiziert. Default aus, bis alle Clients den Marker-Client tragen.
+GLOBAL_ONLY_KEYS = ("MASTER_MUSIC_AUTH", "LLM_DROP_FRAGMENTS")
 
 UI_KEYS = EDITABLE_KEYS + GLOBAL_ONLY_KEYS
 

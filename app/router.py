@@ -195,6 +195,18 @@ def try_openhab(text):
         return "Bei der Verbindung zum Smarthome ist ein fehler aufgetreten."
 
 
+# Halbe-Satz-Filter: der Master-Proxy injiziert dem LLM die Regel, bei einem
+# offensichtlichen Satzfragment (abgebrochene Sprachaufnahme) ausschliesslich
+# den Marker [[HALBER_SATZ]] zu antworten. Tolerante Erkennung (auch
+# [HALBER_SATZ] / "HALBER SATZ" / ohne Klammern); die Antwort wird dann
+# komplett verworfen – kein TTS, kein Gedaechtniseintrag.
+_FRAGMENT_RE = re.compile(r"^\[*\s*HALBER[ _\-]*SATZ\s*\]*", re.I)
+
+
+def is_fragment(answer):
+    return bool(_FRAGMENT_RE.match((answer or "").strip()))
+
+
 def ask_llm(text, channel="voice"):
     """LLM-Fallback mit Kurz- + Langzeitgedächtnis.
 
@@ -415,14 +427,20 @@ def handle(text, channel="voice"):
     channel 'voice'|'web' – steuert, in welchen Kurzzeitgedächtnis-Zweig
     der Austausch geschrieben wird und aus welchem er Kontext liest.
 
-    Gibt (antwort, 'smarthome'|'llm', llm_ok) zurück; llm_ok=False bei
-    LLM-Ausfall/leerer Antwort (für den Fehlerton)."""
+    Gibt (antwort, 'smarthome'|'llm'|'fragment', llm_ok) zurück; llm_ok=False bei
+    LLM-Ausfall/leerer Antwort (für den Fehlerton); 'fragment' = LLM meldet
+    halben Satz – Antwort ist zu verwerfen (kein TTS)."""
     resp = try_intents(text)
     if resp is not None:
         memory.add_exchange(text, resp, channel)
         return resp, "smarthome", True
 
     ans, ok = ask_llm(text, channel)
+    if is_fragment(ans):
+        # LLM meldet einen halben/abgebrochenen Satz: Austausch komplett
+        # verwerfen – keine TTS-Ausgabe, kein Kurz-/Langzeitgedaechtnis.
+        # route 'fragment' signalisiert der Pipeline das Verwerfen.
+        return ans, "fragment", True
     memory.add_exchange(text, ans, channel)
     memory.extract_facts_async(text, ans)
     return ans, "llm", ok
