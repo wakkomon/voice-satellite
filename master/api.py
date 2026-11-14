@@ -2356,8 +2356,11 @@ def _token_allowed(path: str) -> bool:
     if path in ("/api/satellites", "/api/satellites/status"):
         return True
     if path.startswith("/api/satellite/"):
-        return path.rsplit("/", 1)[-1] in ("volume", "output",
-                                           "disable", "enable")
+        tail = path.split("?", 1)[0].rsplit("/", 1)[-1]
+        return tail in ("volume", "output", "disable", "enable",
+                        "schedule", "location")
+    if path == "/api/locations":
+        return True
     if path.startswith("/api/memory"):
         return True
     return False
