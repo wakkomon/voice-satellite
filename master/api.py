@@ -1554,12 +1554,18 @@ async def _config_export(req: Request) -> Response:
 
 def _master_url_for(req: Request) -> str:
     """MASTER_URL = Adresse, unter der ein Geraet/das WebUI den Master
-    erreicht. ENV MASTER_URL gewinnt (Deploy); sonst die URL, mit der der
+    erreicht. Store-Wert (WebUI Domain System, MASTER_URL) gewinnt, dann ENV
+    MASTER_URL (Deploy), sonst die URL, mit der der
     Request hereilangfuhr (LAN-IP:Port). Wird vom QR-Code und vom
     Satelliten-Export (nur Master-URL + Token) verwendet."""
     host = (req.url.netloc if req.url else "") or ""
     scheme = (req.url.scheme if req.url else "http") or "http"
-    return (os.environ.get("MASTER_URL") or f"{scheme}://{host}").strip()
+    # Store-Wert (WebUI -> Konfiguration -> System -> MASTER_URL) gewinnt:
+    # feste Adresse, falls sie von der Browser-URL abweicht; dann ENV; dann
+    # die URL, mit der der Request hereinkam.
+    url = (config_store.get_global_value("MASTER_URL")
+           or os.environ.get("MASTER_URL") or f"{scheme}://{host}")
+    return url.strip().rstrip("/")
 
 
 async def _config_export_split(req: Request, kind: str) -> Response:
@@ -1608,13 +1614,15 @@ def _appqr_text(req: Request) -> str:
     /api/config/appqr (Text) und /api/config/appqr.png (QR-Bild)."""
     import os
     host = (req.url.netloc if req.url else "") or ""
-    env_url = os.environ.get("MASTER_URL", "").strip()
-    if env_url:
-        master_url = env_url
-    else:
-        # Master laeuft HTTPS-only (SSL-Zert am API-Server): plain http://
-        # ist nicht erreichbar, daher immer https://{host}.
-        master_url = "https://" + host
+    # Store-Wert (WebUI -> Konfiguration -> System -> MASTER_URL) gewinnt,
+    # damit der QR dieselbe Adresse traegt, die der Betreiber fest gesetzt
+    # hat — auch wenn er diese Seite gerade unter einer anderen URL
+    # aufruft. Dann ENV MASTER_URL; zuletzt https://{host} (Master laeuft
+    # HTTPS-only, plain http:// ist nicht erreichbar).
+    master_url = (config_store.get_global_value("MASTER_URL")
+                  or os.environ.get("MASTER_URL", "").strip()
+                  or "https://" + host)
+    master_url = master_url.strip().rstrip("/")
     token = str(config_store.get_secret("MASTER_TOKEN") or
                 os.environ.get("MASTER_TOKEN", "") or "").strip()
     return "MASTER_URL=" + master_url + "\n" + "MASTER_TOKEN=" + token + "\n"

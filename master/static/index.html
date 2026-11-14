@@ -317,6 +317,7 @@ const DOMAINS = {
     { key: "MASTER_TOKEN", type: "password" },
   ],
   system: [
+    { key: "MASTER_URL", type: "text" },
     { key: "MUSIC_ROOT", type: "text" },
     { key: "BRIDGE_HOST", type: "text" },
     { key: "BRIDGE_PORT", type: "text" },
@@ -446,6 +447,8 @@ function renderConfigTable() {
     </tr>`;
   }).join('') + (currentDomain === 'secrets'
     ? `<tr><td colspan="3" style="font-size:12px;opacity:.72;padding:6px 8px">MASTER_TOKEN ist zugleich der Zugang aller Satelliten (Heartbeat, Config-Pull, Proxy). Nach jeder Änderung muss derselbe Wert in der <code>.env</code> jedes Satelliten stehen — sonst melden alle Satelliten-Aufrufe 401.</td></tr>`
+    : currentDomain === 'system'
+    ? `<tr><td colspan="3" style="font-size:12px;opacity:.72;padding:6px 8px">MASTER_URL hier fest setzen, wenn Geraete den Master unter einer anderen Adresse erreichen sollen als der aktuellen Browser-URL (z. B. feste IP/Domain). Der Wert wird fuer den QR-Code und den Satelliten-Export verwendet; leer gelassen = aktuelle Browser-URL bzw. ENV MASTER_URL.</td></tr>`
     : '');
 
   tbody.querySelectorAll('.cfg-input').forEach(input => {
