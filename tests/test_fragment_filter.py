@@ -93,6 +93,28 @@ def t_normalize_response_passes_through():
                                                         False)
 
 
+def t_normalize_asked_back_fallback():
+    # Modell ignoriert die Marker-Regel und kommentiert den Abbruch -> Marker.
+    raw = json.dumps({"choices": [{"message": {
+        "content": ("Deine Nachricht ist mitten im Satz abgebrochen — „ich "
+                    "möchte heute nach …“ Was möchtest du tun?")}}]}).encode()
+    out, changed = normalize_response(raw)
+    assert changed
+    assert json.loads(out)["choices"][0]["message"]["content"] == FRAGMENT_MARKER
+    # False-Positive-Guard: lange fachliche Antwort bleibt unberuehrt.
+    long_ans = ("Eine Wärmepumpe entzieht der Umwelt Wärme. Der Satz "
+                "„abgebrochen“ fällt dabei nur am Rande auf, weil die "
+                "Beschreibung des Kältekreislaufs sehr ausführlich ist und "
+                "auch vor einem Abbruch des Kompressors warnt, was technisch "
+                "relevant ist. " * 3)
+    raw2 = json.dumps({"choices": [{"message": {"content": long_ans}}]}).encode()
+    assert normalize_response(raw2) == (raw2, False)
+    # Kurze echte Antwort mit Kontextwort, ohne Abbruch-Wort: durchreichen.
+    raw3 = json.dumps({"choices": [{"message": {
+        "content": "Der Lichtschalter ist im Flur."}}]}).encode()
+    assert normalize_response(raw3) == (raw3, False)
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("t_")]
     for fn in fns:

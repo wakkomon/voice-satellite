@@ -26,8 +26,10 @@ FRAGMENT_MARKER = "[[HALBER_SATZ]]"
 FRAGMENT_RULE = (
     "Regel: Ist die letzte Nutzer-Nachricht ein offensichtliches Satzfragment "
     "(unvollstaendig/abgebrochen, z.B. eine angeschnittene Sprachaufnahme wie "
-    "'mach die' oder 'und dann im'), dann antworte exakt und ausschliesslich "
-    "mit " + FRAGMENT_MARKER + " ohne jedes andere Zeichen und ohne Erklaerung. "
+    "'mach die', 'ich moechte heute nach' oder 'und dann im'), dann antworte "
+    "exakt und ausschliesslich mit " + FRAGMENT_MARKER + " - ohne jedes andere "
+    "Zeichen, ohne Erklaerung, ohne Rueckfrage. Fraget ein Nutzer selbst "
+    "erkennbar nach einem abgebrochenen Zitat, zaehlt das NICHT als Fragment. "
     "In allen anderen Faellen antworte normal."
 )
 
@@ -35,6 +37,18 @@ FRAGMENT_RULE = (
 # Der Marker muss am Anfang stehen – eine regulare Antwort beginnt nicht mit
 # "HALBER SATZ", selbst wenn sie den Begriff spaeter erwaehnt.
 _FRAG_RE = re.compile(r"^\[*\s*HALBER[ _\-]*SATZ\s*\]*", re.I)
+
+# Fallback: manche Modelle halten sich nicht an die Marker-Regel und fragen
+# stattdessen brav nach ("Deine Nachricht ist mitten im Satz abgebrochen...").
+# Solche Kurzantworten werden auf den Marker normalisiert, damit die Clients
+# sie verwerfen. Bewusst eng: nur kurze Antworten, die sowohl ein
+# Abbruch-Wort als auch Satz/Nachricht/Aufnahme nennen – lange fachliche
+# Antworten (die solche Woerter zufällig enthalten koennen) bleiben unberuehrt.
+_FRAG_ASK_RE = re.compile(
+    r"(mitten im\s+satz|satz\s+\w{0,20}abgebrochen|abgebroch\w*\s+(ist|wurde)?"
+    r"|angeschnitt\w*|unvollst\w*ndig|halber\s+satz)", re.I)
+_FRAG_CTX_RE = re.compile(r"(satz|nachricht|aufnahme|eingabe|speech)", re.I)
+_FRAG_ASK_MAXLEN = 400
 
 
 def is_fragment(text) -> bool:
@@ -76,6 +90,14 @@ def inject_rule(body: bytes) -> bytes:
         return body
 
 
+def _asked_back(text: str) -> bool:
+    """Kurzantwort, die ein Satzfragment kommentiert statt es zu beantworten."""
+    t = (text or "").strip()
+    if not t or len(t) > _FRAG_ASK_MAXLEN:
+        return False
+    return bool(_FRAG_ASK_RE.search(t) and _FRAG_CTX_RE.search(t))
+
+
 def normalize_response(raw: bytes) -> tuple[bytes, bool]:
     """Nicht-Stream-JSON-Antwort pruefen: Fragment-Antwort -> Inhalt auf den
     exakten Marker setzen. Liefert (body, geaendert)."""
@@ -88,4 +110,9 @@ def normalize_response(raw: bytes) -> tuple[bytes, bool]:
         if is_fragment(msg.get(field)):
             msg[field] = FRAGMENT_MARKER
             return json.dumps(data, ensure_ascii=False).encode("utf-8"), True
+    # Fallback: Regel ignoriert, aber Antwort kommentiert den Abbruch.
+    content = msg.get("content")
+    if isinstance(content, str) and _asked_back(content):
+        msg["content"] = FRAGMENT_MARKER
+        return json.dumps(data, ensure_ascii=False).encode("utf-8"), True
     return raw, False
