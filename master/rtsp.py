@@ -30,6 +30,7 @@ import logging
 import os
 import queue
 import re
+import shutil
 import signal
 import subprocess
 import threading
@@ -138,6 +139,31 @@ def resolve_source(source: str, title: str = "") -> tuple[str | None, str | None
     return _inject_credentials(chosen), None
 
 
+def _build_ffmpeg_cmd(url: str, transport: str | None) -> list[str]:
+    """ffmpeg-Grundbefehl zum MP3-Relay. rtsp-Transport-Optionen NUR bei
+    rtsp://-Quellen (http/https/HLS lehnt die Option ab — 'Option not found')."""
+    cmd = [FFMPEG, "-loglevel", "error"]
+    if url.startswith("rtsp://") and transport:
+        cmd += ["-rtsp_transport", transport]
+        if transport == "udp":
+            cmd += ["-stimeout", "10000000"]   # 10 s Connect-Timeout
+    cmd += ["-i", url,
+            "-vn", "-an",
+            "-c:a", "libmp3lame", "-b:a", "128k", "-ar", "44100",
+            "-f", "mp3", "pipe:1"]
+    return cmd
+
+
+def _rtsp_transports() -> list[str]:
+    """Transport-Probereihenfolge. Default: TCP zuerst (stabil, NAT),
+    dann UDP-Fallback — die Fritz!box-AVM-RTSP lehnt TCP mit '461 Unknown'
+    ab; RTSP_TRANSPORT erzwingt einen einzelnen Transport."""
+    forced = os.environ.get("RTSP_TRANSPORT", "").strip().lower()
+    if forced in ("tcp", "udp"):
+        return [forced]
+    return ["tcp", "udp"]
+
+
 # ── Relay-Verwaltung ──────────────────────────────────────────────────
 class _Relay:
     __slots__ = ("relay_id", "url", "title", "source", "started",
@@ -180,20 +206,42 @@ class RelayManager:
             relay = _Relay(url, title, source)
             self._relays[relay.relay_id] = relay
             self._errbuf[relay.relay_id] = deque(maxlen=20)
-            try:
-                proc = subprocess.Popen(
-                    [FFMPEG, "-loglevel", "error",
-                     "-rtsp_transport", "tcp",
-                     "-i", url,
-                     "-vn", "-an",
-                     "-c:a", "libmp3lame", "-b:a", "128k", "-ar", "44100",
-                     "-f", "mp3", "pipe:1"],
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                    stdin=subprocess.DEVNULL)
-            except FileNotFoundError:
+            if shutil.which(FFMPEG) is None:
                 self._relays.pop(relay.relay_id, None)
                 self._errbuf.pop(relay.relay_id, None)
                 raise RuntimeError("ffmpeg fehlt im Master-Image")
+            # Transport-Probelauf: ein Transport kann sofort scheitern
+            # (Fritz!box lehnt RTSP/TCP mit '461 Unknown' ab; http-Quellen
+            # kennen die rtsp-Option nicht). Pro Transport max. 4 s warten;
+            # lebt ffmpeg danach, ist der Relay gestartet.
+            transports = (_rtsp_transports() if url.startswith("rtsp://")
+                          else [None])
+            proc: subprocess.Popen | None = None
+            last_err = ""
+            for tr in transports:
+                proc = subprocess.Popen(
+                    _build_ffmpeg_cmd(url, tr),
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    stdin=subprocess.DEVNULL)
+                try:
+                    proc.wait(timeout=4)
+                except subprocess.TimeoutExpired:
+                    pass                        # laeuft noch -> Erfolg
+                else:
+                    try:
+                        err_out = proc.stderr.read().decode("utf-8", "replace")
+                    except Exception:
+                        err_out = ""
+                    last_err = _sanitize(err_out.strip())[-160:] \
+                        or f"exit {proc.returncode}"
+                    log.info("RTSP-Transport %s scheitert an %s: %s",
+                             tr or "plain", relay.title or relay.source,
+                             last_err[:120])
+                    proc = None
+            if proc is None:
+                self._relays.pop(relay.relay_id, None)
+                self._errbuf.pop(relay.relay_id, None)
+                raise RuntimeError("Quelle nicht erreichbar: " + last_err)
             self._procs[relay.relay_id] = proc
             threading.Thread(target=self._pump, args=(relay, proc),
                              name=f"rtsp-pump-{relay.relay_id}",
@@ -407,22 +455,39 @@ def camera_frame(req):
     url, problem = resolve_source(rel, "")
     if problem:
         return JSONResponse({"error": problem}, status_code=400)
-    cmd = [FFMPEG, "-loglevel", "error",
-           "-rtsp_transport", "tcp",
-           "-i", url,
-           "-frames:v", "1", "-an",
-           "-vf", f"scale={FRAME_W}:{FRAME_H}",
-           "-f", "rawvideo", "-pix_fmt", "rgb565le",
-           "pipe:1"]
-    try:
-        p = subprocess.run(cmd, capture_output=True, timeout=20)
-    except subprocess.TimeoutExpired:
-        log.warning("RTSP-Frame %s: Timeout (Quelle zensiert)", rel)
-        return JSONResponse({"error": "Kamera nicht erreichbar (Timeout)"},
-                            status_code=504)
-    except FileNotFoundError:
-        return JSONResponse({"error": "ffmpeg fehlt im Master-Image"},
-                            status_code=500)
+    frame_suffix = ["-frames:v", "1", "-an",
+                    "-vf", f"scale={FRAME_W}:{FRAME_H}",
+                    "-f", "rawvideo", "-pix_fmt", "rgb565le",
+                    "pipe:1"]
+    p = None
+    last_err = ""
+    # tcp zuerst; ein Transport kann an der Quelle scheitern (wie beim
+    # Relay: Fritz!box lehnt TCP ab) — dann udp-Probelauf.
+    for tr in (_rtsp_transports() if url.startswith("rtsp://") else [None]):
+        cmd = [FFMPEG, "-loglevel", "error"]
+        if url.startswith("rtsp://"):
+            cmd += ["-rtsp_transport", tr]
+            if tr == "udp":
+                cmd += ["-stimeout", "10000000"]
+        cmd += ["-i", url]
+        cmd += frame_suffix
+        try:
+            p = subprocess.run(cmd, capture_output=True, timeout=20)
+        except subprocess.TimeoutExpired:
+            log.warning("RTSP-Frame %s: Timeout (%s, Quelle zensiert)", rel, tr)
+            return JSONResponse({"error": "Kamera nicht erreichbar (Timeout)"},
+                                status_code=504)
+        except FileNotFoundError:
+            return JSONResponse({"error": "ffmpeg fehlt im Master-Image"},
+                                status_code=500)
+        if p.returncode == 0:
+            break
+        last_err = _sanitize((p.stderr or b"").decode("utf-8", "replace"))[:200]
+        p = None
+    if p is None:
+        log.warning("RTSP-Frame %s: kein Transport erfolgreich: %s",
+                    rel, last_err)
+        return JSONResponse({"error": "Kamera nicht erreichbar"}, status_code=502)
     data = p.stdout
     if len(data) != FRAME_BYTES:
         log.warning("RTSP-Frame %s: %d Bytes (erwartet %d): %s", rel,
