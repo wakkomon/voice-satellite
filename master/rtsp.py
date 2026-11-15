@@ -153,15 +153,24 @@ def _build_ffmpeg_cmd(url: str, transport: str | None) -> list[str]:
     return cmd
 
 
-def _rtsp_transports() -> list[str]:
+def _rtsp_transports(url: str = "") -> list[str]:
     """Transport-Probereihenfolge. Default: TCP zuerst (stabil, NAT),
     dann UDP-Fallback — die Fritz!box-AVM-RTSP lehnt TCP mit '461 Unknown'
     ab; RTSP_TRANSPORT erzwingt einen einzelnen Transport.
     (Ohne -stimeout: von Debian-ffmpeg 5.1 und dem alten Pi-ffmpeg nicht
-    unterstuetzt, wie es schon in der Bridge-Doku stand.)"""
+    unterstuetzt, wie es schon in der Bridge-Doku stand.)
+
+    SAT>IP-/Fritz!Box-Quellen (URL-Flag 'avm=') werden NIE mit TCP
+    angefahren: der sofort scheiternde TCP-Attempt hinterlaesst eine
+    halb offene Server-Session, und der anschliessende UDP-Versuch
+    bekommt zwar RTP-Pakete auf den Socket, aber Relay/Session passen
+    nicht zusammen — der Stream bleibt dauerhaft bei 0 Bytes stecken
+    (live reproduziert am 15.11.). Fuer avm=-URLs daher direkt udp."""
     forced = os.environ.get("RTSP_TRANSPORT", "").strip().lower()
     if forced in ("tcp", "udp"):
         return [forced]
+    if "avm=" in url:
+        return ["udp"]
     return ["tcp", "udp"]
 
 
@@ -215,7 +224,7 @@ class RelayManager:
             # (Fritz!box lehnt RTSP/TCP mit '461 Unknown' ab; http-Quellen
             # kennen die rtsp-Option nicht). Pro Transport max. 4 s warten;
             # lebt ffmpeg danach, ist der Relay gestartet.
-            transports = (_rtsp_transports() if url.startswith("rtsp://")
+            transports = (_rtsp_transports(url) if url.startswith("rtsp://")
                           else [None])
             proc: subprocess.Popen | None = None
             last_err = ""
@@ -239,6 +248,7 @@ class RelayManager:
                              tr or "plain", relay.title or relay.source,
                              last_err[:120])
                     proc = None
+                    time.sleep(1.0)   # Quelle mag halboffene Sessions
             if proc is None:
                 self._relays.pop(relay.relay_id, None)
                 self._errbuf.pop(relay.relay_id, None)
@@ -464,7 +474,7 @@ def camera_frame(req):
     last_err = ""
     # tcp zuerst; ein Transport kann an der Quelle scheitern (wie beim
     # Relay: Fritz!box lehnt TCP ab) — dann udp-Probelauf.
-    for tr in (_rtsp_transports() if url.startswith("rtsp://") else [None]):
+    for tr in (_rtsp_transports(url) if url.startswith("rtsp://") else [None]):
         cmd = [FFMPEG, "-loglevel", "error"]
         if url.startswith("rtsp://"):
             cmd += ["-rtsp_transport", tr]
