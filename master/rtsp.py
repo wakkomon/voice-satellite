@@ -258,7 +258,7 @@ class RelayManager:
                              tr or "plain", attempt, tries,
                              relay.title or relay.source, last_err[:120])
                     try:
-                        proc.send_signal(signal.SIGINT)
+                        proc.send_signal(signal.SIGTERM)
                         proc.wait(timeout=3)
                     except Exception:
                         try:
@@ -326,7 +326,13 @@ class RelayManager:
         proc = self._procs.pop(rid, None)
         if proc is not None and proc.poll() is None:
             try:
-                proc.send_signal(signal.SIGINT)
+                # SIGTERM (NICHT SIGINT/KILL): ffmpeg 7.1 sendet im
+                # SIGTERM-Handler RTSP-TEARDOWN — nur so gibt die
+                # Fritz!box den Tuner-Session-Slot (timeout=60s) sofort
+                # frei. SIGINT/KILL hinterlaesst Zombie-Sessions, an
+                # denen nachfolgende Relay-Sessionn beim DESCRIBE
+                # verhungern (0-Bytes-Relay, 15.11. live reproduziert).
+                proc.send_signal(signal.SIGTERM)
                 proc.wait(timeout=3)
             except Exception:
                 try:
