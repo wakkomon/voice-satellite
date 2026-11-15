@@ -178,7 +178,8 @@ def _rtsp_transports(url: str = "") -> list[str]:
 # ── Relay-Verwaltung ──────────────────────────────────────────────────
 class _Relay:
     __slots__ = ("relay_id", "url", "title", "source", "started",
-                 "last_request", "q")
+                 "last_request", "q", "tr", "attempt", "guard_retried",
+                 "dead_reason")
 
     def __init__(self, url: str, title: str, source: str):
         self.relay_id = uuid.uuid4().hex[:12]
@@ -188,6 +189,10 @@ class _Relay:
         self.started = time.time()
         self.last_request = time.time()
         self.q: queue.Queue = queue.Queue(maxsize=2)
+        self.tr: str | None = None      # Watchdog-Zustand (Transport)
+        self.attempt = 0                # Watchdog-Zustand (Versuch)
+        self.guard_retried = False
+        self.dead_reason = ""           # != "" -> Relay tot, Stream gibt 502
 
 
 class RelayManager:
@@ -227,77 +232,139 @@ class RelayManager:
             # lebt ffmpeg danach, ist der Relay gestartet.
             transports = (_rtsp_transports(url) if url.startswith("rtsp://")
                           else [None])
-            # SAT/IP-Quellen (Fritz!Box) vergeben Streams erst nach einer
-            # PLAY und koennen eine Session still verhungern lassen: ffmpeg
-            # bleibtalive, es kommen aber NIEMALS RTP-Bytes. Einmal tot
-            # blockiert die Quelle spaetere Sessions. Deshalb nicht nur
-            # "lebt ffmpeg?" pruefen, sondern echte erste Ausgabbytes
-            # abwarten und die Session bis zu 2x frisch starten.
-            attempts = [(tr, 3 if url.startswith("rtsp://") else 1)
-                        for tr in transports]
             proc: subprocess.Popen | None = None
             last_err = ""
-            for tr, tries in attempts:
-                for attempt in range(1, tries + 1):
-                    proc = subprocess.Popen(
-                        _build_ffmpeg_cmd(url, tr),
-                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                        stdin=subprocess.DEVNULL)
-                    if self._first_bytes_ok(proc, max_s=4 + 8 * attempt):
-                        break
-                    #进程 tot oder Funkstille: verwerfen und neu versuchen
-                    try:
-                        err_out = proc.stderr.read(4000).decode("utf-8",
-                                                                "replace") \
-                            if proc.poll() is not None else ""
-                    except Exception:
-                        err_out = ""
-                    last_err = _sanitize(err_out.strip())[-160:] \
-                        or "RTSP-Session ohne RTP-Daten"
-                    log.info("RTSP-Transport %s Versuch %d/%d an %s: %s",
-                             tr or "plain", attempt, tries,
-                             relay.title or relay.source, last_err[:120])
-                    try:
-                        proc.send_signal(signal.SIGTERM)
-                        proc.wait(timeout=3)
-                    except Exception:
-                        try:
-                            proc.kill()
-                        except OSError:
-                            pass
-                    proc = None
-                    time.sleep(1.0)   # Quelle mag halboffene Sessions
-                if proc is not None:
-                    break
+            for tr in transports:
+                proc = subprocess.Popen(
+                    _build_ffmpeg_cmd(url, tr),
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    stdin=subprocess.DEVNULL)
+                try:
+                    proc.wait(timeout=4)
+                except subprocess.TimeoutExpired:
+                    break                      # laeuft noch -> Erfolg
+                err_out = ""
+                try:
+                    err_out = proc.stderr.read(4000).decode("utf-8",
+                                                            "replace")
+                except Exception:
+                    pass
+                last_err = _sanitize(err_out.strip())[-160:] \
+                    or f"exit {proc.returncode}"
+                log.info("RTSP-Transport %s scheitert an %s: %s",
+                         tr or "plain", relay.title or relay.source,
+                         last_err[:120])
+                proc = None
+                time.sleep(1.0)   # Quelle mag halboffene Sessions
             if proc is None:
                 self._relays.pop(relay.relay_id, None)
                 self._errbuf.pop(relay.relay_id, None)
                 raise RuntimeError("Quelle nicht erreichbar: " + last_err)
-            self._procs[relay.relay_id] = proc
-            threading.Thread(target=self._pump, args=(relay, proc),
-                             name=f"rtsp-pump-{relay.relay_id}",
-                             daemon=True).start()
-            threading.Thread(target=self._drain_err, args=(relay.relay_id, proc),
-                             name=f"rtsp-err-{relay.relay_id}",
-                             daemon=True).start()
+            relay.tr, relay.attempt = tr, 1
+            self._spawn_pumps(relay, proc)
+            # SAT/IP (Fritz!box): die erste RTSP-Session duerfte oft erst
+            # NACH einem SDP-Update + Tuner-Retune streamen (ffmpeg
+            # re-opent die Session intern, 15-25 s beobachtet). Deshalb
+            # hier NICHT auf erste Bytes blockieren (POST wuerde die
+            # App-Timeout von 30 s sprengen), sondern im Hintergrund
+            # warten: echte Dauer-Funkstille (tote Session) wird erkannt,
+            # die Session maximal EINMAL neu gestartet.
+            threading.Thread(
+                target=self._startup_guard,
+                args=(relay, transports),
+                name=f"rtsp-guard-{relay.relay_id}",
+                daemon=True).start()
         # Titel/Quelle sind sicher — die URL selbst wird nie geloggt.
         log.info("RTSP-Relay %s gestartet (%s)", relay.relay_id,
                  relay.title or relay.source)
         return relay, evicted
 
-    def _first_bytes_ok(self, proc: subprocess.Popen, max_s: float) -> bool:
-        """Wartet bis max_s: Erfolg, sobald ffmpeg die ersten Bytes schreibt
-        (sie bleiben im Pipe-Puffer, der Pump liest sie ganz normal).
-        Fail fast, wenn ffmpeg sofort exitet; Funkstille bis zum Deadline
-        gilt als Misserfolg (Session verhungert)."""
+    def _spawn_pumps(self, relay: _Relay, proc: subprocess.Popen) -> None:
+        """(mit Lock) Pump- + Err-Drain-Threads fuer ein laufendes
+        ffmpeg-Prozess anstoessen."""
+        self._procs[relay.relay_id] = proc
+        threading.Thread(target=self._pump, args=(relay, proc),
+                         name=f"rtsp-pump-{relay.relay_id}",
+                         daemon=True).start()
+        threading.Thread(target=self._drain_err, args=(relay.relay_id, proc),
+                         name=f"rtsp-err-{relay.relay_id}",
+                         daemon=True).start()
+
+    def _wait_first_bytes(self, relay: _Relay, max_s: float) -> bool:
+        """(ohne Lock) Bis max_s auf die ersten ffmpeg-Bytes warten.
+        True: Daten da; False: Zeit abgelaufen, ffmpeg tot oder Relay
+        weg. Die Bytes selbst bleiben im Pipe-Puffer fuer den Pump."""
         deadline = time.time() + max_s
         while time.time() < deadline:
-            r, _, _ = select.select([proc.stdout], [], [], 0.5)
-            if r:
-                return True
+            with self._lock:
+                if relay.relay_id not in self._relays:
+                    return False
+                proc = self._procs.get(relay.relay_id)
+                if proc is None:
+                    return False
             if proc.poll() is not None:
                 return False
+            r, _, _ = select.select([proc.stdout], [], [], 0.5)
+            if r:
+                return proc.poll() is None or True
         return False
+
+    def _startup_guard(self, relay: _Relay,
+                       transports: list[str] | list) -> None:
+        """Hintergrund-Wachter: SAT/IP-Quellen (Fritz!box) streamen oft
+        erst 15-25 s spaeter (SDP-Update, Tuner-Retune, ffmpeg re-open
+        der RTSP-Session). Blockiert den Start POST deshalb nicht;
+        hier wird echte Dauer-Funkstille (tote Session) abgefangen:
+        ein Neustart mit naechstem Transport, dann Dead-Marker
+        (Stream liefert 502)."""
+        retried = False
+        for _cycle in (1, 2):
+            if self._wait_first_bytes(relay, 60.0):
+                return
+            with self._lock:
+                if relay.relay_id not in self._relays:
+                    return
+                if retried:
+                    relay.dead_reason = "keine Daten nach 2x 60 s"
+                    self._kill_locked(relay.relay_id,
+                                      "Watchdog: keine Daten")
+                    self._relays.pop(relay.relay_id, None)
+                    self._errbuf.pop(relay.relay_id, None)
+                    return
+                retried = True
+                cur = relay.tr
+                idx = (transports.index(cur)
+                       if cur in transports else 0)
+                next_tr = transports[(idx + 1) % len(transports)]
+                old = self._procs.pop(relay.relay_id, None)
+                if old is not None:
+                    try:
+                        old.send_signal(signal.SIGTERM)
+                        old.wait(timeout=3)
+                    except Exception:
+                        try:
+                            old.kill()
+                        except OSError:
+                            pass
+                proc = subprocess.Popen(
+                    _build_ffmpeg_cmd(relay.url, next_tr),
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    stdin=subprocess.DEVNULL)
+                relay.tr, relay.attempt = next_tr, relay.attempt + 1
+                # Queue entleeren: sonst liegt dort das EOF-Sentinel des
+                # alten ffmpeg und der verbundene Stream wuerde trotz
+                # Neustart enden
+                try:
+                    while True:
+                        relay.q.get_nowait()
+                except queue.Empty:
+                    pass
+                log.info("RTSP-Relay %s: keine Daten, Session neu "
+                         "(Transport %s, Versuch %d)", relay.relay_id,
+                         next_tr or "plain", relay.attempt)
+                self._spawn_pumps(relay, proc)
+            time.sleep(1.0)
+
     def _pump(self, relay: _Relay, proc: subprocess.Popen) -> None:
         q = relay.q
         try:
