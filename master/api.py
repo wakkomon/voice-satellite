@@ -1104,9 +1104,13 @@ async def _sat_photo(req: Request) -> JSONResponse:
     return JSONResponse(data, status_code=code)
 
 
-def _files_serve(name: str) -> Response:
-    """GET /files/<name> — gespeicherte Fotos (Bild-Push der App)."""
-    safe = os.path.basename(name)
+def _files_serve(req: Request) -> Response:
+    """GET /files/<name> — gespeicherte Fotos (Bild-Push der App).
+
+    v2.0.79-Patch: bisher (name: str) — modernes Starlette ruft jede
+    Ein-Parameter-Route mit dem Request auf, der Handler crashte mit
+    TypeError (HTTP 500) auch bei gueltigem Token."""
+    safe = os.path.basename(req.path_params["name"])
     fdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "files")
     p = os.path.join(fdir, safe)
     if not os.path.isfile(p):
