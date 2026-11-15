@@ -41,7 +41,8 @@ def main() -> int:
         f.write("#EXTM3U\n"
                 "#EXTINF:-1,1LIVE\nrtsp://x/a\n"
                 "#EXTINF:-1,WDR 2\nrtsp://x/b\n"
-                "#EXTINF:-1,1LIVE (Diggi)\nrtsp://x/c\n")
+                "#EXTINF:-1,1LIVE (Diggi)\nrtsp://x/c\n"
+                "#EXTINF:-1,WDR 1 Live (720p)\nhttps://x/d.m3u8\n")
     with open(os.path.join(tv, "world.m3u"), "w", encoding="utf-8") as f:
         f.write("#EXTM3U\n#EXTINF:-1,00s Replay\nhttps://y/z.m3u8\n")
     music_search._radio_cache["key"] = None  # Cache neu aufbauen

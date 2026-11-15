@@ -40,16 +40,18 @@ def _fuzzy_match(query: str, candidates: list[str],
     for c in candidates:
         if c.lower().startswith(q):
             return c
-    # 3. Substring
-    for c in candidates:
-        if q in c.lower():
-            return c
-    # 3b. Compact: STT schreibt Sender zusammen/auseinander ("1LIVE"<->"1 live")
+    # 3. Compact-Exact vor Substring: sonst verliert "1LIVE" gegen
+    #    "WDR 1 Live (720p)". STT schreibt Sender zusammen/auseinander.
     qc = re.sub(r"[^a-z0-9]", "", q)
     if qc:
         for c in candidates:
             if re.sub(r"[^a-z0-9]", "", c.lower()) == qc:
                 return c
+    # 3b. Substring
+    for c in candidates:
+        if q in c.lower():
+            return c
+    if qc:
         for c in candidates:
             if qc in re.sub(r"[^a-z0-9]", "", c.lower()):
                 return c

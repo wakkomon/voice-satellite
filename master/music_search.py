@@ -116,17 +116,19 @@ def _fuzzy_match(query: str, candidates: list[str]) -> str | None:
     for c in candidates:
         if c.lower().startswith(q):
             return c
-    for c in candidates:
-        if q in c.lower():
-            return c
     # Compact-Ebene: STT schreibt Sender gern zusammen oder ausein-
     # ander ("1LIVE" <-> "1 live", "WDR3" <-> "WDR 3") — Interpunktion
-    # und Leerstellen beiderseits ignorieren.
+    # und Leerstellen beiderseits ignorieren. Compact-EXACT vor
+    # Substring, sonst verliert "1LIVE" gegen "WDR 1 Live (720p)".
     qc = _compact(q)
     if qc:
         for c in candidates:
             if _compact(c) == qc:
                 return c
+    for c in candidates:
+        if q in c.lower():
+            return c
+    if qc:
         for c in candidates:
             if qc in _compact(c):
                 return c
