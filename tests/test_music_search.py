@@ -58,6 +58,14 @@ def main() -> int:
     check(r["title"] == "00s Replay"
           and r["results"][0]["source"] == "TV/world.m3u",
           "radio: world.m3u Quelle")
+    r = music_search.search_radio("1 live")
+    check(r["title"] == "1LIVE", "radio: STT-Zerstoer '1 live' -> 1LIVE")
+    check(any(x["title"] == "1LIVE (Diggi)" for x in r["results"]),
+          "radio: compact-nahe Variante in results ('1 live')")
+    r = music_search.search_radio("1live diggi")
+    check(r["title"] == "1LIVE (Diggi)", "radio: '1live diggi' -> Variante")
+    r = music_search.search_radio("wdr2")
+    check(r["title"] == "WDR 2", "radio: 'wdr2' -> WDR 2")
     r = music_search.search_radio("gibtsnicht")
     check(r["title"] is None and not r["results"], "radio: kein Match -> leer")
     r = music_search.search_radio("")

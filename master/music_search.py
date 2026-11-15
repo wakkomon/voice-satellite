@@ -102,6 +102,10 @@ def _norm(q: str) -> str:
     return s.strip()
 
 
+def _compact(s: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", _norm(s))
+
+
 def _fuzzy_match(query: str, candidates: list[str]) -> str | None:
     q = _norm(query)
     if not q:
@@ -115,6 +119,17 @@ def _fuzzy_match(query: str, candidates: list[str]) -> str | None:
     for c in candidates:
         if q in c.lower():
             return c
+    # Compact-Ebene: STT schreibt Sender gern zusammen oder ausein-
+    # ander ("1LIVE" <-> "1 live", "WDR3" <-> "WDR 3") — Interpunktion
+    # und Leerstellen beiderseits ignorieren.
+    qc = _compact(q)
+    if qc:
+        for c in candidates:
+            if _compact(c) == qc:
+                return c
+        for c in candidates:
+            if qc in _compact(c):
+                return c
     qwords = q.split()
     if len(qwords) > 1:
         for c in candidates:
@@ -141,6 +156,7 @@ def search_radio(q: str, limit: int = 5) -> dict:
         station = random.choice(stations)
         matched = station["name"]
     else:
+        qc = _compact(q)
         matched = _fuzzy_match(q, names)
         if not matched:
             return {"kind": "radio", "title": None, "results": [],
@@ -156,7 +172,8 @@ def search_radio(q: str, limit: int = 5) -> dict:
                 break
             if s["name"].lower() in seen_names:
                 continue
-            if _norm(q) in s["name"].lower():
+            sn = s["name"].lower()
+            if _norm(q) in sn or (qc and qc in _compact(s["name"])):
                 results.append({"title": s["name"],
                                 "source": f"TV/{s['file']}"})
                 seen_names.add(s["name"].lower())

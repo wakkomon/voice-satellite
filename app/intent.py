@@ -44,6 +44,15 @@ def _fuzzy_match(query: str, candidates: list[str],
     for c in candidates:
         if q in c.lower():
             return c
+    # 3b. Compact: STT schreibt Sender zusammen/auseinander ("1LIVE"<->"1 live")
+    qc = re.sub(r"[^a-z0-9]", "", q)
+    if qc:
+        for c in candidates:
+            if re.sub(r"[^a-z0-9]", "", c.lower()) == qc:
+                return c
+        for c in candidates:
+            if qc in re.sub(r"[^a-z0-9]", "", c.lower()):
+                return c
     # 4. Fuzzy: both words present in order
     qwords = q.split()
     if len(qwords) > 1:
@@ -251,17 +260,25 @@ def try_play_radio(text: str) -> tuple[bool, str | None]:
     Returns (True, „Radio <name> wird abgespielt") or (False, None).
     """
     t = text.lower().strip()
-    m = re.match(r"^(?:spiel|spiele)\s+radio\s+(.+)", t)
+    # \s* statt \s+: STT klebt "spiel Radio" gern zusammen ("Spielradio")
+    m = re.match(r"^(?:spiel|spiele|starte|mach)\s*"
+                 r"(?:mal\s+|bitte\s+)?radio(?:\s+(.*))?$", t)
     if not m:
         return False, None
 
-    name = m.group(1).strip().rstrip()
-    if not name:
-        return True, "Welcher Radiosender?"
+    name = (m.group(1) or "").strip().rstrip()
 
     stations = _load_radio_stations()
     if not stations:
         return True, "Radio-Playliste nicht gefunden"
+    if not name:
+        # leerer Sendername = beliebiger Sender (wie "Musik an")
+        station = random.choice(stations)
+        err = playback.player.play_proxy_rtsp(
+            f"TV/{station['file']}", title=station["name"])
+        if err:
+            return True, err
+        return True, f"Radio {station['name']} wird abgespielt"
 
     # Build display names for matching (lowercase, normalized)
     display_names = [s["name"] for s in stations]
