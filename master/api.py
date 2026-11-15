@@ -40,6 +40,7 @@ from . import config as master_cfg
 from . import __version__ as MASTER_VERSION
 from . import proxy
 from . import rtsp
+from . import music_search
 from . import mcp_gateway
 from . import webauth
 from .indexer import _build_media_index, load_index_cache, save_index
@@ -198,6 +199,33 @@ async def _api_music(req: Request) -> Response:
     body = gz if use_gzip else raw
     headers = {"Content-Encoding": "gzip"} if use_gzip else {}
     return Response(body, media_type="application/json", headers=headers)
+
+
+async def _api_music_search(req: Request) -> Response:
+    """Leichte Musik-/Radio-Suche fuer die App (GET /api/music/search).
+
+    q=Suchtext (leer = zufaelliger Treffer), kind=music|radio, limit=1..20.
+    Antwort: {kind, title, results:[...], queue:[...]} — die App baut daraus
+    die Wiedergabe (/proxy/music/<relpath> bzw. POST /proxy/rtsp/relay).
+    """
+    q = (req.query_params.get("q") or "").strip()
+    kind = (req.query_params.get("kind") or "music").lower()
+    if kind not in ("music", "radio"):
+        kind = "music"
+    try:
+        limit = max(1, min(20, int(req.query_params.get("limit") or "5")))
+    except ValueError:
+        limit = 5
+    if kind == "radio":
+        return JSONResponse(music_search.search_radio(q, limit=limit))
+    global _index_data
+    if _index_data is None:
+        _index_data = load_index_cache(master_cfg.CACHE_DIR)
+    if _index_data is None:
+        if _index_busy:
+            return JSONResponse({"status": "indexing"}, status_code=202)
+        return JSONResponse({"error": "no index"}, status_code=503)
+    return JSONResponse(music_search.search_music(q, _index_data, limit=limit))
 
 
 async def _index_rebuild(req: Request) -> JSONResponse:
@@ -2332,7 +2360,7 @@ routes = [
     Route("/logs", _live_log),
     Route("/api/heartbeat", _heartbeat),
     Route("/api/music", _api_music),
-    Route("/api/music/search", _api_music),  # Alias für Satelliten
+    Route("/api/music/search", _api_music_search),
     Route("/index/rebuild", _index_rebuild, methods=["POST"]),
     Route("/events", _events),
     Route("/api/satellite/{mac}/restart", _sat_restart, methods=["POST"]),
