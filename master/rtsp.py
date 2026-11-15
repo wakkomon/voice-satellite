@@ -30,6 +30,7 @@ import logging
 import os
 import queue
 import re
+import select
 import shutil
 import signal
 import subprocess
@@ -226,29 +227,48 @@ class RelayManager:
             # lebt ffmpeg danach, ist der Relay gestartet.
             transports = (_rtsp_transports(url) if url.startswith("rtsp://")
                           else [None])
+            # SAT/IP-Quellen (Fritz!Box) vergeben Streams erst nach einer
+            # PLAY und koennen eine Session still verhungern lassen: ffmpeg
+            # bleibtalive, es kommen aber NIEMALS RTP-Bytes. Einmal tot
+            # blockiert die Quelle spaetere Sessions. Deshalb nicht nur
+            # "lebt ffmpeg?" pruefen, sondern echte erste Ausgabbytes
+            # abwarten und die Session bis zu 2x frisch starten.
+            attempts = [(tr, 3 if url.startswith("rtsp://") else 1)
+                        for tr in transports]
             proc: subprocess.Popen | None = None
             last_err = ""
-            for tr in transports:
-                proc = subprocess.Popen(
-                    _build_ffmpeg_cmd(url, tr),
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                    stdin=subprocess.DEVNULL)
-                try:
-                    proc.wait(timeout=4)
-                except subprocess.TimeoutExpired:
-                    pass                        # laeuft noch -> Erfolg
-                else:
+            for tr, tries in attempts:
+                for attempt in range(1, tries + 1):
+                    proc = subprocess.Popen(
+                        _build_ffmpeg_cmd(url, tr),
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        stdin=subprocess.DEVNULL)
+                    if self._first_bytes_ok(proc, max_s=4 + 8 * attempt):
+                        break
+                    #进程 tot oder Funkstille: verwerfen und neu versuchen
                     try:
-                        err_out = proc.stderr.read().decode("utf-8", "replace")
+                        err_out = proc.stderr.read(4000).decode("utf-8",
+                                                                "replace") \
+                            if proc.poll() is not None else ""
                     except Exception:
                         err_out = ""
                     last_err = _sanitize(err_out.strip())[-160:] \
-                        or f"exit {proc.returncode}"
-                    log.info("RTSP-Transport %s scheitert an %s: %s",
-                             tr or "plain", relay.title or relay.source,
-                             last_err[:120])
+                        or "RTSP-Session ohne RTP-Daten"
+                    log.info("RTSP-Transport %s Versuch %d/%d an %s: %s",
+                             tr or "plain", attempt, tries,
+                             relay.title or relay.source, last_err[:120])
+                    try:
+                        proc.send_signal(signal.SIGINT)
+                        proc.wait(timeout=3)
+                    except Exception:
+                        try:
+                            proc.kill()
+                        except OSError:
+                            pass
                     proc = None
                     time.sleep(1.0)   # Quelle mag halboffene Sessions
+                if proc is not None:
+                    break
             if proc is None:
                 self._relays.pop(relay.relay_id, None)
                 self._errbuf.pop(relay.relay_id, None)
@@ -265,6 +285,19 @@ class RelayManager:
                  relay.title or relay.source)
         return relay, evicted
 
+    def _first_bytes_ok(self, proc: subprocess.Popen, max_s: float) -> bool:
+        """Wartet bis max_s: Erfolg, sobald ffmpeg die ersten Bytes schreibt
+        (sie bleiben im Pipe-Puffer, der Pump liest sie ganz normal).
+        Fail fast, wenn ffmpeg sofort exitet; Funkstille bis zum Deadline
+        gilt als Misserfolg (Session verhungert)."""
+        deadline = time.time() + max_s
+        while time.time() < deadline:
+            r, _, _ = select.select([proc.stdout], [], [], 0.5)
+            if r:
+                return True
+            if proc.poll() is not None:
+                return False
+        return False
     def _pump(self, relay: _Relay, proc: subprocess.Popen) -> None:
         q = relay.q
         try:
