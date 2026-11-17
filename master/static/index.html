@@ -765,7 +765,7 @@ function connectSSE() {
     if (data && data.mac) refresh();            // Tabelle live (Phase 'Aktivität')
     if (data.log) logEvent('sat_status', data); // Live-Log nur bei online/offline
   });
-  es.onerror = () => { es.close(); setTimeout(connectSSE, 5000); };
+  es.onerror = () => { es.close(); sessionGuard(connectSSE); };
 }
 
 // ── Live-Log (SSE von /logs) ──
@@ -783,8 +783,24 @@ function connectLiveLog() {
   es.onerror = () => {
     logEl.innerHTML = '<div><span style="color:var(--err)">Verbindung unterbrochen, versuche erneut …</span></div>';
     es.close();
-    setTimeout(connectLiveLog, 5000);
+    sessionGuard(connectLiveLog);
   };
+
+// SSE-Abbruch mit toter Session: Der Master hält Sessions nur im RAM — nach
+// Rebuild/restart looppt ein offenes Tab sonst endlos in 401-Reconnects
+// („Verbindung unterbrochen, versuche erneut …" alle paar Sekunden).
+// Stattdessen: Session pruefen, bei 401 sofort das Login zeigen.
+async function sessionGuard(reconnectFn) {
+  try {
+    const r = await fetch('/api/me');
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}));
+      showLogin(!!j.needs_setup, 'Sitzung abgelaufen oder Master neu gestartet — bitte neu anmelden.');
+      return;
+    }
+  } catch (e) { /* Server nicht erreichbar: normaler Reconnect */ }
+  setTimeout(reconnectFn, 5000);
+}
 }
 
 $('btn-rebuild').onclick = async () => {
