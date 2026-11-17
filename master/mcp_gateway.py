@@ -79,6 +79,9 @@ MASTER_TOOLS: list[dict] = [
                 "out": {"type": "string", "description": "browser | Satellit | all"},
                 "speak": {"type": "boolean", "default": True},
                 "mac": {"type": "string", "description": "Konfig-Quelle (optional)"},
+                "dm": {"type": "boolean", "default": False,
+                       "description": "Antwort zusaetzlich als Chat-Text "
+                                      "ans Zielgeraet senden (ohne TTS)"},
             },
             "required": ["text"],
         },
@@ -308,7 +311,8 @@ async def _t_chat_send(params: dict) -> dict:
         return await api._chat_send_core(
             text, str(params.get("mac") or ""),
             bool(params.get("speak", True)),
-            str(params.get("out") or "browser"), who="MCP")
+            str(params.get("out") or "browser"), who="MCP",
+            dm=bool(params.get("dm", False)))
     except ValueError as e:
         return {"ok": False, "error": str(e)}
 

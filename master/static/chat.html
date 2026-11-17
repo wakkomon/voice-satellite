@@ -84,8 +84,9 @@ h1 .v { color:var(--dim); font-size:0.8rem; font-weight:400; margin-left:auto; }
   <span class="clabel">Chat filtern</span>
   <select id="sat-select" onchange="switchSat()"><option value="">Alle Geräte</option></select>
   <span class="clabel" style="margin-left:6px">Abspielen auf</span>
-  <select id="out-select"><option value="browser">🖥 Browser</option><option value="all">📢📢 Alle Geräte</option></select>
+  <select id="out-select" onchange="syncDmToggle()"><option value="browser">🖥 Browser</option><option value="all">📢📢 Alle Geräte</option></select>
   <label style="margin-left:6px"><input type="checkbox" id="speak-toggle" checked> Antwort abspielen</label>
+  <label style="margin-left:6px" title="Antwort zusätzlich als reinen Chat-Text ans Zielgerät senden (ohne TTS)"><input type="checkbox" id="dm-toggle"> 💬 Chat-Text ans Gerät</label>
   <label style="margin-left:auto"><span id="rec-info" class="num" style="color:var(--dim);font-size:0.78rem"></span></label>
 </div>
 <div class="chat" id="chat"></div>
@@ -102,6 +103,13 @@ let lastTs = 0;
 const audio = new Audio();
 let audioBusy = null;
 const SATNAMES = {}; // mac -> Anzeigename (aus /api/satellites)
+
+// Chat-Text ans Gerät ist ohne Gerät-Auswahl sinnlos -> Browser: aus.
+function syncDmToggle() {
+  const dm = $("dm-toggle");
+  if ($("out-select").value === "browser") { dm.disabled = true; dm.checked = false; }
+  else dm.disabled = false;
+}
 
 // ── Namen ─────────────────────────────────────────────────────
 function nameOf(m) {
@@ -414,7 +422,8 @@ async function sendMsg() {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({ text, mac, speak: $("speak-toggle").checked,
-                             out: $("out-select").value, rid })
+                             out: $("out-select").value, rid,
+                             dm: $("dm-toggle").checked })
     });
     const data = await r.json();
     if (r.ok && data.answer) {

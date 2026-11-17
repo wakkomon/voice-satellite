@@ -1271,6 +1271,7 @@ async def _chat_send(req: Request) -> JSONResponse:
     out = (body.get("out") or "").strip().lower()
     if out in ("", "web"):
         out = "browser"
+    dm = bool(body.get("dm", False))
     if not text:
         return JSONResponse({"error": "leere Nachricht"}, status_code=400)
     # Web-UI-Login-Name als Quelle (Benutzerverwaltung): erscheint in der
@@ -1278,17 +1279,20 @@ async def _chat_send(req: Request) -> JSONResponse:
     who = _req_user(req).get("display") or "web"
     # rid: Request-Id der WebUI (Live-Rendering gegen Gleichzeitigkeit)
     rid = str(body.get("rid") or "")[:32]
-    result = await _chat_send_core(text, mac, speak, out, who, rid)
+    result = await _chat_send_core(text, mac, speak, out, who, rid, dm=dm)
     return JSONResponse(result)
 
 
 async def _chat_send_core(text: str, mac: str, speak: bool, out: str,
-                          who: str = "web", rid: str = "") -> dict:
+                          who: str = "web", rid: str = "",
+                          dm: bool = False) -> dict:
     """Kern des Chat-Sendens — wird auch vom MCP-Tool 'chat_send' genutzt.
 
     mac: Konfig des gewaehlten Satelliten (LLM/TTS), sonst globale.
     out: wo die Antwort gesprochen wird (browser | Satellit | all).
     rid: Request-Id (WebUI-Live-Rendering; leer = Master generiert neue).
+    dm: Antwort zusaetzlich als reinen Chat-Text (ohne TTS) in die
+        Pull-Warteschlange des Zielgeraets legen — wie Geraet-DM.
     """
     mac = (mac or "").lower().strip()
     out = (out or "browser").strip().lower()
@@ -1412,9 +1416,27 @@ async def _chat_send_core(text: str, mac: str, speak: bool, out: str,
         _bg_tasks.add(task)
         task.add_done_callback(_bg_tasks.discard)
         broadcast = "started"
+    # Chat-Text ans Geraet: die Antwort zusaetzlich als reine Textnachricht
+    # (speak=False, ohne TTS) in die Pull-Warteschlange des Zielgeraets —
+    # Geräte mit Bildschirm (App/Pi-Display) zeigen sie im Chat mit Quelle.
+    # Funktioniert unabhaengig von 'speak': auch reine Text-Chats moeglich.
+    dm_queued = 0
+    if dm and answer and not answer.startswith("LLM") \
+            and answer != "(leere Antwort)" and out != "browser":
+        if out == "all":
+            with manager._lock:
+                dm_targets = [k for k, sa in manager.satellites.items()
+                              if sa.status == "online" and not sa.disabled]
+        else:
+            hit = manager.sat_target(out)
+            dm_targets = [hit[0]] if hit and not manager.is_disabled(hit[0]) \
+                else []
+        for k in dm_targets:
+            manager.queue_for(k, answer, speak=False, src=who)
+        dm_queued = len(dm_targets)
     _chat_progress("done")
     return {"answer": answer, "rec": rec, "ts": entry["ts"],
-            "out": out, "broadcast": broadcast}
+            "out": out, "broadcast": broadcast, "dm": dm_queued}
 
 
 
