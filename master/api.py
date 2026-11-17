@@ -1796,7 +1796,14 @@ async def _events(req: Request) -> StreamingResponse:
             while True:
                 if await req.is_disconnected():
                     break
-                msg = await q.get()
+                try:
+                    msg = await asyncio.wait_for(q.get(), timeout=10)
+                except asyncio.TimeoutError:
+                    # SSE-Kommentar-Zeile: haelt middlebox-TCPs (HAarpin/
+                    # Fritzbox/ISP schliessen idle Verbindungen nach ~30 s)
+                    # und entlarvt abgebrochene Clients via is_disconnected.
+                    yield ": ping\n\n"
+                    continue
                 yield msg
         finally:
             _sse_clients.remove(q)
@@ -1886,7 +1893,11 @@ async def _live_log(req: Request) -> StreamingResponse:
             while True:
                 if await req.is_disconnected():
                     break
-                msg = await q.get()
+                try:
+                    msg = await asyncio.wait_for(q.get(), timeout=10)
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"
+                    continue
                 yield f"data: {msg}\n\n"
         finally:
             with _log_clients_lock:
