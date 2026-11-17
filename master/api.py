@@ -2440,6 +2440,7 @@ routes = [
     Route("/proxy/music", proxy.proxy_music, methods=["GET", "HEAD"]),
     Route("/proxy/music/{subpath:path}", proxy.proxy_music,
           methods=["GET", "HEAD"]),
+    Route("/proxy/image", proxy.proxy_image, methods=["GET", "HEAD"]),
     # (c2) RTSP→HTTP (Radio/TV-Relay + Kamera-Frames) — Ersatz fuer die
     # entfallene Pi-Bridge; Satelliten brauchen nur MASTER_URL + Token.
     Route("/proxy/rtsp/relay", rtsp.relay_start, methods=["POST"]),

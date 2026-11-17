@@ -453,6 +453,51 @@ async def proxy_openhab(req: Request) -> Response:
         return JSONResponse({"error": f"openhab upstream: {e}"}, status_code=502)
 
 
+async def proxy_image(req: Request) -> Response:
+    """Default-Bild-Proxy: liefert die im Master hinter DEFAULT_IMAGE_URL
+    konfigurierte Quelle (Wetter-/Dash-Snapshot) weiter. Apps + Pi laden das
+    Standbild im Master-Modus ueber diesen Endpunkt, statt die Backend-URL
+    direkt zu erreichen — der Master ist die einzige Stelle, die die Quelle
+    kennt (Paritaet zu TTS/STT/LLM/OpenHAB). GET/HEAD, Bearer-geprueft."""
+    if req.method == "HEAD":
+        # Erreichbarkeitsprobe wie TTS: 200 ohne Body.
+        return Response(status_code=200, media_type="image/jpeg")
+    if e := _auth_error(req):
+        return e
+    base_url = _default_image_url()
+    if not base_url:
+        return JSONResponse({"error": "DEFAULT_IMAGE_URL nicht konfiguriert"},
+                            status_code=502)
+    if _is_self_proxy(base_url):
+        log.warning("DEFAULT_IMAGE_URL zeigt auf den eigenen Proxy - Loop unterbunden")
+        return JSONResponse({"error": "image upstream zeigt auf den Master-Proxy"},
+                            status_code=502)
+    # Query-String der App durchreichen (z. B. Cache-Buster ?t=...).
+    target = base_url + (("?" + req.url.query) if req.url.query else "")
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
+            r = await client.get(target)
+            return Response(
+                r.content, status_code=r.status_code,
+                media_type=r.headers.get("content-type", "image/jpeg"),
+                headers={"Cache-Control": "no-store"},
+            )
+    except httpx.HTTPError as e:
+        log.warning("Image-Proxy-Fehler: %s", e)
+        return JSONResponse({"error": f"image upstream: {e}"}, status_code=502)
+
+
+def _default_image_url() -> str:
+    """Backend-Quelle des Default-Bilds: Store-Wert (global, effektiv) zuerst,
+    dann ENV-Fallback. DEFAULT_IMAGE_URL ist ein EDITABLE_KEY (kein Secret,
+    kein *_URL-Backend-Key) und daher in get_effective() enthalten."""
+    url = str(config_store.get_effective(None).get("DEFAULT_IMAGE_URL") or "").strip()
+    if not url:
+        url = (os.environ.get("DEFAULT_IMAGE_BACKEND_URL")
+               or os.environ.get("DEFAULT_IMAGE_URL") or "").strip()
+    return url
+
+
 async def proxy_music(req: Request) -> Response:
     """Musik-Streaming-Proxy: Liefert Dateien vom CIFS-Mount am Master.
     Unterstützt Range-Requests für flüssiges Streaming.
