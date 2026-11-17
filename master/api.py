@@ -606,6 +606,21 @@ async def _sat_enable(req: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "mac": key, "disabled": False})
 
 
+async def _sat_delete(req: Request) -> JSONResponse:
+    """POST /api/satellite/{mac}/delete (Admin) — Satellit loeschen.
+
+    Entfernt den Eintrag aus Dashboard-Liste UND aus allen persistenten
+    Stores (Name, Deaktivierung, Positionen, Identitaets-Historie/Aliasse,
+    Warteschlange) — der Satellit verschwindet nach Rebuilds nicht wieder.
+    Das Geraet selbst ist nicht betroffen; beim naechsten Heartbeat
+    registriert es sich automatisch neu."""
+    key = req.path_params["mac"]
+    deleted = manager.forget(key)
+    if deleted is None:
+        return JSONResponse({"error": "satellite not found"}, status_code=404)
+    return JSONResponse({"ok": True, "deleted": deleted})
+
+
 # ── Chat-WebUI ────────────────────────────────────────────────
 # Chatfenster im WebUI: Eintraege der Satelliten (Sprech-Turne + Musik,
 # gepusht per Push/Heartbeat), TTS-Aufnahmen (Master zeichnet ueber den
@@ -2408,6 +2423,7 @@ routes = [
     Route("/api/satellite/{mac}/name", _sat_name_put, methods=["PUT"]),
     Route("/api/satellite/{mac}/disable", _sat_disable, methods=["POST"]),
     Route("/api/satellite/{mac}/enable", _sat_enable, methods=["POST"]),
+    Route("/api/satellite/{mac}/delete", _sat_delete, methods=["POST"]),
     Route("/api/image", _image_push, methods=["POST"]),
     Route("/api/app/version", _app_version),
     Route("/api/app/download", _app_download),

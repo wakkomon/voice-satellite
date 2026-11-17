@@ -663,12 +663,13 @@ async function refresh() {
       const tog = s.disabled
         ? `<a href="#" class="mini-link" onclick="toggleDisabled('${esc(s.mac)}',false);return false">Aktivieren</a>`
         : `<a href="#" class="mini-link" onclick="toggleDisabled('${esc(s.mac)}',true);return false">Deaktivieren</a>`;
+      const del = `<a href="#" class="mini-link" style="color:var(--err)" title="Satellit komplett loeschen (Name, Einstellungen, Historie)" onclick="delSat('${esc(s.mac)}');return false">Löschen</a>`;
       return `<tr class="${s.status === 'offline' ? 'sat-off' : ''}">
         <td><span class="dot ${dotCls}"></span>${nameCell}${s.disabled ? ' <span class="badge err" title="Satellit ist deaktiviert: keine Pushes, keine Meldungen an den Master" style="font-size:0.65rem">deaktiviert</span>' : ''}</td>
         <td class="num" style="color:var(--dim)">${esc(s.ip)}</td>
         <td>${activityHtml}</td>
         <td>
-          <span class="admin-only sat-actions">${acts}${tog}</span>
+          <span class="admin-only sat-actions">${acts}${tog} ${del}</span>
         </td>
       </tr>`;
     }).join('')
@@ -715,6 +716,21 @@ async function toggleDisabled(mac, disabled) {
     logEvent('sat_action', {mac, action: label, result: r.ok ? 'ok' : JSON.stringify(j)});
     if (!r.ok) alert(j.error || ('Fehler: ' + r.status));
   } catch (e) { logEvent('sat_action', {mac, action: label, result: 'Fehler: '+e}); }
+  setTimeout(refresh, 1500);
+}
+
+// Satellit komplett loeschen: verschwindet aus Dashboard-Liste und allen
+// persistenten Stores (Name/Sperre/Position/Identitaet). Das Geraet selbst
+// bleibt laufen und meldet sich beim naechsten Heartbeat wieder.
+async function delSat(mac) {
+  if (!confirm(`Satellite „${mac}“ löschen?\n\nName, Einstellungen und Historie werden dauerhaft entfernt. Das Geraet selbst ist nicht betroffen und meldet sich beim naechsten Heartbeat neu an.`)) return;
+  logEvent('sat_action', {mac, action: 'Löschen'});
+  try {
+    const r = await fetch(`/api/satellite/${encodeURIComponent(mac)}/delete`, {method: 'POST'});
+    const j = await r.json().catch(() => ({}));
+    logEvent('sat_action', {mac, action: 'Löschen', result: r.ok ? 'ok' : JSON.stringify(j)});
+    if (!r.ok) alert(j.error || ('Fehler: ' + r.status));
+  } catch (e) { logEvent('sat_action', {mac, action: 'Löschen', result: 'Fehler: '+e}); }
   setTimeout(refresh, 1500);
 }
 

@@ -488,6 +488,51 @@ class SatManager:
                         return True
         return False
 
+    def forget(self, key: str) -> str | None:
+        """Satellit komplett loeschen: RAM + alle persistenten Store.
+
+        Entfernt den Eintrag aus der Dashboard-Liste und aus
+        device_names/sat_disabled/locations/identity (inkl. Aliasse,
+        die auf den Key zeigen) sowie aus Warteschlange und
+        Live-Log-Dedupe. Das Geraet selbst bleibt unveraendert —
+        beim naechsten Heartbeat registriert es sich neu (mit
+        frischer Historie). Rueckgabe: geloeschter Key oder None
+        (unbekannt)."""
+        with self._lock:
+            target = self.resolve_key((key or "").lower())
+            exists = (target in self.satellites or target in self._idhist
+                      or target in self._names or target in self._disabled
+                      or target in self._locations)
+            if not exists:
+                return None
+            # Alle Alias-Vorlaeufer (alt -> ... -> target) einsammeln:
+            # auch deren RAM-/Historie-Eintraege gehoeren zum Geraet.
+            shadow: set[str] = set()
+            frontier = [target]
+            while frontier:
+                t = frontier.pop()
+                for ak, nk in self._aliases.items():
+                    if nk == t and ak not in shadow:
+                        shadow.add(ak)
+                        frontier.append(ak)
+            self.satellites.pop(target, None)
+            for ak in shadow:
+                self.satellites.pop(ak, None)
+                self._aliases.pop(ak, None)
+                self._idhist.pop(ak, None)
+            self._names.pop(target, None)
+            self._disabled.discard(target)
+            self._locations.pop(target, None)
+            self._idhist.pop(target, None)
+            self._pending.pop(target, None)
+            self._event_seqs.pop(target, None)
+            self._save_names()
+            self._save_disabled()
+            self._save_locations()
+            self._save_identity()
+            log.info("Satellit %s: GELÖSCHT (alle Register + Persistenz)", target)
+        return target
+
     # ── Registrierung (keine Discovery) ─────────────────────────
     #
     # Auto-Discovery (Subnetz-Scan) ist entfernt: Satelliten melden sich
@@ -529,6 +574,30 @@ class SatManager:
                     )
                     self.satellites[key] = sat
                     log.info("Satellit %s: registriert (wartet auf Heartbeat)", sat.hostname)
+
+    def _restore_sats(self) -> None:
+        """Satelliten-Liste aus der Identitaets-Historie (identity.json)
+        wiederherstellen — ueberlebt Master-Rebuild/Restart.
+
+        Ohne diesen Schritt sind die Sat-Eintraege nach jedem Rebuild
+        nur so lange im RAM, bis das Geraet neu heartbeatt (Android-Apps
+        sonst komplett aus dem Dashboard verschwunden). Offline-Geraete
+        erscheinen wieder mit Status offline; der Monitor-Loop und der
+        naechste Heartbeat setzen den echten Status."""
+        with self._lock:
+            for key in sorted(self._idhist):
+                if key in self.satellites:
+                    continue
+                ip = self._idhist.get(key) or ""
+                self.satellites[key] = Satellite(
+                    mac=key, ip=ip,
+                    hostname=(f"sat-{ip.rsplit('.', 1)[-1]}" if ip else key),
+                    status="offline", is_known=True,
+                    custom_name=self._names.get(key, ""),
+                    disabled=key in self._disabled,
+                )
+                log.info("Satellit %s: aus Historie wiederhergestellt (offline)",
+                         key)
 
     # ── Heartbeat ──────────────────────────────────────────────
 
@@ -940,5 +1009,6 @@ class SatManager:
     def start(self) -> None:
         """Konfigurierte Satelliten registrieren + Heartbeat-Monitor starten."""
         self._register_known()
+        self._restore_sats()
         self.start_monitor()
         log.info("Satellite Manager gestartet")
